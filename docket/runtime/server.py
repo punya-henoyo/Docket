@@ -23,6 +23,13 @@ from pathlib import Path
 
 from docket.tools.http_request import do_http_request
 from docket.tools.output_store import get as output_get
+from docket.tools.proxy import (
+    proxy_get,
+    proxy_list,
+    proxy_replay,
+    proxy_start,
+    proxy_stop,
+)
 from docket.tools.shell import run_shell
 
 PORT = int(os.environ.get("DOCKET_SHIM_PORT", "8765"))
@@ -40,6 +47,11 @@ DISPATCH = {
     "shell": lambda **kw: run_shell(run_dir=RUN_DIR, **kw),
     "http_request": lambda **kw: do_http_request(run_dir=RUN_DIR, **kw),
     "output_get": lambda **kw: output_get(run_dir=RUN_DIR, **kw),
+    "proxy_start": lambda **kw: proxy_start(run_dir=RUN_DIR, **kw),
+    "proxy_stop": lambda **kw: proxy_stop(**kw),
+    "proxy_list": lambda **kw: proxy_list(run_dir=RUN_DIR, **kw),
+    "proxy_get": lambda **kw: proxy_get(run_dir=RUN_DIR, **kw),
+    "proxy_replay": lambda **kw: proxy_replay(run_dir=RUN_DIR, **kw),
 }
 
 
@@ -62,6 +74,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 — stdlib naming
         if self.path == "/shutdown":
+            # Release long-lived in-container resources (mitmdump now; a Playwright
+            # browser in M8) before the container is torn down.
+            try:
+                proxy_stop()
+            except Exception:
+                pass
             self._send(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
