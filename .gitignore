@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# uv
+uv.lock.bak
+
+# App runtime
+docket_runs/
+.env
+
+# Docker build context extras
+containers/**/*.log
+
+# OS
+.DS_Store
