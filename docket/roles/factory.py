@@ -1,25 +1,30 @@
 """Builds SDK Agent objects: LiteLLM model wiring, per-role tool list, and the
 tool_use_behavior gate that stops the loop only via a dedicated finish tool.
 
-M3 scope: only the "root" role exists (single generalist agent, tests every route
-itself). M4 adds sqli/cmdi/xss specialist roles with narrower tool lists and swaps
-`finish_scan` for `agent_finish` on non-root agents.
+Root's coordination tools (create_agent/wait_for_agents/view_agent_graph, in
+graph_tools.py) are NOT imported here — graph_tools.py imports build_agent (to
+construct the children it spawns), so importing it back here would cycle. The caller
+(scan.py) passes those tools in via extra_tools instead.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Literal
 
-from agents import Agent, FunctionToolResult, RunContextWrapper, ToolsToFinalOutputResult, function_tool
+from agents import Agent, FunctionToolResult, RunContextWrapper, Tool, ToolsToFinalOutputResult, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
+from agents.models.interface import Model
 
-from docket.roles.lifecycle import AgentFinalOutput, finish_scan
-from docket.roles.prompts.root import SYSTEM_PROMPT
 from docket.config import Config
 from docket.core.execution import ScanContext
+from docket.roles.lifecycle import AgentFinalOutput, agent_finish, finish_scan
+from docket.roles.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
+from docket.roles.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
 from docket.tools.finding import FindingType, register_finding
 from docket.tools.http_request import do_http_request
 
-Role = Literal["root"]
+Role = Literal["root", "sqli", "cmdi", "xss"]
+SpecialistRole = Literal["sqli", "cmdi", "xss"]
 
 _FINISH_TOOL_NAMES = {"finish_scan", "agent_finish"}
 
@@ -37,8 +42,12 @@ async def http_request(
 ) -> dict:
     """Send a raw HTTP request to the target and return status/headers/body/timing.
     `data` as an object is form-urlencoded, matching how Flask reads request.form."""
-    return do_http_request(
-        method, url, ctx.context.run_dir,
+    # do_http_request is synchronous urllib — run it off-thread so one agent's
+    # blocking call (e.g. the deliberate 3s timing probe for blind command
+    # injection) can't freeze the event loop for every other concurrently running
+    # agent. Without this, "multi-agent" would be multi-agent in name only.
+    return await asyncio.to_thread(
+        do_http_request, method, url, ctx.context.run_dir,
         headers=headers, params=params, data=data, timeout_sec=timeout_sec,
     )
 
@@ -74,14 +83,33 @@ async def _finish_tool_use_behavior(
     return ToolsToFinalOutputResult(is_final_output=False, final_output=None)
 
 
-def build_agent(role: Role, config: Config) -> Agent[ScanContext]:
-    if role != "root":
-        raise NotImplementedError(f"role={role!r} lands in M4 (sqli/cmdi/xss specialists)")
+def build_agent(
+    role: Role,
+    config: Config,
+    *,
+    extra_tools: list[Tool] | None = None,
+    model: Model | None = None,
+) -> Agent[ScanContext]:
+    """`model`, if given, overrides the real LitellmModel — used by tests to script a
+    child agent's decisions (see ScanContext.model_override in core/execution.py)."""
+    if role == "root":
+        instructions = ROOT_SYSTEM_PROMPT
+        finish_tool = finish_scan
+        name = "docket-root"
+        base_tools: list[Tool] = [http_request]  # root delegates; it doesn't call `finding` itself
+    elif role in ("sqli", "cmdi", "xss"):
+        instructions = SPECIALIST_SYSTEM_PROMPT
+        finish_tool = agent_finish
+        name = f"docket-{role}"
+        base_tools = [http_request, finding]
+    else:
+        raise ValueError(f"unknown role: {role!r}")
+
     return Agent[ScanContext](
-        name="docket-root",
-        instructions=SYSTEM_PROMPT,
-        tools=[http_request, finding, finish_scan],
-        model=LitellmModel(model=config.llm, api_key=config.llm_api_key),
+        name=name,
+        instructions=instructions,
+        tools=[*base_tools, *(extra_tools or []), finish_tool],
+        model=model or LitellmModel(model=config.llm, api_key=config.llm_api_key),
         tool_use_behavior=_finish_tool_use_behavior,
-        output_type=AgentFinalOutput,  # non-str output_type — see AgentFinalOutput's docstring
+        output_type=AgentFinalOutput,
     )
