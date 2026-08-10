@@ -1,0 +1,110 @@
+"""IN-CONTAINER entrypoint: a long-lived RPC shim the host drives over HTTP.
+
+Why a persistent server rather than `docker exec` per tool call: `browser` (M8) and
+`proxy` (M7) need long-lived in-container state — a live Playwright page, a running
+mitmdump subprocess — that has to stay addressable across many calls. Reaching that
+state from a fresh `docker exec` would mean building an IPC layer anyway; this IS that
+layer, and it also skips ~50-150ms of process spawn per call.
+
+Stdlib only (http.server + the stdlib-only tool modules), so the image needs no Python
+packages installed just to serve tool calls.
+
+Only SANDBOXED tools live here — ones whose effects belong inside the container.
+Host-side tools (`finding`, which must reach the host process's FindingStore via its
+on_finding callback) deliberately stay in the host process; see docket/roles/factory.py.
+"""
+from __future__ import annotations
+
+import json
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from docket.tools.http_request import do_http_request
+from docket.tools.output_store import get as output_get
+from docket.tools.shell import run_shell
+
+PORT = int(os.environ.get("DOCKET_SHIM_PORT", "8765"))
+RUN_DIR = Path(os.environ.get("DOCKET_RUN_DIR", "/work/run"))
+
+# ThreadingHTTPServer will happily dispatch two calls at once, but Playwright's sync
+# API (M8) is not thread-safe and a shared mitmdump handle (M7) has the same problem.
+# One lock serializes every tool call in this container.
+# ponytail: single global lock serializes all tool calls in one sandbox — correct and
+# cheap while one agent drives one sandbox; if agents ever share a container and
+# contend, the fix is a sandbox per agent, not a finer-grained lock.
+_LOCK = threading.Lock()
+
+DISPATCH = {
+    "shell": lambda **kw: run_shell(run_dir=RUN_DIR, **kw),
+    "http_request": lambda **kw: do_http_request(run_dir=RUN_DIR, **kw),
+    "output_get": lambda **kw: output_get(run_dir=RUN_DIR, **kw),
+}
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def _send(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:  # noqa: N802 — stdlib naming
+        if self.path == "/health":
+            self._send(200, {"ok": True, "tools": sorted(DISPATCH)})
+        else:
+            self._send(404, {"ok": False, "error": f"no such path: {self.path}"})
+
+    def do_POST(self) -> None:  # noqa: N802 — stdlib naming
+        if self.path == "/shutdown":
+            self._send(200, {"ok": True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+        if self.path != "/invoke":
+            self._send(404, {"ok": False, "error": f"no such path: {self.path}"})
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            request = json.loads(self.rfile.read(length) or b"{}")
+            tool = request["tool"]
+            args = request.get("args", {})
+        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+            self._send(400, {"ok": False, "error": f"bad request: {exc!r}"})
+            return
+
+        handler = DISPATCH.get(tool)
+        if handler is None:
+            self._send(400, {"ok": False, "error": f"unknown tool: {tool!r}"})
+            return
+
+        try:
+            with _LOCK:
+                result = handler(**args)
+        except Exception as exc:
+            # A failing tool must not take the shim down — the agent needs to see the
+            # error as a tool result and carry on.
+            self._send(200, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            return
+        self._send(200, {"ok": True, "result": result})
+
+    def log_message(self, fmt: str, *args) -> None:
+        # Default BaseHTTPRequestHandler logging spams stderr with a line per call;
+        # `docker logs` is more useful without it.
+        pass
+
+
+def main() -> None:
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    print(f"docket shim listening on 0.0.0.0:{PORT}, run_dir={RUN_DIR}", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

@@ -42,14 +42,42 @@ async def http_request(
 ) -> dict:
     """Send a raw HTTP request to the target and return status/headers/body/timing.
     `data` as an object is form-urlencoded, matching how Flask reads request.form."""
-    # do_http_request is synchronous urllib — run it off-thread so one agent's
-    # blocking call (e.g. the deliberate 3s timing probe for blind command
-    # injection) can't freeze the event loop for every other concurrently running
-    # agent. Without this, "multi-agent" would be multi-agent in name only.
+    # Both branches are synchronous and blocking, so both go off-thread: one agent's
+    # blocking call (e.g. the deliberate 3s timing probe for blind command injection)
+    # must not freeze the event loop for every other concurrently running agent.
+    # Without this, "multi-agent" would be multi-agent in name only.
+    sandbox = ctx.context.sandbox
+    if sandbox is not None:
+        return await asyncio.to_thread(
+            sandbox.call, "http_request", method=method, url=url,
+            headers=headers, params=params, data=data, timeout_sec=timeout_sec,
+        )
     return await asyncio.to_thread(
         do_http_request, method, url, ctx.context.run_dir,
         headers=headers, params=params, data=data, timeout_sec=timeout_sec,
     )
+
+
+@function_tool
+async def shell(
+    ctx: RunContextWrapper[ScanContext],
+    command: str,
+    timeout_sec: int = 30,
+) -> dict:
+    """Run a shell command inside the sandbox container. Security tooling is
+    pre-installed — notably sqlmap at /opt/sqlmap/sqlmap.py. Returns exit code,
+    stdout, stderr and duration."""
+    sandbox = ctx.context.sandbox
+    if sandbox is None:
+        # Hard refusal, not a fallback. An LLM-authored shell command belongs in the
+        # container or nowhere; silently running it on the operator's own machine
+        # would defeat the entire point of having a sandbox.
+        return {
+            "error": "no sandbox available — shell commands are never executed on the "
+            "host. Re-run the scan with the Docker sandbox enabled.",
+            "exit_code": None,
+        }
+    return await asyncio.to_thread(sandbox.call, "shell", command=command, timeout_sec=timeout_sec)
 
 
 @function_tool(strict_mode=False)  # location/poc are open-ended dicts, same reason
@@ -102,6 +130,12 @@ def build_agent(
         finish_tool = agent_finish
         name = f"docket-{role}"
         base_tools = [http_request, finding]
+        # Only the SQLi specialist gets a shell: it's the one role with a real reason
+        # to drive an external tool (sqlmap). cmdi proves itself with timing over HTTP
+        # and xss needs a browser, so handing either a shell would widen the blast
+        # radius for nothing.
+        if role == "sqli":
+            base_tools.append(shell)
     else:
         raise ValueError(f"unknown role: {role!r}")
 

@@ -19,6 +19,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("-n", "--non-interactive", action="store_true", help="Suppress progress streaming; print only the final summary.")
     scan.add_argument("--run-name", default=None, help="Name for this run's artifact directory (default: timestamp-based).")
     scan.add_argument("--max-steps", type=int, default=None, help="Cap on agent turns, for CI runs.")
+    scan.add_argument(
+        "--no-sandbox", action="store_true",
+        help="Run HTTP tooling in this process instead of the Docker sandbox "
+             "(no Docker needed; disables the shell tool, so no sqlmap).",
+    )
     scan.add_argument("--out-dir", default=None, help="Override the default docket_runs/ output root.")
 
     view = sub.add_parser("view", help="Print a past run's findings.")

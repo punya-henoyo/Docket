@@ -41,6 +41,7 @@ def cmd_scan(args) -> int:
         on_finding=store.add,
         config=config,
         run_name=run_name,
+        use_sandbox=not args.no_sandbox,
         **({"max_turns": args.max_steps} if args.max_steps else {}),
     )
     out_dir = run_dir(run_name)

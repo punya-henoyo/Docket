@@ -129,6 +129,7 @@ def test_root_spawns_sqli_and_cmdi_specialists() -> None:
         config=config,
         run_name="mock-multiagent-test",
         model_override=_model_override,
+        use_sandbox=False,  # this test exercises the agent layer, not the container
     )
     elapsed = time.monotonic() - started
 

@@ -32,6 +32,11 @@ class ScanContext:
     role: str = "root"
     coordinator: AgentCoordinator | None = None
     config: Config | None = None
+    # When set, sandboxed tools (shell/http_request) execute inside the container
+    # instead of the host process. `shell` REFUSES to run without it — see
+    # docket/roles/factory.py; running LLM-authored shell commands on the host is
+    # exactly what the sandbox exists to prevent.
+    sandbox: Any | None = None
     # Test-only hook: if set, create_agent (docket/roles/graph_tools.py) uses
     # model_override(role) instead of building a real LitellmModel — lets a mock
     # harness script every spawned agent's decisions without touching production code.

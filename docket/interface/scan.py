@@ -16,6 +16,7 @@ from docket.config import Config, run_dir
 from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.report.models import Finding
+from docket.runtime.sandbox import Sandbox, rewrite_for_container
 from docket.roles.factory import build_agent
 from docket.roles.graph_tools import create_agent, view_agent_graph, wait_for_agents
 from docket.roles.prompts.root import build_root_task
@@ -40,35 +41,55 @@ def run_scan(
     run_name: str = "scan",
     max_turns: int = 20,
     model_override: Callable[[str], Model] | None = None,
+    use_sandbox: bool = True,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
-    script a whole multi-agent run without a live LLM_API_KEY."""
+    script a whole multi-agent run without a live LLM_API_KEY.
+
+    `use_sandbox=False` runs the HTTP tool in this process instead of a container. It
+    exists so the test suite (and a machine without Docker) can exercise the agent
+    layer, and it costs the `shell` tool, which always refuses to run un-sandboxed.
+    """
     cfg = config or Config.from_env()
     coordinator = AgentCoordinator(
         max_agents=cfg.max_agents,
         budget_usd=cfg.max_cost_usd,
         per_agent_reserve_usd=cfg.max_child_cost_usd,
     )
-    context = ScanContext(
-        target_url=target_url,
-        run_dir=run_dir(run_name),
-        on_finding=on_finding,
-        agent_id="root",
-        role="root",
-        coordinator=coordinator,
-        config=cfg,
-        model_override=model_override,
-    )
-    root_model = model_override("root") if model_override else None
-    agent = build_agent(
-        "root", cfg,
-        extra_tools=[create_agent, wait_for_agents, view_agent_graph],
-        model=root_model,
-    )
-    task = build_root_task(target_url, instruction)
+    directory = run_dir(run_name)
 
-    output = asyncio.run(run_agent_loop(agent, context, task, max_turns=max_turns))
+    sandbox = Sandbox(directory / "sandbox") if use_sandbox else None
+    # Inside the container, "127.0.0.1" is the container itself — the agent has to be
+    # handed a hostname that actually reaches the host's app.
+    agent_target = rewrite_for_container(target_url) if sandbox else target_url
+
+    if sandbox is not None:
+        sandbox.start()
+    try:
+        context = ScanContext(
+            target_url=agent_target,
+            run_dir=directory,
+            on_finding=on_finding,
+            agent_id="root",
+            role="root",
+            coordinator=coordinator,
+            config=cfg,
+            model_override=model_override,
+            sandbox=sandbox,
+        )
+        root_model = model_override("root") if model_override else None
+        agent = build_agent(
+            "root", cfg,
+            extra_tools=[create_agent, wait_for_agents, view_agent_graph],
+            model=root_model,
+        )
+        task = build_root_task(agent_target, instruction)
+        output = asyncio.run(run_agent_loop(agent, context, task, max_turns=max_turns))
+    finally:
+        if sandbox is not None:
+            sandbox.stop()
+
     findings = output.get("findings", [])
     return ScanResult(
         success=bool(output.get("success", True)),

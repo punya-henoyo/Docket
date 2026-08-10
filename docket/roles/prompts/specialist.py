@@ -18,9 +18,30 @@ Rules:
   Nothing else ends your turn — call it even if you found nothing.
 """
 
+_SQLMAP_HINT = """Try injection-style payloads (quote-breaking, boolean/comment tricks)
+against the form field(s) on this route to find an auth bypass or data leak.
+
+If you have a `shell` tool, sqlmap is installed at /opt/sqlmap/sqlmap.py and is the
+strongest way to CONFIRM the bug rather than just assert it. Two things about this
+target defeat sqlmap's defaults, so pass these or it will wrongly report "not
+injectable":
+  --ignore-code=401  A failed login answers 401, which sqlmap otherwise treats as an
+                     auth wall and aborts the whole run.
+  Use VALID credentials in --data (plus --string=Welcome). sqlmap's level-1 boolean
+                     payloads append `AND ...` WITHOUT a comment, so the original
+                     password check survives; with a wrong password both the true and
+                     false variants answer 401, the true/false oracle disappears, and
+                     detection fails. With valid credentials the baseline is a 200
+                     "Welcome" and the oracle works.
+A known-good invocation, verified against this target:
+  python3 /opt/sqlmap/sqlmap.py -u <route-url> --data="username=<user>&password=<pass>"
+    -p username --ignore-code=401 --string=Welcome --batch --flush-session
+    --technique=B --level=1 --risk=1 --dbms=sqlite
+Quote the payload/PoC line sqlmap prints ("Parameter: ... Type: ... Payload: ...") as
+your evidence."""
+
 _TECHNIQUE_HINTS: dict[str, str] = {
-    "sqli": "Try injection-style payloads (quote-breaking, boolean/comment tricks) "
-    "against the form field(s) on this route to find an auth bypass or data leak.",
+    "sqli": _SQLMAP_HINT,
     "cmdi": "Try shell metacharacters in the parameter. The response body may never "
     "change regardless of what the injected command does (blind) — a timing "
     "side-channel (e.g. append `; sleep 3` and compare latency to a baseline request) "
