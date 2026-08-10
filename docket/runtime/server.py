@@ -18,9 +18,10 @@ from __future__ import annotations
 import json
 import os
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from docket.tools.browser import browser, browser_close
 from docket.tools.http_request import do_http_request
 from docket.tools.output_store import get as output_get
 from docket.tools.proxy import (
@@ -35,13 +36,14 @@ from docket.tools.shell import run_shell
 PORT = int(os.environ.get("DOCKET_SHIM_PORT", "8765"))
 RUN_DIR = Path(os.environ.get("DOCKET_RUN_DIR", "/work/run"))
 
-# ThreadingHTTPServer will happily dispatch two calls at once, but Playwright's sync
-# API (M8) is not thread-safe and a shared mitmdump handle (M7) has the same problem.
-# One lock serializes every tool call in this container.
-# ponytail: single global lock serializes all tool calls in one sandbox — correct and
-# cheap while one agent drives one sandbox; if agents ever share a container and
-# contend, the fix is a sandbox per agent, not a finer-grained lock.
-_LOCK = threading.Lock()
+# Deliberately single-threaded (HTTPServer, not ThreadingHTTPServer). Playwright's sync
+# API binds its objects to the thread that created them, and ThreadingHTTPServer hands
+# each request to a NEW thread — so a Page created serving one call would be unusable
+# from the next. Since a global lock was already serializing every tool call anyway,
+# threading bought nothing and would only have broken the browser.
+# ponytail: one sandbox serves one agent's calls in order — correct and cheap here; if
+# agents ever need to share a container concurrently the fix is a sandbox per agent,
+# not a threaded shim.
 
 DISPATCH = {
     "shell": lambda **kw: run_shell(run_dir=RUN_DIR, **kw),
@@ -52,11 +54,15 @@ DISPATCH = {
     "proxy_list": lambda **kw: proxy_list(run_dir=RUN_DIR, **kw),
     "proxy_get": lambda **kw: proxy_get(run_dir=RUN_DIR, **kw),
     "proxy_replay": lambda **kw: proxy_replay(run_dir=RUN_DIR, **kw),
+    "browser": lambda **kw: browser(run_dir=RUN_DIR, **kw),
 }
 
 
 class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
+    # HTTP/1.0 so each response closes its connection. With a single-threaded server,
+    # HTTP/1.1 keep-alive would let one idle client hold the only request-handling
+    # thread and stall every other call.
+    protocol_version = "HTTP/1.0"
 
     def _send(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode()
@@ -76,10 +82,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/shutdown":
             # Release long-lived in-container resources (mitmdump now; a Playwright
             # browser in M8) before the container is torn down.
-            try:
-                proxy_stop()
-            except Exception:
-                pass
+            for release in (proxy_stop, browser_close):
+                try:
+                    release()
+                except Exception:
+                    pass
             self._send(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
@@ -102,8 +109,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            with _LOCK:
-                result = handler(**args)
+            result = handler(**args)
         except Exception as exc:
             # A failing tool must not take the shim down — the agent needs to see the
             # error as a tool result and carry on.
@@ -119,7 +125,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     RUN_DIR.mkdir(parents=True, exist_ok=True)
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    server = HTTPServer(("0.0.0.0", PORT), Handler)
     print(f"docket shim listening on 0.0.0.0:{PORT}, run_dir={RUN_DIR}", flush=True)
     server.serve_forever()
 

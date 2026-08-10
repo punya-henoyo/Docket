@@ -47,7 +47,13 @@ _TECHNIQUE_HINTS: dict[str, str] = {
     "side-channel (e.g. append `; sleep 3` and compare latency to a baseline request) "
     "is a valid, real proof technique.",
     "xss": "Try reflecting an HTML/script payload through the parameter and check "
-    "whether it comes back unescaped in the response body.",
+    "whether it comes back unescaped in the response body.\n"
+    "Seeing your payload echoed in the HTML is only a hint, not proof. If you have a "
+    "`browser` tool, PROVE execution: navigate to the route with an alert() payload "
+    "(e.g. ?q=<script>alert(document.domain)</script>) and check the result's "
+    "`dialog_message` field. A non-null dialog_message means a real DOM parsed and ran "
+    "your script — that is the evidence to quote. Take a `screenshot` too, as a "
+    "supporting artifact.",
 }
 
 

@@ -80,6 +80,29 @@ async def shell(
     return await asyncio.to_thread(sandbox.call, "shell", command=command, timeout_sec=timeout_sec)
 
 
+@function_tool
+async def browser(
+    ctx: RunContextWrapper[ScanContext],
+    action: Literal["navigate", "click", "fill", "get_text", "get_html", "evaluate", "wait_for", "screenshot", "close"],
+    url: str | None = None,
+    selector: str | None = None,
+    text: str | None = None,
+    script: str | None = None,
+    timeout_sec: int = 10,
+) -> dict:
+    """Drive a real Chromium page in the sandbox. Key field in the result:
+    `dialog_message` — if the page raised an alert/confirm/prompt during this action it
+    appears here, which is direct proof a script EXECUTED rather than merely being
+    echoed into the HTML. Use `screenshot` to save visual evidence."""
+    sandbox = ctx.context.sandbox
+    if sandbox is None:
+        return {"ok": False, "error": "no sandbox available — the browser runs only inside the container."}
+    return await asyncio.to_thread(
+        sandbox.call, "browser", action=action, url=url, selector=selector,
+        text=text, script=script, timeout_sec=timeout_sec,
+    )
+
+
 @function_tool(strict_mode=False)  # location/poc are open-ended dicts, same reason
 async def finding(
     ctx: RunContextWrapper[ScanContext],
@@ -136,6 +159,10 @@ def build_agent(
         # radius for nothing.
         if role == "sqli":
             base_tools.append(shell)
+        # Only the XSS specialist gets a browser — it's the one role whose proof
+        # requires a real DOM executing the payload.
+        if role == "xss":
+            base_tools.append(browser)
     else:
         raise ValueError(f"unknown role: {role!r}")
 

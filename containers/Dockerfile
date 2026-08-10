@@ -44,6 +44,15 @@ RUN git clone --depth 1 --branch ${SQLMAP_TAG} \
 # chunk of usual proxy setup that simply evaporates here.
 RUN pip install mitmproxy
 
+# Playwright + Chromium. This is what makes an XSS finding a PROOF rather than an
+# inference: the agent navigates to a reflected alert() payload and captures the real
+# dialog the DOM raises, instead of grepping for its own payload in the HTML.
+# --with-deps lets playwright apt-install Chromium's shared libraries itself, so there
+# is no hand-maintained library list to rot.
+RUN pip install playwright \
+    && playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY docket/ /app/docket/
 
