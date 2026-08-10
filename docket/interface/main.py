@@ -1,19 +1,20 @@
-"""Entrypoint: parse -> run_scan() -> dump -> sys.exit(code).
+"""Entrypoint: parse -> run_scan() -> write report -> sys.exit(code).
 
-Prints a raw JSON dump of findings for now. M9's writer.py takes over persistence
-(report.json/report.sarif) and `view` starts reading real runs — this file's shape
-doesn't change, only what it calls.
+Exit codes are Docket's contract, kept verbatim because it's the actual CI gate:
+0 = clean, 1 = error, 2 = findings present.
 """
 from __future__ import annotations
 
 import json
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
-from docket.config import Config, run_dir
+from docket.config import RUNS_DIR, Config, run_dir
 from docket.interface.cli import build_parser
 from docket.interface.scan import run_scan
 from docket.report.dedupe import FindingStore
+from docket.report.writer import build_report, format_summary, write_report
 
 
 def exit_code(store: FindingStore, scan_ok: bool) -> int:
@@ -26,6 +27,13 @@ def _default_run_name() -> str:
     return "run-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _latest_run() -> Path | None:
+    if not RUNS_DIR.exists():
+        return None
+    runs = [d for d in RUNS_DIR.iterdir() if d.is_dir() and (d / "report.json").exists()]
+    return max(runs, key=lambda d: (d / "report.json").stat().st_mtime, default=None)
+
+
 def cmd_scan(args) -> int:
     store = FindingStore()
     try:
@@ -35,41 +43,60 @@ def cmd_scan(args) -> int:
         return 1
 
     run_name = args.run_name or _default_run_name()
-    result = run_scan(
-        target_url=args.target,
-        instruction=args.instruction,
-        on_finding=store.add,
-        config=config,
-        run_name=run_name,
-        use_sandbox=not args.no_sandbox,
-        **({"max_turns": args.max_steps} if args.max_steps else {}),
-    )
-    out_dir = run_dir(run_name)
-    payload = {
-        "run_name": run_name,
-        "target": args.target,
-        "success": result.success,
-        "summary": result.summary,
-        "findings": [f.model_dump(mode="json") for f in store.findings()],
-    }
-    print(json.dumps(payload, indent=2))
-    print(f"\n({len(store)} finding(s) — artifacts dir: {out_dir})", file=sys.stderr)
+    out_dir = Path(args.out_dir) / run_name if args.out_dir else run_dir(run_name)
 
+    try:
+        result = run_scan(
+            target_url=args.target,
+            instruction=args.instruction,
+            on_finding=store.add,
+            config=config,
+            run_name=run_name,
+            use_sandbox=not args.no_sandbox,
+            **({"max_turns": args.max_steps} if args.max_steps else {}),
+        )
+    except Exception as exc:
+        # Still persist whatever the agents managed to confirm before the failure —
+        # a crashed scan that found a real bug should not throw that away.
+        if len(store):
+            write_report(
+                store, out_dir, run_name=run_name, target=args.target,
+                summary=f"scan failed: {exc}", success=False,
+            )
+        print(f"error: scan failed: {exc}", file=sys.stderr)
+        return 1
+
+    paths = write_report(
+        store, out_dir,
+        run_name=run_name, target=args.target, summary=result.summary,
+        cost_usd=result.cost_usd, agents_spawned=result.agents_spawned,
+        success=result.success,
+    )
+    report = build_report(
+        store, run_name=run_name, target=args.target, summary=result.summary,
+        cost_usd=result.cost_usd, agents_spawned=result.agents_spawned,
+        success=result.success,
+    )
+    print(format_summary(report, paths=paths))
     return exit_code(store, result.success)
 
 
 def cmd_view(args) -> int:
-    from docket.config import RUNS_DIR
-
-    report_path = RUNS_DIR / (args.run_name or "") / "report.json"
-    if not args.run_name or not report_path.exists():
-        print(
-            "no persisted report yet — `docket view` reads report.json, "
-            "which lands in M9's writer.py. Use `docket scan` and read its stdout for now.",
-            file=sys.stderr,
-        )
+    directory = (RUNS_DIR / args.run_name) if args.run_name else _latest_run()
+    if directory is None or not (directory / "report.json").exists():
+        which = args.run_name or "any run"
+        print(f"error: no report found for {which} under {RUNS_DIR}", file=sys.stderr)
         return 1
-    print(report_path.read_text())
+
+    if args.format == "sarif":
+        print((directory / "report.sarif").read_text())
+        return 0
+
+    report = json.loads((directory / "report.json").read_text())
+    if args.format == "json":
+        print(json.dumps(report, indent=2))
+    else:
+        print(format_summary(report, full=args.full))
     return 0
 
 

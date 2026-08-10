@@ -46,6 +46,11 @@ async def create_agent(
         coordinator=coordinator,
         config=parent.config,
         model_override=parent.model_override,
+        # Children share the parent's sandbox. Without this they'd get sandbox=None and
+        # their shell/browser tools would refuse to run. Sharing is safe: the shim is
+        # single-threaded, so concurrent children's tool calls queue there rather than
+        # racing — they still reason in parallel, only their sandbox calls serialize.
+        sandbox=parent.sandbox,
     )
     child_agent = build_agent(role, parent.config, model=child_model)
     child_task = build_specialist_task(role, target_route, task)
