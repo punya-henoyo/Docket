@@ -20,9 +20,18 @@ class ScriptedModel(Model):
     so far — lets a later step reference an earlier step's real result (e.g.
     finish_scan referencing the finding_id a `finding` call actually returned)."""
 
-    def __init__(self, script: list[tuple[str, dict | callable]]) -> None:
+    def __init__(
+        self,
+        script: list[tuple[str, dict | callable]],
+        tokens_per_turn: tuple[int, int] = (0, 0),
+    ) -> None:
+        """tokens_per_turn=(input, output) makes each faked turn report real token
+        usage, so the cost/budget hooks (docket/core/execution.py) have something to
+        charge — the only way to exercise budget enforcement without a live provider.
+        Defaults to (0, 0): free turns, so existing tests never trip a budget."""
         self._script = script
         self._step = 0
+        self._tokens_per_turn = tokens_per_turn
 
     @staticmethod
     def _tool_outputs(input_items) -> dict[str, dict]:
@@ -54,7 +63,14 @@ class ScriptedModel(Model):
             type="function_call", call_id=f"call_{self._step}", name=name,
             arguments=json.dumps(args), id=f"fc_{self._step}",
         )
-        return ModelResponse(output=[call], usage=Usage(), response_id=f"resp_{self._step}", request_id=None)
+        prompt_tokens, completion_tokens = self._tokens_per_turn
+        usage = Usage(
+            requests=1,
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        )
+        return ModelResponse(output=[call], usage=usage, response_id=f"resp_{self._step}", request_id=None)
 
     async def stream_response(self, *args, **kwargs):
         raise NotImplementedError("ScriptedModel is non-streaming only")

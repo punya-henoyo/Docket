@@ -45,7 +45,11 @@ def run_scan(
     child it spawns) instead of building a real LitellmModel — the hook tests use to
     script a whole multi-agent run without a live LLM_API_KEY."""
     cfg = config or Config.from_env()
-    coordinator = AgentCoordinator(max_agents=cfg.max_agents)
+    coordinator = AgentCoordinator(
+        max_agents=cfg.max_agents,
+        budget_usd=cfg.max_cost_usd,
+        per_agent_reserve_usd=cfg.max_child_cost_usd,
+    )
     context = ScanContext(
         target_url=target_url,
         run_dir=run_dir(run_name),
@@ -70,5 +74,6 @@ def run_scan(
         success=bool(output.get("success", True)),
         summary=output.get("summary", ""),
         finding_count=len(findings),
+        cost_usd=round(coordinator.spent_usd, 6),
         agents_spawned=len(coordinator.agents) + 1,  # +1 for root itself
     )

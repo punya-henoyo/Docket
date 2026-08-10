@@ -31,7 +31,12 @@ class AgentRuntime:
 
 
 class AgentCoordinator:
-    def __init__(self, max_agents: int = 6) -> None:
+    def __init__(
+        self,
+        max_agents: int = 6,
+        budget_usd: float = 2.0,
+        per_agent_reserve_usd: float = 0.75,
+    ) -> None:
         self._lock = asyncio.Lock()
         self.max_agents = max_agents
         self.agents: dict[str, AgentRuntime] = {}
@@ -41,6 +46,15 @@ class AgentCoordinator:
         self.parent_of: dict[str, str | None] = {}
         self.results: dict[str, dict] = {}
         self.errors: dict[str, str] = {}
+        # Budgets: one scan-wide ceiling, plus a per-child reserve so one runaway
+        # specialist can't eat the whole scan. Root is deliberately NOT reserve-capped
+        # (register() is children-only, so it never gets a reserve entry) — root is the
+        # aggregator, and cutting it off early loses every child's reported findings.
+        self.budget_usd = budget_usd
+        self.per_agent_reserve_usd = per_agent_reserve_usd
+        self.spent_usd = 0.0
+        self.agent_spent: dict[str, float] = {}
+        self.reserves: dict[str, float] = {}
 
     async def register(self, agent_id: str, *, name: str, role: str, parent_id: str | None) -> None:
         async with self._lock:
@@ -51,6 +65,10 @@ class AgentCoordinator:
             self.names[agent_id] = name
             self.roles[agent_id] = role
             self.parent_of[agent_id] = parent_id
+            # Never let a child reserve exceed what's actually left in the scan budget.
+            self.reserves[agent_id] = min(
+                self.per_agent_reserve_usd, max(0.0, self.budget_usd - self.spent_usd)
+            )
 
     async def attach_task(self, agent_id: str, task: asyncio.Task) -> None:
         async with self._lock:
@@ -68,6 +86,31 @@ class AgentCoordinator:
             self.statuses[agent_id] = status
             self.results[agent_id] = result
         self.agents[agent_id].wake.set()
+
+    async def record_spend(self, agent_id: str, usd: float) -> None:
+        async with self._lock:
+            self.spent_usd += usd
+            self.agent_spent[agent_id] = self.agent_spent.get(agent_id, 0.0) + usd
+
+    def over_budget(self, agent_id: str) -> str | None:
+        """Returns a human-readable reason if `agent_id` must stop now, else None.
+
+        Checked BEFORE each model turn (see BudgetHooks in core/execution.py) rather
+        than after, so the cutoff never pays for the turn that breaches it. A hard
+        cutoff, with no negotiated "wrap up" turn — at lab scale a well-behaved run
+        against vulnshop should never come close, so the extra machinery would be
+        speculative.
+        # ponytail: hard cutoff, no graceful wrap-up turn — add one if real runs start
+        # hitting the cap often enough that losing the final turn's context matters.
+        """
+        if self.spent_usd >= self.budget_usd:
+            return f"scan budget exhausted (${self.spent_usd:.4f} of ${self.budget_usd:.2f})"
+        reserve = self.reserves.get(agent_id)
+        if reserve is not None:
+            spent = self.agent_spent.get(agent_id, 0.0)
+            if spent >= reserve:
+                return f"agent reserve exhausted (${spent:.4f} of ${reserve:.2f})"
+        return None
 
     async def deliver_message(self, target_agent_id: str, message: dict) -> None:
         async with self._lock:
@@ -121,7 +164,30 @@ def demo() -> None:
         graph = coordinator.view_graph()
         assert graph["counts"] == {"completed": 1, "pending": 1}
 
+    async def _budgets() -> None:
+        c = AgentCoordinator(max_agents=6, budget_usd=1.00, per_agent_reserve_usd=0.30)
+        await c.register("k1", name="child", role="sqli", parent_id="root")
+        assert c.over_budget("k1") is None
+
+        # Per-child reserve trips before the scan-wide budget does.
+        await c.record_spend("k1", 0.30)
+        assert "reserve exhausted" in c.over_budget("k1")
+        # ...and root, which has no reserve entry, is unaffected by it.
+        assert c.over_budget("root") is None
+
+        # Scan-wide budget catches everyone, root included.
+        await c.record_spend("root", 0.75)
+        assert c.spent_usd >= 1.00
+        assert "scan budget exhausted" in c.over_budget("root")
+
+        # A late child's reserve is clamped to what's actually left (nothing here).
+        c2 = AgentCoordinator(budget_usd=0.50, per_agent_reserve_usd=0.40)
+        await c2.record_spend("root", 0.45)
+        await c2.register("k2", name="late", role="xss", parent_id="root")
+        assert abs(c2.reserves["k2"] - 0.05) < 1e-9, c2.reserves["k2"]
+
     asyncio.run(_run())
+    asyncio.run(_budgets())
     print("core.agents: ok")
 
 
