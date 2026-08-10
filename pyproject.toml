@@ -5,6 +5,7 @@ description = "Lab-scale autonomous pentesting agent, Docket-style, targeting vu
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "openai-agents[litellm]>=0.19,<0.20",
     "pydantic>=2",
     "python-dotenv>=1",
 ]

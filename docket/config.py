@@ -10,9 +10,15 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from agents import set_tracing_disabled
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# docket runs via LiteLLM, not the OpenAI API — the SDK's default trace export target
+# is OpenAI's platform, which is both irrelevant here and not what "nothing leaves
+# your machine" (this project's own reporting philosophy) should allow by default.
+set_tracing_disabled(True)
 
 RUNS_DIR = Path(__file__).resolve().parent.parent / "docket_runs"
 

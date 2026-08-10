@@ -1,8 +1,8 @@
 """Entrypoint: parse -> run_scan() -> dump -> sys.exit(code).
 
-M1 prints a raw JSON dump of the (currently stubbed) findings. M9's writer.py takes
-over persistence (report.json/report.sarif) and `view` starts reading real runs —
-this file's shape doesn't change, only what it calls.
+Prints a raw JSON dump of findings for now. M9's writer.py takes over persistence
+(report.json/report.sarif) and `view` starts reading real runs — this file's shape
+doesn't change, only what it calls.
 """
 from __future__ import annotations
 
@@ -34,14 +34,15 @@ def cmd_scan(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    run_name = args.run_name or _default_run_name()
     result = run_scan(
         target_url=args.target,
         instruction=args.instruction,
         on_finding=store.add,
         config=config,
+        run_name=run_name,
+        **({"max_turns": args.max_steps} if args.max_steps else {}),
     )
-
-    run_name = args.run_name or _default_run_name()
     out_dir = run_dir(run_name)
     payload = {
         "run_name": run_name,
