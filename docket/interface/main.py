@@ -12,7 +12,7 @@ from pathlib import Path
 
 from docket.config.settings import RUNS_DIR, Config, run_dir
 from docket.interface.cli import build_parser
-from docket.interface.scan import run_scan
+from docket.core.runner import run_scan
 from docket.report.dedupe import FindingStore
 from docket.report.writer import build_report, format_summary, write_report
 
@@ -53,6 +53,7 @@ def cmd_scan(args) -> int:
             config=config,
             run_name=run_name,
             use_sandbox=not args.no_sandbox,
+            store=store,
             **({"max_turns": args.max_steps} if args.max_steps else {}),
         )
     except Exception as exc:

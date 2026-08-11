@@ -2,7 +2,7 @@
 
 Everything here is scan-wide and constant across a process run. Per-invocation values
 (target URL, instruction) are CLI args / function params, not env vars — see
-docket/interface/scan.py.
+docket/core/runner.py.
 """
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ from pathlib import Path
 from agents import set_tracing_disabled
 from dotenv import load_dotenv
 
+from docket.core.paths import run_dir_for, runs_base_dir
+
 load_dotenv()
 
 # docket runs via LiteLLM, not the OpenAI API — the SDK's default trace export target
@@ -20,7 +22,11 @@ load_dotenv()
 # your machine" (this project's own reporting philosophy) should allow by default.
 set_tracing_disabled(True)
 
-RUNS_DIR = Path(__file__).resolve().parent.parent / "docket_runs"
+# Runs land under the CURRENT WORKING DIRECTORY (matching Docket's docket_runs/), not
+# next to the source. Deriving it from __file__ put artifacts inside the installed
+# package once config.py became config/settings.py — a silent relocation that would
+# also have shipped run data inside a wheel.
+RUNS_DIR = runs_base_dir()
 
 
 @dataclass(slots=True)
@@ -48,8 +54,9 @@ class Config:
 
 
 def run_dir(run_name: str) -> Path:
-    """Directory a given run's artifacts (findings/, artifacts/, report.json, ...) live under."""
-    path = RUNS_DIR / run_name
+    """Directory a given run's artifacts (findings/, artifacts/, report.json, ...) live
+    under. Layout itself is owned by docket/core/paths.py; this just creates it."""
+    path = run_dir_for(run_name)
     path.mkdir(parents=True, exist_ok=True)
     return path
 

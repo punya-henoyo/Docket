@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mock_model import ScriptedModel
 from docket.config.settings import Config
-from docket.interface.scan import run_scan
+from docket.core.runner import run_scan
 from docket.report.dedupe import FindingStore
 
 TARGET = "http://127.0.0.1:5000"

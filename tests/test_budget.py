@@ -18,7 +18,8 @@ from agents import Agent
 from mock_model import ScriptedModel
 from docket.config.settings import Config, run_dir
 from docket.core.agents import AgentCoordinator
-from docket.core.execution import ScanContext, estimate_cost, run_agent_loop
+from docket.core.execution import ScanContext, run_agent_loop
+from docket.core.hooks import estimate_cost
 from docket.report.dedupe import FindingStore
 from docket.agents.factory import build_agent
 from docket.tools.finish.tool import agent_finish

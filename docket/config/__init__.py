@@ -1,5 +1,6 @@
-"""Configuration package. Mirrors docket/config/'s split; `settings` holds the loaded
-Config and run-path helpers."""
-from docket.config.settings import RUNS_DIR, Config, run_dir
+"""Configuration package (mirrors docket/config/).
 
-__all__ = ["RUNS_DIR", "Config", "run_dir"]
+Intentionally does NOT re-export from `settings`: importing it here makes
+`python -m docket.config.settings` double-import the module and emit a RuntimeWarning,
+and every caller already imports `docket.config.settings` explicitly.
+"""

@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mock_model import ScriptedModel
 from docket.config.settings import Config, run_dir
-from docket.interface.scan import run_scan
+from docket.core.runner import run_scan
 from docket.report.dedupe import FindingStore
 from docket.report.writer import build_report, format_summary, write_report
 from docket.runtime.sandbox import rewrite_for_container
