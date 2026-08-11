@@ -1,167 +1,208 @@
+<div align="center">
+
 # docket
 
-> ⚠️ **Only point this at systems you own or are authorised to test.**
+**Autonomous pentesting agents that report a vulnerability only once they have reproduced it.**
 
-`docket` is an autonomous pentesting tool: LLM agents that exploit a target *dynamically*
-and file a finding only once they have reproduced it with a working proof-of-concept.
+A docket is a register where nothing is entered without evidence. That is the whole design.
 
-The name is the point. A docket is a register where nothing is entered without evidence.
+</div>
 
-Built for internal use: no accounts, no upload, no outbound calls beyond the target and
-the providers you configure.
+> [!WARNING]
+> Only point docket at systems you own or have written authorisation to test. It sends
+> real exploit payloads, runs real tooling, and will change state on the target.
 
-## What it actually proves
+---
 
-A finding **cannot exist** without evidence. `PoC.request` and `PoC.response` are
-validated non-empty at construction, and the coercion in front of that validator refuses
-to manufacture content — a `null` from the model becomes `""` and is rejected, not the
-string `"None"`. `register_finding` returns an explicit refusal naming the missing field,
-so the agent is told to go and reproduce the bug rather than hitting an opaque error.
+## Why docket
 
-| Vuln class | How it's proven |
+Most scanners tell you what *might* be wrong. Pattern matchers flag a line of code;
+crawlers flag a reflected string. Both hand you a queue of maybes, and somebody spends
+their afternoon deciding which ones are real.
+
+docket only files a finding it has already exploited, and attaches the request it sent and
+the response it got back. There is no "likely" severity and no confidence score to
+interpret. A finding is a reproduction or it does not exist.
+
+That is enforced by the type system, not by convention. `PoC.request` and `PoC.response`
+are validated non-empty at construction, and the layer in front of them refuses to
+manufacture content — a `null` from the model becomes `""` and is rejected. When an agent
+tries to file a claim instead of a proof, the tool refuses and tells it to go and reproduce
+the bug first.
+
+## How a scan runs
+
+A root agent maps the target, then delegates one vulnerability class and one route to each
+specialist. Specialists work in parallel, each with a deliberately narrow tool set, and
+each has to prove its own finding.
+
+```
+root ──┬── sqli   → POST /login    shell + sqlmap        → confirmed injection + DBMS
+       ├── cmdi   → GET  /export   timing side-channel   → measured latency delta
+       └── xss    → GET  /search   real Chromium         → captured alert() dialog
+```
+
+Every agent action happens inside a Docker container, never on your machine. `shell` and
+`browser` refuse outright when there is no sandbox rather than falling back to the host.
+
+## Proof, per vulnerability class
+
+| Class | What counts as proof |
 |---|---|
-| SQL injection | **sqlmap** confirms the injection and fingerprints the DBMS |
-| Command injection (blind) | **Timing side-channel** — stdout never reaches the response, so an injected `sleep` and a measured latency delta is the oracle |
-| Reflected XSS | **Real Chromium** raises `alert()`; the captured dialog proves the script *executed*, not merely echoed |
+| **SQL injection** | `sqlmap` confirms the injection and fingerprints the DBMS. Not a payload that "looked reflected" |
+| **Blind command injection** | A timing side-channel. Stdout never reaches the response, so an injected `sleep` plus a measured latency delta is the only honest oracle |
+| **Reflected XSS** | Real Chromium raises `alert()` and the dialog is captured. Proves the script *executed*, rather than that your payload appeared in the HTML |
 
-## Quickstart
+## Agent capabilities
+
+Each specialist gets `http_request`, `finding`, `thinking`, `notes`, `todo`, `web_search`,
+`load_skill` and `agent_finish`. On top of that:
+
+- **`shell`** (sqli only) — arbitrary commands in the container. sqlmap is pinned and
+  pre-installed
+- **`browser`** (xss only) — Playwright and Chromium, with dialog capture and screenshots
+- **`create_agent` / `wait_for_agents` / `view_agent_graph`** (root only) — delegation and
+  aggregation
+- **Skills** — markdown playbooks agents load on demand, so target-specific tradecraft
+  lives in text rather than in prompts. Ships with root coordination, blind-injection
+  technique, API-spec testing and source-aware review
+- **Notes and todos** — a shared scratchpad, so one specialist's discovery is visible to
+  its siblings instead of being rediscovered
+
+Budgets are enforced per agent and scan-wide, checked before each turn, so a run cannot
+quietly cost more than you allowed.
+
+## Install
+
+Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and Docker.
 
 ```bash
 uv sync
-cp .env.example .env          # add DOCKET_LLM + your key
-make image                    # build the sandbox container
-docket doctor                 # check LLM key, Docker, search
-
-docket scan --target http://127.0.0.1:5000            # live progress
-docket scan --target ... --tui                        # live TUI
-docket scan --target ... -n --run-name baseline       # CI mode
-docket view baseline --full                           # terminal report
-docket view baseline --web                            # local dashboard
+cp .env.example .env      # set DOCKET_LLM and your key
+make image                # build the sandbox container
+docket doctor             # verify key, Docker and search
 ```
 
-Exit codes: `0` clean, `1` error, `2` findings present — so it works as a CI gate.
+## Usage
 
-`--no-sandbox` runs without Docker; it costs you `shell` (sqlmap) and `browser` (the XSS
-execution proof).
+```bash
+# scan, with live progress
+docket scan --target http://127.0.0.1:5000
 
-## Architecture
+# watch it work in a terminal UI
+docket scan --target http://127.0.0.1:5000 --tui
 
-`engine/` is only a source root; the importable package is `docket`, so imports read
-`from docket.core...` no matter what the wrapper is called.
+# hand the agents context they could not discover alone
+docket scan --target https://staging.internal \
+  --instruction "Seeded login is admin/admin123. Skip /billing, it is third-party."
 
-| Path | Role |
+# CI mode: no progress output, named run, exit code as the gate
+docket scan --target https://staging.internal -n --run-name nightly
+
+# no Docker available — costs you shell and browser
+docket scan --target http://127.0.0.1:5000 --no-sandbox
+```
+
+Review a past run:
+
+```bash
+docket view nightly              # summary
+docket view nightly --full       # every finding with its PoC
+docket view nightly --web        # local dashboard
+```
+
+**Exit codes:** `0` clean, `1` error, `2` findings present. So `docket scan` works directly
+as a pipeline gate.
+
+## Output
+
+Every run writes to `docket_runs/<name>/`:
+
+| Artifact | What it is |
 |---|---|
-| `engine/docket/core/` | `AgentCoordinator`, run loop, budget hooks, sessions, runner |
-| `engine/docket/agents/` | agent factory (`SandboxAgent` + Filesystem/Shell capabilities) + prompts |
-| `engine/docket/tools/` | 15 tool packages, plus the shared `output_store` module |
-| `engine/docket/runtime/` | Docker sandbox, in-container RPC shim, SDK sandbox session |
-| `engine/docket/llm/` | context budget + conversation compaction |
-| `engine/docket/report/` | finding model, dedupe, SARIF 2.1.0, writer, usage ledger |
-| `engine/docket/interface/` | CLI, Textual TUI, local web viewer |
-| `engine/docket/skills/` | markdown playbooks agents load on demand |
+| `report.json` | Findings with full PoC evidence, cost and token ledger |
+| `report.sarif` | SARIF 2.1.0, ready for GitHub code scanning. Stable fingerprints, CWE tags |
+| `findings/*.json` | One file per finding |
+| `events.jsonl` | The event stream. Feeds the TUI and the dashboard, live or replayed |
+| `artifacts/` | Screenshots, spooled tool output, captured proxy flows |
 
-Design points worth knowing:
-
-- **Root delegates; specialists prove.** One root agent spawns per-vuln specialists
-  (`sqli`/`cmdi`/`xss`), each scoped to one route. The *custom* tool sets are narrow: only
-  `sqli` gets `shell`, only `xss` gets `browser`. See the caveat under Known limits — with
-  the sandbox on, the SDK's own capabilities widen this.
-- **`shell` and `browser` refuse to run without the sandbox.** No host fallback: an
-  LLM-authored command belongs in the container or nowhere. The only subprocesses docket
-  starts on your machine are `docker` invocations.
-- **A child is registered before its task is spawned.** Registration is `create_agent`'s
-  job, not the child task's, so a root that spawns and waits in one turn sees its children,
-  and a `max_agents` refusal reaches the model instead of vanishing.
-- **A dead child still reports.** A `finally:` block guarantees a terminal status, so a
-  waiting parent can't hang on a task that crashed.
-- **Budgets are enforced pre-turn**, though the charge lands post-turn, so concurrent
-  agents can overshoot by up to one turn each.
-- **Shared artifacts are redacted.** `report.json`, `report.sarif` and
-  `artifacts/proxy_flows.jsonl` pass through `redact()` at the write boundary. The header
-  *name* survives and only the value is replaced (`Authorization: [REDACTED]`), so a PoC
-  stays reproducible once you substitute your own credential. Best-effort pattern matching,
-  not a guarantee.
-- **One event stream** (`events.jsonl`) feeds both the TUI and the web viewer, live or
-  replayed.
+The terminal UI and the web dashboard read the same event stream, so you can watch a run in
+progress or replay a finished one. The dashboard is a single self-contained file with no CDN
+scripts, fonts or remote assets — its only request is to the loopback server serving it.
 
 ## Configuration
 
-`DOCKET_LLM` (any LiteLLM `provider/model`), `LLM_API_KEY` (or a provider-specific var),
-`DOCKET_MAX_COST_USD`, `DOCKET_MAX_CHILD_COST_USD`, `DOCKET_MAX_AGENTS`. Optional real web
-search via `DOCKET_SEARCH_PROVIDER` (`tavily|brave|serper|perplexity|deepseek`) +
-`DOCKET_SEARCH_API_KEY`. A `.env` is loaded automatically. See `.env.example`.
+| Variable | Purpose |
+|---|---|
+| `DOCKET_LLM` | Any LiteLLM `provider/model`, e.g. `anthropic/claude-sonnet-5` |
+| `LLM_API_KEY` | Or a provider-specific variable |
+| `DOCKET_MAX_COST_USD` | Scan-wide budget ceiling. Default `2.00` |
+| `DOCKET_MAX_CHILD_COST_USD` | Per-specialist ceiling. Default `0.75` |
+| `DOCKET_MAX_AGENTS` | Concurrent agent cap. Default `6` |
+| `DOCKET_SEARCH_PROVIDER` | Optional live search: `tavily`, `brave`, `serper`, `perplexity`, `deepseek` |
+| `DOCKET_SEARCH_API_KEY` | Key for the above |
 
-### What leaves the machine
+`.env` is loaded automatically. Provider-agnostic by design: docket routes through LiteLLM,
+so any supported model works without a code change.
 
-Nothing docket collects. There is no telemetry, no analytics, no update ping in any code
-path — see `engine/docket/telemetry/README.md`. Outbound traffic is limited to the scan
-target, the LLM provider in `DOCKET_LLM`, and the search provider if you configure one.
+## Handling of sensitive data
 
-One non-obvious detail, since it took an audit to find: importing `litellm` fetches a model
-price map from `raw.githubusercontent.com` at import time, before any docket code runs.
-`engine/docket/__init__.py` sets `LITELLM_LOCAL_MODEL_COST_MAP=true` to suppress it and use
-the bundled map instead. The cost is that a model newer than the pinned litellm has no
-price entry, which surfaces as a one-time "unpriced model" warning rather than a silent
-`$0.00`. Export `LITELLM_LOCAL_MODEL_COST_MAP=false` if you would rather have current
-prices than the offline guarantee.
+- **No telemetry.** No analytics, no update ping, no crash reporting in any code path.
+  Outbound traffic goes to the scan target, your LLM provider, and your search provider if
+  you configure one. Nothing else. The SDK's trace export is disabled at import, and
+  litellm's import-time price fetch is switched to its bundled map
+- **Shared artifacts are redacted.** `report.json`, `report.sarif` and captured proxy flows
+  pass through redaction at the write boundary. The header name survives and only the value
+  is replaced, so `Authorization: [REDACTED]` still shows what to substitute and the PoC
+  stays reproducible. Best-effort pattern matching, not a guarantee
+- **Your keys never enter the container.** The sandbox receives one environment variable,
+  its run directory. An agent running `env` finds nothing of yours
+- **Everything stays local.** No account, no upload, no dashboard we host
+
+## Current limits
+
+Findings from an audit of this codebase, listed because a security tool that hides its own
+gaps is worse than one that has none.
+
+- **Three vulnerability classes.** Specialists exist for SQL injection, command injection
+  and reflected XSS. Anything else goes untested
+- **Blast radius is wider than the per-role tool lists suggest.** With the sandbox on,
+  every role is a `SandboxAgent` with filesystem and shell capabilities, so all roles have
+  an in-container shell even though only `sqli` is handed the `shell` tool. Still contained,
+  but not least-privilege
+- **Agents can stop without a finish tool.** The structured-output path lets the SDK end a
+  run on a plain message matching the schema, before the finish-tool gate is consulted
+- **Compaction is reactive and can decline.** It runs only after the provider rejects an
+  oversized request, then second-guesses that with a token estimate, and gives up if the
+  estimate disagrees
+- **No scope controls or rate limiting.** Out-of-scope routes are avoided only by asking
+  in `--instruction`
+- **`--out-dir` splits a run across two directories**, so `docket view` cannot find it.
+  Screenshots land one directory below where the dashboard looks
+- **The intercepting proxy is built but unreachable** from any agent, and per-request model
+  settings are not applied
+
+## Roadmap
+
+In rough priority order:
+
+1. **More classes** — IDOR/BOLA, SSRF, path traversal, auth bypass, SSTI, open redirect.
+   Adding one is a role literal, a prompt and a tool grant
+2. **Authenticated scanning** — a real login flow and session reuse, instead of pasting
+   credentials into `--instruction`
+3. **Scope and rate controls** — allow and deny lists, request budgets. Table stakes for
+   pointing this at anything shared
+4. **Expose the proxy** — capture, modify and replay is already built and tested, just not
+   registered as a tool
+5. **Source-aware scanning** — the plumbing accepts a source path but nothing mounts or
+   reads it
+6. **A packaged CI action** — SARIF and exit codes are already there, so this is thin
 
 ## Development
 
-```bash
-make check      # 43 module self-checks — no Docker, no API key
-make test       # 12 test scripts (needs Docker)
-```
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for adding tools, skills and vulnerability
+classes, and [`AGENTS.md`](AGENTS.md) for the invariants you must not break.
 
-Every module carries a runnable `demo()`. Tests are plain-assert scripts, no pytest. Run
-modules as `python -m docket.x.y`, never `python engine/docket/x/y.py`. The test target is
-`tests/fixtures/target_app.py` — self-contained, intentionally vulnerable, loopback only.
-See `AGENTS.md` and `CONTRIBUTING.md`.
+## License
 
-CI runs `make check` plus the non-Docker tests on every push, and builds the sandbox image
-and asserts the shim registers all 12 tools whenever the image or package changes. The
-container-backed tests are local-only for an environment reason documented in
-`.github/README.md`. There is no lint job yet, also explained there.
-
-## Verification status
-
-The tool is exercised end-to-end: a 4-agent run against the fixture target produces 3
-findings with evidence extracted from real tool output — sqlmap's own verdict line, a
-measured latency delta, and a real DOM dialog — plus valid SARIF.
-
-**Not yet verified with a live model.** The agent tests drive a `ScriptedModel` through the
-*real* SDK pipeline: every tool call genuinely executes, but the "which tool next" decision
-is scripted. That proves the harness end to end; it does not prove a real model reasons its
-way there. Add `DOCKET_LLM` + `LLM_API_KEY` to `.env` and run a scan to close that gap.
-
-## Known limits
-
-Findings from a three-agent audit of this codebase. Listed because a security tool that
-hides its own gaps is worse than one that has none.
-
-**Blast radius is wider than the per-role tool lists suggest.** With the sandbox on, every
-role is built as a `SandboxAgent` with `Filesystem` + `Shell` capabilities, which add the
-SDK's `exec_command`, `apply_patch` and `view_image`. So `root`, `cmdi` and `xss` each have
-an in-container shell even though only `sqli` is given the custom `shell` tool. Everything
-still executes inside the container — this is a least-privilege gap, not a host-safety one.
-
-**Agents can stop without a finish tool.** `tool_use_behavior` is correct, but a non-`str`
-`output_type` lets the SDK end a run on any plain assistant message matching that schema,
-before the tool-use gate is consulted. When it happens the result is mangled: the structured
-output is stringified into `summary` and the agent records as failed.
-
-**Compaction is reactive and can decline.** It runs only after the provider rejects the
-request, then second-guesses that with a 4-chars-per-token estimate that ignores the system
-prompt and tool schemas. If the estimate disagrees, the agent dies instead of trimming.
-
-**Not wired up.** The intercepting proxy is unreachable from any agent (no `proxy` tool is
-registered, though the image still installs mitmproxy). `core/inputs.py`'s model settings
-are never applied, so prompt caching, reasoning effort and the request timeout are inert.
-`telemetry/logging.py` has no callers, so `DOCKET_LOG_LEVEL` does nothing.
-
-**Smaller sharp edges.** `--out-dir` splits a run's files across two directories, so
-`docket view` cannot find the run. Screenshots land under `<run>/sandbox/artifacts/` while
-the web viewer looks in `<run>/artifacts/`, so they 404. `register_finding` discards
-`screenshot_path` and `dialog_message`. Dedupe merge upgrades severity but keeps the weaker
-PoC. `dedupe_key` collides if a path or parameter contains a literal `|`. The viewer's
-containment check is a string-prefix compare, so a sibling directory sharing the run's name
-prefix is readable over loopback.
+Apache 2.0.
