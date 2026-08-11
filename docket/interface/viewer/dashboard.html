@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docket — scan report</title>
+<style>
+  /* Single file, no CDN: a security tool's local dashboard should not make outbound
+     requests just to render. Light palette on :root, dark under prefers-color-scheme
+     and an explicit toggle, so both themes are always defined. */
+  :root {
+    --bg:#f6f7f9; --panel:#fff; --ink:#12141a; --muted:#5b6472; --line:#e2e5ea;
+    --accent:#3457d5; --crit:#8b2fbf; --high:#c62828; --med:#b26a00; --low:#0277bd; --info:#5b6472;
+    --ok:#1b7f4b; --run:#b26a00;
+  }
+  :root[data-theme="dark"], :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --bg:#0f1116; --panel:#171a21; --ink:#e8eaed; --muted:#9aa3b2; --line:#262b35;
+      --accent:#7f9cff; --crit:#c77dff; --high:#ff6b6b; --med:#ffb74d; --low:#4fc3f7; --info:#9aa3b2;
+      --ok:#4ade80; --run:#ffb74d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#0f1116; --panel:#171a21; --ink:#e8eaed; --muted:#9aa3b2; --line:#262b35;
+    --accent:#7f9cff; --crit:#c77dff; --high:#ff6b6b; --med:#ffb74d; --low:#4fc3f7; --info:#9aa3b2;
+    --ok:#4ade80; --run:#ffb74d;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  code, pre, .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { position:sticky; top:0; z-index:5; display:flex; flex-wrap:wrap; gap:12px; align-items:center;
+           padding:12px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; letter-spacing:.02em; }
+  .target { color:var(--muted); font-size:13px; word-break:break-all; }
+  .spacer { flex:1 1 auto; }
+  .pill { padding:2px 10px; border-radius:999px; font-size:12px; border:1px solid var(--line); }
+  .pill.running { color:var(--run); border-color:var(--run); }
+  .pill.done { color:var(--ok); border-color:var(--ok); }
+  button { font:inherit; color:var(--ink); background:var(--panel); border:1px solid var(--line);
+           border-radius:8px; padding:5px 12px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  main { padding:20px; max-width:1400px; margin:0 auto; display:grid; gap:16px;
+         grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; min-width:0; }
+  section h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+  .wide { grid-column:1/-1; }
+  .stats { display:flex; flex-wrap:wrap; gap:10px; }
+  .stat { flex:1 1 110px; border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .stat b { display:block; font-size:22px; line-height:1.2; }
+  .stat span { color:var(--muted); font-size:12px; }
+  .sev-critical{color:var(--crit)} .sev-high{color:var(--high)} .sev-medium{color:var(--med)}
+  .sev-low{color:var(--low)} .sev-info{color:var(--info)}
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:12px; color:var(--muted); font-weight:600; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:color-mix(in srgb, var(--accent) 8%, transparent); }
+  .scroll { overflow-x:auto; }
+  .tree { list-style:none; margin:0; padding:0; }
+  .tree li { padding:5px 0; border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex:none; }
+  .muted { color:var(--muted); font-size:12px; }
+  .log { max-height:340px; overflow:auto; }
+  .log div { padding:3px 0; border-bottom:1px solid var(--line); font-size:12.5px; word-break:break-word; }
+  dialog { border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink);
+           max-width:min(820px,92vw); width:100%; padding:0; }
+  dialog::backdrop { background:rgba(0,0,0,.5); }
+  .dlg-head { display:flex; align-items:center; gap:10px; padding:14px 16px; border-bottom:1px solid var(--line); }
+  .dlg-body { padding:16px; }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px;
+        overflow:auto; max-height:260px; font-size:12.5px; }
+  .empty { color:var(--muted); padding:10px 0; }
+  @media (max-width:640px){ main{padding:12px} header{padding:10px 12px} }
+</style>
+</head>
+<body>
+<header>
+  <h1>docket</h1>
+  <span class="target" id="target">—</span>
+  <span class="pill" id="state">…</span>
+  <span class="spacer"></span>
+  <button id="theme" title="Toggle theme">◐</button>
+  <button id="sarif">SARIF</button>
+</header>
+
+<main>
+  <section class="wide">
+    <h2>Summary</h2>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section class="wide">
+    <h2>Findings</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Severity</th><th>Type</th><th>Route</th><th>Parameter</th><th>Title</th></tr></thead>
+        <tbody id="findings"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="findings-empty" hidden>No findings recorded.</div>
+  </section>
+
+  <section>
+    <h2>Agents</h2>
+    <ul class="tree" id="agents"></ul>
+  </section>
+
+  <section>
+    <h2>Activity</h2>
+    <div class="log" id="transcript"></div>
+  </section>
+
+  <section>
+    <h2>Notes</h2>
+    <div class="log" id="notes"></div>
+  </section>
+
+  <section>
+    <h2>Tasks</h2>
+    <div class="log" id="todos"></div>
+  </section>
+</main>
+
+<dialog id="detail">
+  <div class="dlg-head">
+    <strong id="d-title">Finding</strong><span class="spacer"></span>
+    <button onclick="document.getElementById('detail').close()">Close</button>
+  </div>
+  <div class="dlg-body" id="d-body"></div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const SEV = ["critical","high","medium","low","info"];
+let DATA = null;
+
+const themeKey = "docket-theme";
+$("theme").onclick = () => {
+  const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem(themeKey, next); } catch {}
+};
+try { const t = localStorage.getItem(themeKey); if (t) document.documentElement.setAttribute("data-theme", t); } catch {}
+$("sarif").onclick = () => window.open("/report.sarif", "_blank");
+
+function renderStats(d) {
+  const counts = d.severity_counts || {};
+  const cards = [
+    `<div class="stat"><b>${d.finding_count ?? 0}</b><span>findings</span></div>`,
+    ...SEV.filter(s => counts[s]).map(s =>
+      `<div class="stat"><b class="sev-${s}">${counts[s]}</b><span>${s}</span></div>`),
+    `<div class="stat"><b>${(d.agents || []).length}</b><span>agents</span></div>`,
+  ];
+  const usage = d.usage && d.usage.totals;
+  if (usage) cards.push(
+    `<div class="stat"><b>${(usage.total_tokens || 0).toLocaleString()}</b><span>tokens</span></div>`);
+  if (d.cost_usd) cards.push(`<div class="stat"><b>$${Number(d.cost_usd).toFixed(4)}</b><span>cost</span></div>`);
+  $("stats").innerHTML = cards.join("");
+}
+
+function renderFindings(d) {
+  const rows = (d.findings || []).map((f, i) => {
+    const loc = f.location || {};
+    const sev = f.severity || "info";
+    return `<tr data-i="${i}">
+      <td class="sev-${sev}"><strong>${esc(sev)}</strong></td>
+      <td class="mono">${esc(f.rule_id || f.rule_type || "")}</td>
+      <td class="mono">${esc((loc.method || "") + " " + (loc.path || ""))}</td>
+      <td class="mono">${esc(loc.parameter || "—")}</td>
+      <td>${esc(f.title || "")}</td></tr>`;
+  });
+  $("findings").innerHTML = rows.join("");
+  $("findings-empty").hidden = rows.length > 0;
+  $("findings").querySelectorAll("tr").forEach(tr =>
+    tr.onclick = () => showDetail(d.findings[+tr.dataset.i]));
+}
+
+function showDetail(f) {
+  if (!f) return;
+  const loc = f.location || {}, poc = f.poc || {};
+  $("d-title").textContent = f.title || f.rule_id || "Finding";
+  $("d-body").innerHTML = `
+    <p class="muted">${esc(f.severity || "")} · ${esc(f.rule_id || f.rule_type || "")}
+      ${f.cwe ? "· " + esc(f.cwe) : ""} · found by ${esc(f.discovered_by || "—")}</p>
+    <p>${esc(f.description || "")}</p>
+    <p class="mono muted">${esc(loc.method || "")} ${esc(loc.path || "")}
+      ${loc.parameter ? "· parameter: " + esc(loc.parameter) : ""}
+      ${loc.source_file ? "· " + esc(loc.source_file) : ""}</p>
+    ${poc.notes ? `<h3>Steps</h3><p>${esc(poc.notes)}</p>` : ""}
+    ${poc.request ? `<h3>Request</h3><pre>${esc(poc.request)}</pre>` : ""}
+    ${poc.response ? `<h3>Observed</h3><pre>${esc(poc.response)}</pre>` : ""}`;
+  $("detail").showModal();
+}
+
+function renderAgents(d) {
+  const color = { completed:"var(--ok)", running:"var(--run)", failed:"var(--high)",
+                  crashed:"var(--high)", stopped:"var(--muted)", pending:"var(--muted)" };
+  $("agents").innerHTML = (d.agents || []).map(a => `
+    <li style="padding-left:${(a.depth || 0) * 18}px">
+      <span class="dot" style="background:${color[a.status] || "var(--muted)"}"></span>
+      <strong>${esc(a.name || a.agent_id)}</strong>
+      <span class="muted">${esc(a.role)} · ${esc(a.status)} · ${a.tool_calls} calls · ${a.findings} findings</span>
+    </li>`).join("") || `<li class="empty">No agents recorded.</li>`;
+}
+
+function renderLogs(d) {
+  $("transcript").innerHTML = (d.transcript || []).slice(-200).reverse().map(t =>
+    `<div><span class="muted">${esc(t.agent_id)}</span>
+      ${t.kind === "call" ? "→" : "←"} <strong>${esc(t.tool)}</strong>
+      <span class="muted">${esc(JSON.stringify(t.args ?? t.output ?? "").slice(0, 160))}</span></div>`
+  ).join("") || `<div class="empty">No activity recorded.</div>`;
+
+  $("notes").innerHTML = (d.notes || []).map(n =>
+    `<div><span class="muted">${esc(n.author || "")}</span> ${esc(n.text || "")}</div>`
+  ).join("") || `<div class="empty">No notes.</div>`;
+
+  const todos = d.todos || {};
+  const items = Object.entries(todos).flatMap(([agent, list]) =>
+    (list || []).map(t => `<div><span class="muted">${esc(agent)}</span>
+      [${esc(t.status)}] ${esc(t.text)}</div>`));
+  $("todos").innerHTML = items.join("") || `<div class="empty">No tasks.</div>`;
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/run", { cache: "no-store" });
+    DATA = await res.json();
+  } catch { return; }
+  $("target").textContent = DATA.target || "";
+  const state = $("state");
+  state.textContent = DATA.finished ? "finished" : "running";
+  state.className = "pill " + (DATA.finished ? "done" : "running");
+  document.title = `docket — ${DATA.run_name || "scan"}`;
+  renderStats(DATA); renderFindings(DATA); renderAgents(DATA); renderLogs(DATA);
+  // Keep polling only while the scan is live; a finished run is static.
+  if (!DATA.finished) setTimeout(refresh, 1500);
+}
+refresh();
+</script>
+</body>
+</html>
