@@ -94,8 +94,12 @@ def test_xss_role_gets_browser_and_others_do_not() -> None:
     tools = {role: {t.name for t in build_agent(role, cfg).tools} for role in ("sqli", "cmdi", "xss")}
     assert "browser" in tools["xss"] and "shell" not in tools["xss"], tools["xss"]
     assert "shell" in tools["sqli"] and "browser" not in tools["sqli"], tools["sqli"]
-    # cmdi proves itself with HTTP timing alone — no shell, no browser.
-    assert tools["cmdi"] == {"http_request", "finding", "agent_finish"}, tools["cmdi"]
+    # cmdi proves itself with HTTP timing alone — neither shell nor browser.
+    assert not ({"shell", "browser"} & tools["cmdi"]), tools["cmdi"]
+    # Every specialist gets the non-target-touching utilities and its own finish tool.
+    for role, names in tools.items():
+        assert {"http_request", "finding", "agent_finish", "thinking", "notes", "todo",
+                "load_skill", "list_skills", "web_search"} <= names, (role, names)
 
 
 if __name__ == "__main__":

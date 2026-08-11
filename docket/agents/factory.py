@@ -20,7 +20,13 @@ from docket.core.execution import ScanContext
 from docket.tools.finish.tool import AgentFinalOutput, agent_finish, finish_scan
 from docket.agents.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
 from docket.agents.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
+from docket.tools.load_skill.tool import list_skills, load_skill
+from docket.tools.notes.tools import add_note, view_notes
 from docket.tools.reporting.tool import FindingType, register_finding
+from docket.tools.respond.tool import respond as respond_impl
+from docket.tools.thinking.tool import think
+from docket.tools.todo.tools import set_todos, view_todos
+from docket.tools.web_search.tool import web_search
 from docket.tools.http_request.tools import do_http_request
 
 Role = Literal["root", "sqli", "cmdi", "xss"]
@@ -123,6 +129,83 @@ async def finding(
     )
 
 
+@function_tool
+async def thinking(ctx: RunContextWrapper[ScanContext], thought: str) -> dict:
+    """Record your reasoning before acting. Use it to plan which payload to try and
+    why. It performs no action — its value is that the reasoning behind a choice ends
+    up in the transcript where a human reviewer can see it."""
+    return think(thought)
+
+
+@function_tool
+async def notes(
+    ctx: RunContextWrapper[ScanContext],
+    action: Literal["add", "view"],
+    text: str | None = None,
+    tags: list[str] | None = None,
+) -> dict:
+    """Shared scratchpad across ALL agents in this scan. Record facts another
+    specialist would otherwise rediscover (how the app signals success/failure, a
+    working payload shape, a dead end). `view` reads everyone's notes."""
+    run_dir = ctx.context.run_dir
+    if action == "add":
+        if not text:
+            return {"ok": False, "error": "add requires `text`"}
+        return add_note(run_dir, text, tags, author=ctx.context.role)
+    return view_notes(run_dir, tag=(tags[0] if tags else None))
+
+
+@function_tool(strict_mode=False)  # items is a list of open-ended dicts
+async def todo(
+    ctx: RunContextWrapper[ScanContext],
+    action: Literal["set", "view"],
+    items: list[dict] | None = None,
+) -> dict:
+    """Your own task list for this investigation. `set` replaces the whole list —
+    send every item each time, with status pending|in_progress|done."""
+    run_dir = ctx.context.run_dir
+    if action == "set":
+        return set_todos(run_dir, items or [], agent_id=ctx.context.agent_id)
+    return view_todos(run_dir, agent_id=ctx.context.agent_id)
+
+
+@function_tool
+async def respond(ctx: RunContextWrapper[ScanContext], message: str) -> dict:
+    """Send a message to the human operator. In a non-interactive run it is recorded
+    to the run directory and shown in the report rather than dropped."""
+    return respond_impl(ctx.context.run_dir, message, agent_id=ctx.context.agent_id)
+
+
+@function_tool(name_override="load_skill")
+async def load_skill_tool(ctx: RunContextWrapper[ScanContext], name: str) -> dict:
+    """Load a playbook into context by name (e.g. "custom/blind_injection"). Call
+    list_skills first if unsure. Loading on demand keeps unrelated playbooks out of
+    your context."""
+    return load_skill(name)
+
+
+@function_tool(name_override="list_skills")
+async def list_skills_tool(ctx: RunContextWrapper[ScanContext]) -> dict:
+    """List the playbooks available to load_skill."""
+    return list_skills()
+
+
+@function_tool(name_override="web_search")
+async def web_search_tool(
+    ctx: RunContextWrapper[ScanContext], query: str, max_results: int = 5,
+) -> dict:
+    """Search the web for real-time intel (a CVE, a framework's known weak spot, a
+    payload technique). Returns an explicit error if no search provider is configured
+    — in that case work from what you can observe on the target."""
+    return await asyncio.to_thread(web_search, query, max_results)
+
+
+# Agent utilities every role gets: reasoning, shared memory, task tracking, and the
+# ability to pull in a playbook. None of them touch the target, so there's no reason
+# to withhold any of them from a specialist.
+_COMMON_TOOLS: list[Tool] = [thinking, notes, todo, load_skill_tool, list_skills_tool, web_search_tool]
+
+
 async def _finish_tool_use_behavior(
     ctx: RunContextWrapper[ScanContext], results: list[FunctionToolResult],
 ) -> ToolsToFinalOutputResult:
@@ -147,12 +230,14 @@ def build_agent(
         instructions = ROOT_SYSTEM_PROMPT
         finish_tool = finish_scan
         name = "docket-root"
-        base_tools: list[Tool] = [http_request]  # root delegates; it doesn't call `finding` itself
+        # Root delegates, so it gets no `finding`; it does get `respond`, being the
+        # agent that speaks for the scan.
+        base_tools: list[Tool] = [http_request, respond, *_COMMON_TOOLS]
     elif role in ("sqli", "cmdi", "xss"):
         instructions = SPECIALIST_SYSTEM_PROMPT
         finish_tool = agent_finish
         name = f"docket-{role}"
-        base_tools = [http_request, finding]
+        base_tools = [http_request, finding, *_COMMON_TOOLS]
         # Only the SQLi specialist gets a shell: it's the one role with a real reason
         # to drive an external tool (sqlmap). cmdi proves itself with timing over HTTP
         # and xss needs a browser, so handing either a shell would widen the blast
