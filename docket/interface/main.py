@@ -1,4 +1,4 @@
-"""Entrypoint: parse -> run_scan() -> write report -> sys.exit(code).
+"""Entrypoint: parse -> check environment -> run_scan -> write report -> exit code.
 
 Exit codes are Docket's contract, kept verbatim because it's the actual CI gate:
 0 = clean, 1 = error, 2 = findings present.
@@ -7,107 +7,128 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
 
-from docket.config.settings import RUNS_DIR, Config, run_dir
-from docket.interface.cli import build_parser
+from docket.config.settings import Config
 from docket.core.runner import run_scan
+from docket.interface.cli_args import EXIT_CLEAN, EXIT_ERROR, EXIT_FINDINGS, build_parser
+from docket.interface.environment import check_environment, format_report
+from docket.interface.interactive import ProgressReporter, make_on_finding
+from docket.interface.scan_setup import latest_run, list_runs, prepare_scan
 from docket.report.dedupe import FindingStore
 from docket.report.writer import build_report, format_summary, write_report
 
 
 def exit_code(store: FindingStore, scan_ok: bool) -> int:
     if not scan_ok:
-        return 1
-    return 2 if len(store) > 0 else 0
+        return EXIT_ERROR
+    return EXIT_FINDINGS if len(store) > 0 else EXIT_CLEAN
 
 
-def _default_run_name() -> str:
-    return "run-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _latest_run() -> Path | None:
-    if not RUNS_DIR.exists():
-        return None
-    runs = [d for d in RUNS_DIR.iterdir() if d.is_dir() and (d / "report.json").exists()]
-    return max(runs, key=lambda d: (d / "report.json").stat().st_mtime, default=None)
+def cmd_doctor(args) -> int:
+    report = check_environment(require_sandbox=False)
+    print("docket environment check")
+    print(f"  LLM      : {report.llm_model or '(unset)'}"
+          f"{'  via ' + report.api_key_source if report.api_key_source else ''}")
+    print(f"  Docker   : {'available' if report.docker_available else report.docker_error}")
+    print(f"  Search   : {report.search_provider or 'not configured'}")
+    text = format_report(report)
+    if text:
+        print()
+        print(text)
+    return EXIT_CLEAN if report.ok else EXIT_ERROR
 
 
 def cmd_scan(args) -> int:
-    store = FindingStore()
-    try:
-        config = Config.from_env()
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    run_name = args.run_name or _default_run_name()
-    out_dir = Path(args.out_dir) / run_name if args.out_dir else run_dir(run_name)
+    env = check_environment(require_sandbox=not args.no_sandbox)
+    if not env.ok:
+        print(format_report(env), file=sys.stderr)
+        return EXIT_ERROR
+    for warning in env.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
 
     try:
-        result = run_scan(
-            target_url=args.target,
-            instruction=args.instruction,
-            on_finding=store.add,
-            config=config,
-            run_name=run_name,
-            use_sandbox=not args.no_sandbox,
-            store=store,
-            **({"max_turns": args.max_steps} if args.max_steps else {}),
+        setup = prepare_scan(
+            args.target, run_name=args.run_name, instruction=args.instruction,
+            out_dir=args.out_dir, use_sandbox=not args.no_sandbox,
         )
-    except Exception as exc:
-        # Still persist whatever the agents managed to confirm before the failure —
-        # a crashed scan that found a real bug should not throw that away.
-        if len(store):
-            write_report(
-                store, out_dir, run_name=run_name, target=args.target,
-                summary=f"scan failed: {exc}", success=False,
-            )
-        print(f"error: scan failed: {exc}", file=sys.stderr)
-        return 1
+        config = Config.from_env()
+    except (ValueError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
 
-    paths = write_report(
-        store, out_dir,
-        run_name=run_name, target=args.target, summary=result.summary,
-        cost_usd=result.cost_usd, agents_spawned=result.agents_spawned,
-        success=result.success,
-    )
-    report = build_report(
-        store, run_name=run_name, target=args.target, summary=result.summary,
-        cost_usd=result.cost_usd, agents_spawned=result.agents_spawned,
-        success=result.success,
-    )
-    print(format_summary(report, paths=paths))
+    if getattr(args, "tui", False):
+        from docket.interface.tui.runtime import run_scan_with_tui
+
+        return run_scan_with_tui(setup, config, max_turns=args.max_steps)
+
+    store = FindingStore()
+    reporter = None if args.non_interactive else ProgressReporter()
+    kwargs = dict(run_name=setup.run_name, target=setup.target)
+    try:
+        if reporter:
+            reporter.start()
+        result = run_scan(
+            target_url=setup.target,
+            instruction=setup.instruction,
+            on_finding=make_on_finding(store.add, reporter),
+            config=config,
+            run_name=setup.run_name,
+            use_sandbox=setup.use_sandbox,
+            max_turns=args.max_steps,
+            store=store,
+        )
+    except KeyboardInterrupt:
+        print("\ninterrupted — writing what was confirmed so far", file=sys.stderr)
+        write_report(store, setup.run_dir, summary="interrupted by user", success=False, **kwargs)
+        return EXIT_ERROR
+    except Exception as exc:
+        # Still persist whatever the agents confirmed before the failure — a crashed
+        # scan that found a real bug should not throw that away.
+        if len(store):
+            write_report(store, setup.run_dir, summary=f"scan failed: {exc}", success=False, **kwargs)
+        print(f"error: scan failed: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        if reporter:
+            reporter.stop()
+
+    kwargs |= dict(summary=result.summary, cost_usd=result.cost_usd,
+                   agents_spawned=result.agents_spawned, success=result.success)
+    paths = write_report(store, setup.run_dir, **kwargs)
+    print(format_summary(build_report(store, **kwargs), paths=paths))
     return exit_code(store, result.success)
 
 
 def cmd_view(args) -> int:
-    directory = (RUNS_DIR / args.run_name) if args.run_name else _latest_run()
+    if args.run_name:
+        matches = [d for d in list_runs() if d.name == args.run_name]
+        directory = matches[0] if matches else None
+    else:
+        directory = latest_run()
+
     if directory is None or not (directory / "report.json").exists():
-        which = args.run_name or "any run"
-        print(f"error: no report found for {which} under {RUNS_DIR}", file=sys.stderr)
-        return 1
+        print(f"error: no report found for {args.run_name or 'any run'}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if getattr(args, "web", False):
+        from docket.interface.viewer.cli import serve_run
+
+        return serve_run(directory, port=args.port, open_browser=not args.no_browser)
 
     if args.format == "sarif":
         print((directory / "report.sarif").read_text())
-        return 0
+        return EXIT_CLEAN
 
     report = json.loads((directory / "report.json").read_text())
-    if args.format == "json":
-        print(json.dumps(report, indent=2))
-    else:
-        print(format_summary(report, full=args.full))
-    return 0
+    print(json.dumps(report, indent=2) if args.format == "json"
+          else format_summary(report, full=args.full))
+    return EXIT_CLEAN
 
 
 def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
-    if args.command == "scan":
-        sys.exit(cmd_scan(args))
-    elif args.command == "view":
-        sys.exit(cmd_view(args))
+    args = build_parser().parse_args()
+    handlers = {"scan": cmd_scan, "view": cmd_view, "doctor": cmd_doctor}
+    sys.exit(handlers[args.command](args))
 
 
 if __name__ == "__main__":
