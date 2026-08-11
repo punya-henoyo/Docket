@@ -9,11 +9,13 @@ construct the children it spawns), so importing it back here would cycle. The ca
 from __future__ import annotations
 
 import asyncio
-from typing import Literal
+from typing import Any, Literal
 
 from agents import Agent, FunctionToolResult, RunContextWrapper, Tool, ToolsToFinalOutputResult, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
 from agents.models.interface import Model
+from agents.sandbox import SandboxAgent
+from agents.sandbox.capabilities import Filesystem, Shell
 
 from docket.config.settings import Config
 from docket.core.execution import ScanContext
@@ -223,9 +225,16 @@ def build_agent(
     *,
     extra_tools: list[Tool] | None = None,
     model: Model | None = None,
+    sandbox: Any | None = None,
 ) -> Agent[ScanContext]:
     """`model`, if given, overrides the real LitellmModel — used by tests to script a
-    child agent's decisions (see ScanContext.model_override in core/execution.py)."""
+    child agent's decisions (see ScanContext.model_override in core/execution.py).
+
+    `sandbox`, if given, builds a SandboxAgent with the SDK's native Filesystem and
+    Shell capabilities bound to that container (matching upstream Docket's factory)
+    instead of a plain Agent. That is what makes apply_patch and view_image work
+    without custom implementations — they come from the SDK, pointed at our sandbox.
+    """
     if role == "root":
         instructions = ROOT_SYSTEM_PROMPT
         finish_tool = finish_scan
@@ -251,11 +260,25 @@ def build_agent(
     else:
         raise ValueError(f"unknown role: {role!r}")
 
-    return Agent[ScanContext](
-        name=name,
-        instructions=instructions,
-        tools=[*base_tools, *(extra_tools or []), finish_tool],
-        model=model or LitellmModel(model=config.llm, api_key=config.llm_api_key),
-        tool_use_behavior=_finish_tool_use_behavior,
-        output_type=AgentFinalOutput,
-    )
+    common: dict[str, Any] = {
+        "name": name,
+        "instructions": instructions,
+        "tools": [*base_tools, *(extra_tools or []), finish_tool],
+        "model": model or LitellmModel(model=config.llm, api_key=config.llm_api_key),
+        "tool_use_behavior": _finish_tool_use_behavior,
+        # non-str output_type — see AgentFinalOutput's docstring for why it's required
+        "output_type": AgentFinalOutput,
+    }
+    if sandbox is not None:
+        from docket.runtime.sdk_session import DocketSandboxSession
+
+        # SandboxAgent + capabilities is how upstream Docket builds its agents, and it
+        # is why its tools/shell/, apply_patch/ and view_image/ dirs are README-only:
+        # those tools come from the SDK, aimed at a real container by this session.
+        session = DocketSandboxSession(sandbox)
+        return SandboxAgent[ScanContext](
+            **common, capabilities=[Filesystem(session=session), Shell(session=session)],
+        )
+    # No container: a plain Agent, since the SDK's native shell/filesystem tools would
+    # otherwise have nowhere safe to run.
+    return Agent[ScanContext](**common)

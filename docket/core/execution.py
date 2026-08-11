@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agents import Agent, MaxTurnsExceeded, Runner, UserError
+from agents import Agent, MaxTurnsExceeded, RunConfig, Runner, UserError
 from agents.models.interface import Model
 
 from docket.config.settings import Config
@@ -80,6 +80,17 @@ async def run_agent_loop(
     """
     session = make_session(context.run_dir, context.agent_id)
     model_name = context.config.llm if context.config else ""
+
+    # A SandboxAgent's native Filesystem/Shell tools need the session handed to the
+    # RUN as well as to the agent — the SDK refuses to execute one otherwise
+    # ("SandboxAgent execution requires RunConfig(sandbox=...)").
+    run_config = None
+    if context.sandbox is not None:
+        from agents.sandbox import SandboxRunConfig
+
+        from docket.runtime.sdk_session import DocketSandboxSession
+
+        run_config = RunConfig(sandbox=SandboxRunConfig(session=DocketSandboxSession(context.sandbox)))
     last_exc: Exception | None = None
     compacted_already = False
 
@@ -88,6 +99,7 @@ async def run_agent_loop(
             result = await Runner.run(
                 agent, task, context=context, max_turns=max_turns,
                 hooks=BudgetHooks(max_turns=max_turns), session=session,
+                run_config=run_config,
             )
             output = result.final_output
             if not isinstance(output, dict):

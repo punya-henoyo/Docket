@@ -33,6 +33,47 @@ from docket.tools.proxy.tools import (
 )
 from docket.tools.shell.tools import run_shell
 
+
+def _read_file(path: str) -> dict:
+    """Raw file read for the SDK sandbox session (base64 so binaries survive JSON)."""
+    import base64
+
+    data = Path(path).read_bytes()
+    return {"ok": True, "b64": base64.b64encode(data).decode(), "size": len(data)}
+
+
+def _write_file(path: str, b64: str) -> dict:
+    import base64
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = base64.b64decode(b64)
+    target.write_bytes(payload)
+    return {"ok": True, "size": len(payload)}
+
+
+def _exec_argv(argv: list[str], timeout_sec: float | None = None) -> dict:
+    """Exec an ARGV list (no shell). The SDK's sandbox session passes argv, and
+    routing it through `bash -lc` would re-introduce shell quoting bugs."""
+    import base64
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [str(a) for a in argv], capture_output=True,
+            timeout=timeout_sec if timeout_sec else None,
+        )
+        out, err, code = proc.stdout, proc.stderr, proc.returncode
+    except subprocess.TimeoutExpired as exc:
+        out, err, code = (exc.stdout or b""), (exc.stderr or b"") + b"\n[timed out]", 124
+    except FileNotFoundError as exc:
+        out, err, code = b"", str(exc).encode(), 127
+    return {
+        "stdout_b64": base64.b64encode(out).decode(),
+        "stderr_b64": base64.b64encode(err).decode(),
+        "exit_code": code,
+    }
+
 PORT = int(os.environ.get("DOCKET_SHIM_PORT", "8765"))
 RUN_DIR = Path(os.environ.get("DOCKET_RUN_DIR", "/work/run"))
 
@@ -55,6 +96,10 @@ DISPATCH = {
     "proxy_get": lambda **kw: proxy_get(run_dir=RUN_DIR, **kw),
     "proxy_replay": lambda **kw: proxy_replay(run_dir=RUN_DIR, **kw),
     "browser": lambda **kw: browser(run_dir=RUN_DIR, **kw),
+    # Primitives backing the SDK-native sandbox session (docket/runtime/sdk_session.py).
+    "read_file": lambda **kw: _read_file(**kw),
+    "write_file": lambda **kw: _write_file(**kw),
+    "exec_argv": lambda **kw: _exec_argv(**kw),
 }
 
 

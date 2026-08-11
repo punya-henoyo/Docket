@@ -52,7 +52,7 @@ async def create_agent(
         # racing — they still reason in parallel, only their sandbox calls serialize.
         sandbox=parent.sandbox,
     )
-    child_agent = build_agent(role, parent.config, model=child_model)
+    child_agent = build_agent(role, parent.config, model=child_model, sandbox=parent.sandbox)
     child_task = build_specialist_task(role, target_route, task)
 
     def run_coro_factory() -> Awaitable[dict]:

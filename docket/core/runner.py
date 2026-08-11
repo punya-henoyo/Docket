@@ -92,7 +92,7 @@ def run_scan(
         agent = build_agent(
             "root", cfg,
             extra_tools=[create_agent, wait_for_agents, view_agent_graph],
-            model=root_model,
+            model=root_model, sandbox=sandbox,
         )
         task = build_root_task(agent_target, instruction)
         output = asyncio.run(run_agent_loop(agent, context, task, max_turns=max_turns))
