@@ -31,8 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Exact tag, not a floating major: astral-sh publishes v9.0.0 but has no `v9`
+      # tag (their floating majors stop at v7), so `@v9` fails to resolve outright.
+      # An exact pin is what a gate wants anyway — it cannot drift under you.
       - name: Install uv
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
 
