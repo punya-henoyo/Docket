@@ -23,18 +23,38 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
 | `engine/docket/skills/` | markdown playbooks agents load on demand |
 
 ## Rules that are load-bearing
-1. **A finding requires evidence.** `PoC.request`/`PoC.response` are validated
-   non-empty at construction. Do not add a path that creates a `Finding` without real
+1. **A finding requires evidence.** `PoC.request`/`PoC.response` are validated non-empty
+   at construction. The validator is necessary but not sufficient: it only ever sees the
+   output of the coercion in `tools/reporting/tool.py`, and `str()` will happily invent
+   something non-blank from nothing (`str(None)` is `"None"`; rendering an empty request
+   dict is `"GET "`). Both used to pass. Coerce through `_evidence()`, which returns `""`
+   for absent or structurally empty input, and keep the explicit refusal that tells the
+   agent which field is missing. Do not add a path that creates a `Finding` without real
    reproduced output — that guarantee is the product.
 2. **`shell` and `browser` never run on the host.** With no sandbox they refuse. Do not
-   add a host fallback.
-3. **Tool modules imported by the shim must stay stdlib-only.** `tools/shell`,
-   `tools/http_request`, `tools/output_store`, `tools/proxy` run inside the container,
-   where nothing is installed.
-4. **Agents stop only via a finish tool.** Enforced by `tool_use_behavior`, not prompts.
-5. **A dead child still reports.** The `finally:` block in `_run_child` is what stops a
-   waiting parent from hanging. Don't make it conditional.
-6. **No telemetry.** See `engine/docket/telemetry/README.md`.
+   add a host fallback. The only host subprocesses are `docker` invocations.
+3. **Tool modules imported by the shim must stay stdlib-only.** They run inside the
+   container, where no project dependency is installed. The `shim-stdlib-only` pre-commit
+   hook enumerates the guarded files — if you add an import to anything the shim or
+   mitmdump loads, add the file to that list too.
+4. **Agents should stop via a finish tool** — `tool_use_behavior` enforces it for the
+   tool path, but it is **not** the only exit. A non-`str` `output_type` lets the SDK end a
+   run on any plain assistant message matching that schema, checked before the tool-use
+   gate. Do not rely on this invariant for correctness; see README "Known limits".
+5. **A dead child still reports.** Two halves. `coordinator.register()` is the *caller's*
+   job in `create_agent`, before `spawn_child_agent` — that makes the child visible to a
+   same-turn `wait_for_agents` and puts a `max_agents` refusal somewhere the model can see
+   it. Everything after registration lives inside `_run_child`'s `try`, whose `finally:`
+   guarantees a terminal status. Don't move registration back into the task and don't make
+   the `finally:` conditional.
+6. **No telemetry, and no incidental outbound calls.** Nothing docket collects. Note
+   `engine/docket/__init__.py` sets `LITELLM_LOCAL_MODEL_COST_MAP=true`, because importing
+   litellm otherwise fetches a price map from GitHub before any of our code runs. Keep that
+   line, and keep `__init__.py` stdlib-only. See `engine/docket/telemetry/README.md`.
+7. **Shared artifacts are redacted at the write boundary.** `report/writer.py`,
+   `report/sarif.py` and `runtime/proxy_addon.py` pass serialized output through
+   `redact()`. Redact whole documents, not hand-picked fields, so a new field is covered by
+   default. `redact()` must stay stdlib-only — `proxy_addon` imports it in-container.
 
 ## Conventions
 - Every module has a runnable `demo()` self-check. Run them all with `make check`

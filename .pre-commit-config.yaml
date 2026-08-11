@@ -33,7 +33,10 @@ repos:
           import ast, sys, pathlib;
           bad = [];
           for p in ['engine/docket/tools/shell/tools.py','engine/docket/tools/http_request/tools.py',
-                    'engine/docket/tools/output_store.py','engine/docket/tools/proxy/tools.py']:
+                    'engine/docket/tools/output_store.py','engine/docket/tools/proxy/tools.py',
+                    'engine/docket/tools/agent_browser/tools.py','engine/docket/runtime/proxy_addon.py',
+                    'engine/docket/runtime/server.py','engine/docket/utils/secret_files.py',
+                    'engine/docket/__init__.py']:
               tree = ast.parse(pathlib.Path(p).read_text());
               mods = {n.module.split('.')[0] for n in ast.walk(tree)
                       if isinstance(n, ast.ImportFrom) and n.module};

@@ -59,6 +59,18 @@ async def create_agent(
     def run_coro_factory() -> Awaitable[dict]:
         return run_agent_loop(child_agent, child_context, child_task, max_turns=12)
 
+    # Register BEFORE returning, not inside the spawned task. Two bugs lived in the gap:
+    # wait_for_agents skips ids absent from coordinator.agents, so spawn-then-wait in one
+    # model turn saw an empty target list and answered "nothing pending"; and a max_agents
+    # refusal surfaced only as an unretrieved asyncio exception while this tool still
+    # reported "spawned". Both let a scan finish clean having tested nothing.
+    try:
+        await coordinator.register(agent_id, name=name, role=role, parent_id=parent.agent_id)
+    except RuntimeError as exc:
+        # Tell the model plainly. It can re-plan (wait for a slot, or drop the route)
+        # only if the refusal actually reaches it.
+        return {"agent_id": agent_id, "status": "refused", "ok": False, "error": str(exc)}
+
     get_emitter().agent_spawned(agent_id, name, role, parent.agent_id)
     spawn_child_agent(coordinator, agent_id, name, role, parent.agent_id, run_coro_factory)
     return {"agent_id": agent_id, "status": "spawned"}

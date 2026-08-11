@@ -147,12 +147,17 @@ async def _run_child(
     silently died; asyncio.create_task() otherwise swallows exceptions unless the
     task is awaited or a done-callback checks it.
     """
-    await coordinator.register(agent_id, name=name, role=role, parent_id=parent_id)
-    await coordinator.attach_task(agent_id, asyncio.current_task())
-
+    # register() deliberately happens in create_agent, BEFORE this task is created, for
+    # two reasons. It makes the child visible in coordinator.agents the instant the tool
+    # returns, so a root that spawns and waits in the SAME turn (the norm, since models
+    # emit parallel tool calls) cannot be told "nothing is pending" and end the scan out
+    # from under its children. And it puts a max_agents refusal on create_agent's own
+    # error path instead of in here, outside the try, where it escaped the finally below
+    # and left root believing a route was covered by an agent that never existed.
     status: AgentStatus = "crashed"
     result: dict = {"success": False, "summary": "no terminal report produced", "findings": []}
     try:
+        await coordinator.attach_task(agent_id, asyncio.current_task())
         await coordinator.mark_running(agent_id)
         result = await run_coro_factory()
         status = "completed" if result.get("success") else "failed"
@@ -176,7 +181,18 @@ def spawn_child_agent(
     run_coro_factory: Callable[[], Awaitable[dict]],
 ) -> asyncio.Task:
     """Fire-and-forget: returns immediately with the Task; the caller (create_agent)
-    does not await it — that's what makes this "spawn a child", not "run inline"."""
+    does not await it — that's what makes this "spawn a child", not "run inline".
+
+    CONTRACT: the caller must have already awaited coordinator.register(agent_id).
+    Registration cannot happen inside the task, because the task has not run by the time
+    this returns, and a root that spawns and waits in one turn would then be told its
+    children do not exist. Checked rather than assumed — the failure mode it replaces was
+    a silently empty scan."""
+    if agent_id not in coordinator.agents:
+        raise RuntimeError(
+            f"spawn_child_agent({agent_id!r}) before coordinator.register({agent_id!r}) — "
+            "register first so the child is visible to wait_for_agents immediately"
+        )
     return asyncio.create_task(
         _run_child(coordinator, agent_id, name, role, parent_id, run_coro_factory)
     )
