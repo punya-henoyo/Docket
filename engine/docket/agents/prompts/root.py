@@ -1,7 +1,10 @@
-"""Root agent prompts. M4: root delegates to specialist children instead of testing
-routes itself (M3's generalist behavior) — vulnshop's 3 known routes map directly to
-the 3 specialist roles, so root's job is recon (routes already given here) + spawn +
-wait + aggregate.
+"""Root agent prompts. Root delegates to specialist children instead of testing routes
+itself: the test target's 3 known routes map directly to the 3 specialist roles, so root's
+job is spawn + wait + aggregate.
+
+Root does NO recon. `build_root_task` hands it a route list, and that list is hardcoded to
+the fixture — see the comment there. README "Current limits" documents this as the tool's
+largest gap; do not let the prompt imply otherwise.
 """
 from __future__ import annotations
 
@@ -24,6 +27,17 @@ Rules:
 
 
 def build_root_task(target_url: str, instruction: str | None) -> str:
+    """Renders root's opening task. The route list below is the fixture's, asserted as fact
+    for ANY --target, which is wrong for every target but the fixture. It is stated rather
+    than discovered because nothing in this tool discovers: no crawl, no spec parsing, no
+    traffic-derived surface. Note the failure mode is worse than an empty list — root is
+    handed fiction confidently, so it tests routes that may not exist and reports nothing
+    without ever signalling that it was misinformed.
+    # ponytail: hardcoded fixture routes, ceiling is "works on one app". Upgrade path is a
+    # typed attack surface built by deterministic code (spec/HAR -> well-known paths ->
+    # captured proxy flows -> bounded crawl) and rendered here, with an explicit "no routes
+    # found" branch. Roadmap item 2. Land scope + rate controls first.
+    """
     lines = [
         f"Target: {target_url}",
         "Known routes and the vulnerability class each is worth checking for:",
