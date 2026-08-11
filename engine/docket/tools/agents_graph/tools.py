@@ -1,6 +1,6 @@
 """Inter-agent coordination tools, given only to the root agent: spawn a specialist,
 wait for children, and inspect the current agent tree. `stop_agent`/
-`send_message_to_agent` are deliberately NOT built yet — vulnshop's straight-line
+`send_message_to_agent` are deliberately NOT built yet — the current straight-line
 spawn -> wait -> aggregate flow doesn't need mid-run redirection; add them if a real
 run shows root needs to react to a stuck child.
 # ponytail: no stop_agent/send_message_to_agent — add when the straight-line flow

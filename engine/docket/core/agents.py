@@ -98,7 +98,7 @@ class AgentCoordinator:
         Checked BEFORE each model turn (see BudgetHooks in core/execution.py) rather
         than after, so the cutoff never pays for the turn that breaches it. A hard
         cutoff, with no negotiated "wrap up" turn — at lab scale a well-behaved run
-        against vulnshop should never come close, so the extra machinery would be
+        against the test target should never come close, so the extra machinery would be
         speculative.
         # ponytail: hard cutoff, no graceful wrap-up turn — add one if real runs start
         # hitting the cap often enough that losing the final turn's context matters.

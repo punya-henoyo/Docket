@@ -1,6 +1,6 @@
 """M2 integration check: http_request + finding, straight-line (no LLM, no Docker),
 proving V1 and V2 against the live fixture target in tests/fixtures/.
-Run: uv run python tests/test_tools.py  (vulnshop must be running, DB/exports seeded)
+Run: uv run python tests/test_tools.py  (starts and seeds the fixture target itself)
 """
 import shutil
 import sys

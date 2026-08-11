@@ -1,10 +1,10 @@
 """SARIF 2.1.0 export. Hand-rolled dict -> JSON: the format is ~15 fields for our
 purposes, which doesn't justify a dependency.
 
-Local artifact only, by design. vulnshop's existing Semgrep workflow already owns the
-default code-scanning category for that repo, so auto-uploading here would intermix or
-clobber its alerts; and a developer running docket against localhost has no
-GITHUB_TOKEN/Actions context to upload from anyway. To wire this into CI later, add a
+Local artifact only, by design. A developer running docket against localhost has no
+GITHUB_TOKEN/Actions context to upload from, and auto-uploading would claim a repo's
+default code-scanning category, intermixing docket's alerts with whatever static
+analysis already publishes there. To wire this into CI later, add a
 step running `docket scan -n` against a CI-started app, then
 github/codeql-action/upload-sarif@v3 with an explicit `category: docket` so it lands
 beside Semgrep as a distinct tool rather than colliding with it.
