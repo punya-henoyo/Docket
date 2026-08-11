@@ -1,0 +1,44 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=512"]
+      # This repo exploits things for a living; a key or a run artifact must never
+      # land in history.
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      # Guards the rule in AGENTS.md: modules loaded by the in-container shim must
+      # stay stdlib-only, because the sandbox image installs no project dependencies.
+      - id: shim-stdlib-only
+        name: sandbox shim modules import no project deps
+        language: system
+        pass_filenames: false
+        entry: >
+          uv run python -c "
+          import ast, sys, pathlib;
+          bad = [];
+          for p in ['docket/tools/shell/tools.py','docket/tools/http_request/tools.py',
+                    'docket/tools/output_store.py','docket/tools/proxy/tools.py']:
+              tree = ast.parse(pathlib.Path(p).read_text());
+              mods = {n.module.split('.')[0] for n in ast.walk(tree)
+                      if isinstance(n, ast.ImportFrom) and n.module};
+              mods |= {a.name.split('.')[0] for n in ast.walk(tree)
+                       if isinstance(n, ast.Import) for a in n.names};
+              extra = mods - {'docket','__future__'} & {'agents','pydantic','litellm','textual','dotenv'};
+              bad += [(p, sorted(extra))] if extra else [];
+          sys.exit(('shim modules must stay stdlib-only: %s' % bad) if bad else 0)"
