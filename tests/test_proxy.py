@@ -1,7 +1,7 @@
 """M7 check: the intercepting proxy — start, capture, inspect, and
 replay-with-modification, all inside the sandbox.
 
-Requires Docker running and vulnshop live on the host at 127.0.0.1:5000.
+Requires Docker running. The target is the self-contained fixture in tests/fixtures/.
 Run: uv run python tests/test_proxy.py
 """
 from __future__ import annotations
@@ -11,13 +11,16 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from fixtures.target_app import ensure_target
 
 from docket.config.settings import run_dir
 from docket.runtime.sandbox import Sandbox, rewrite_for_container
 
 
 def test_proxy_capture_inspect_and_replay_with_modification() -> None:
-    target = rewrite_for_container("http://127.0.0.1:5000")
+    target = rewrite_for_container(ensure_target())
     directory = run_dir("m7-proxy-test")
     try:
         with Sandbox(directory / "sandbox") as sb:

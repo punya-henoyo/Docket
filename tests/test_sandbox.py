@@ -1,6 +1,6 @@
 """M6 check: the Docker sandbox and its RPC shim, end to end.
 
-Requires Docker running and vulnshop live on the host at 127.0.0.1:5000. Builds the
+Requires Docker running. The target is the self-contained fixture in tests/fixtures/. Builds the
 image on first run (~30s), then starts one container and drives real tools through it.
 
 Run: uv run python tests/test_sandbox.py
@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from fixtures.target_app import ensure_target
 from mock_model import ScriptedModel
 from docket.config.settings import Config, run_dir
 from docket.core.execution import ScanContext, run_agent_loop
@@ -22,13 +23,15 @@ from docket.report.dedupe import FindingStore
 from docket.agents.factory import build_agent
 from docket.runtime.sandbox import HOST_ALIAS, Sandbox, rewrite_for_container
 
-HOST_TARGET = "http://127.0.0.1:5000"
+HOST_TARGET = ensure_target()
 
 
 def test_rewrite_for_container() -> None:
     assert rewrite_for_container("http://127.0.0.1:5000/login") == f"http://{HOST_ALIAS}:5000/login"
     assert rewrite_for_container("http://localhost:5000") == f"http://{HOST_ALIAS}:5000"
-    assert rewrite_for_container("http://127.0.0.1:5000") == f"http://{HOST_ALIAS}:5000"
+    # Pure string transform, so it uses literals rather than the fixture (whose port
+    # is ephemeral). The port must survive rewriting untouched.
+    assert rewrite_for_container("http://127.0.0.1:54321") == f"http://{HOST_ALIAS}:54321"
     # A real remote host must be left alone.
     assert rewrite_for_container("http://example.com/x") == "http://example.com/x"
 

@@ -6,7 +6,7 @@ dialog_message a Chromium DOM raised for V3. Then checks report.json / report.sa
 Only each agent's next-tool-call decision is scripted (no LLM_API_KEY here); every
 tool call really executes.
 
-Requires Docker running and vulnshop live at 127.0.0.1:5000.
+Requires Docker running. The target is the self-contained fixture in tests/fixtures/.
 Run: uv run python tests/test_full_run.py
 """
 from __future__ import annotations
@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from fixtures.target_app import ensure_target
 from mock_model import ScriptedModel
 from docket.config.settings import Config, run_dir
 from docket.core.runner import run_scan
@@ -28,7 +29,7 @@ from docket.report.dedupe import FindingStore
 from docket.report.writer import build_report, format_summary, write_report
 from docket.runtime.sandbox import rewrite_for_container
 
-HOST_TARGET = "http://127.0.0.1:5000"
+HOST_TARGET = ensure_target()
 TARGET = rewrite_for_container(HOST_TARGET)  # agents run inside the container
 XSS_PAYLOAD = "<script>alert(document.domain)</script>"
 RUN_NAME = "m9-full-run"

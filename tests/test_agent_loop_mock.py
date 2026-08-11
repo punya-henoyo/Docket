@@ -1,7 +1,7 @@
 """M3 harness check WITHOUT a live LLM: a ScriptedModel plays back a fixed tool-call
 sequence through the REAL Runner / tool_use_behavior / tool-execution pipeline (only
 the model's next-tool-call *decision* is faked — every tool call it makes actually
-executes: real HTTP requests against a live vulnshop, real Finding registration).
+executes: real HTTP requests against a the live fixture target, real Finding registration).
 
 This proves the SDK integration itself is wired correctly: multi-turn tool-calling
 loop, conversation-history threading (a later step reads an earlier tool's real
@@ -9,7 +9,7 @@ output), and the tool_use_behavior gate stopping only on finish_scan. It does NO
 prove a real model can reason its way to these tool calls unprompted — that half
 needs a live LLM_API_KEY (see docket/.env / README).
 
-Run: uv run python tests/test_agent_loop_mock.py  (vulnshop must be running at :5000)
+Run: uv run python tests/test_agent_loop_mock.py  (uses the tests/fixtures/ target)
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agents import Agent
 
+from fixtures.target_app import ensure_target
 from mock_model import ScriptedModel
 from docket.agents.factory import _finish_tool_use_behavior, finding, http_request
 from docket.tools.finish.tool import AgentFinalOutput, finish_scan
@@ -29,7 +30,7 @@ from docket.agents.prompts.root import SYSTEM_PROMPT
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.report.dedupe import FindingStore
 
-TARGET = "http://127.0.0.1:5000"
+TARGET = ensure_target()
 
 
 def _script() -> list[tuple[str, dict]]:

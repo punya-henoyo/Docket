@@ -1,12 +1,12 @@
 """Multi-agent harness check WITHOUT a live LLM: a scripted root spawns all three
 scripted specialists (sqli/cmdi/xss) through the REAL create_agent/wait_for_agents/
 AgentCoordinator/spawn_child_agent pipeline. Every tool call actually executes (real
-HTTP against a live vulnshop, real Finding registration/dedup) — only each agent's
+HTTP against a the live fixture target, real Finding registration/dedup) — only each agent's
 next-tool-call decision is scripted. Proves: multi-agent spawn, concurrent execution
 (children run through http_request's asyncio.to_thread offload without blocking each
 other), parent/child wiring, and root's aggregation of its children's finding IDs.
 
-Run: uv run python tests/test_multiagent_mock.py  (vulnshop must be running at :5000)
+Run: uv run python tests/test_multiagent_mock.py  (uses the tests/fixtures/ target)
 """
 from __future__ import annotations
 
@@ -17,12 +17,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from fixtures.target_app import ensure_target
 from mock_model import ScriptedModel
 from docket.config.settings import Config
 from docket.core.runner import run_scan
 from docket.report.dedupe import FindingStore
 
-TARGET = "http://127.0.0.1:5000"
+TARGET = ensure_target()
 
 ROOT_SCRIPT = [
     ("create_agent", {

@@ -1,7 +1,7 @@
 """M5 check: cost tracking and hard budget cutoff, exercised through the real
 Runner/BudgetHooks pipeline with a ScriptedModel that reports real token usage.
 
-Run: uv run python tests/test_budget.py  (vulnshop must be running at :5000)
+Run: uv run python tests/test_budget.py  (uses the tests/fixtures/ target)
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agents import Agent
 
+from fixtures.target_app import ensure_target
 from mock_model import ScriptedModel
 from docket.config.settings import Config, run_dir
 from docket.core.agents import AgentCoordinator
@@ -24,7 +25,7 @@ from docket.report.dedupe import FindingStore
 from docket.agents.factory import build_agent
 from docket.tools.finish.tool import agent_finish
 
-TARGET = "http://127.0.0.1:5000"
+TARGET = ensure_target()
 # A real, priced model string so litellm.cost_per_token returns non-zero — the test is
 # about budget arithmetic, not about which model is configured.
 PRICED_MODEL = "anthropic/claude-sonnet-4-5-20250929"

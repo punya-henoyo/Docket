@@ -1,6 +1,6 @@
 """M8 check: the browser tool and the V3 (reflected XSS) execution proof.
 
-Requires Docker running and vulnshop live on the host at 127.0.0.1:5000.
+Requires Docker running. The target is the self-contained fixture in tests/fixtures/.
 Run: uv run python tests/test_browser.py
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from fixtures.target_app import ensure_target
 from mock_model import ScriptedModel
 from docket.config.settings import Config, run_dir
 from docket.core.execution import ScanContext, run_agent_loop
@@ -25,7 +26,7 @@ PAYLOAD = "<script>alert(document.domain)</script>"
 
 
 def test_browser_proves_xss_executes_not_just_reflects() -> None:
-    target = rewrite_for_container("http://127.0.0.1:5000")
+    target = rewrite_for_container(ensure_target())
     directory = run_dir("m8-browser-test")
     try:
         with Sandbox(directory / "sandbox") as sb:
@@ -73,7 +74,7 @@ def test_browser_tool_refuses_without_sandbox() -> None:
     os.environ.setdefault("DOCKET_LLM", "anthropic/claude-sonnet-4-5-20250929")
     cfg = Config.from_env()
     context = ScanContext(
-        target_url="http://127.0.0.1:5000", run_dir=run_dir("m8-no-sandbox"),
+        target_url=ensure_target(), run_dir=run_dir("m8-no-sandbox"),
         on_finding=FindingStore().add, agent_id="solo", role="xss", config=cfg, sandbox=None,
     )
     script = [

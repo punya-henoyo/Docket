@@ -1,5 +1,5 @@
 """M2 integration check: http_request + finding, straight-line (no LLM, no Docker),
-proving V1 and V2 against a LIVE vulnshop at 127.0.0.1:5000.
+proving V1 and V2 against the live fixture target in tests/fixtures/.
 Run: uv run python tests/test_tools.py  (vulnshop must be running, DB/exports seeded)
 """
 import shutil
@@ -8,12 +8,15 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from fixtures.target_app import ensure_target
 
 from docket.report.dedupe import FindingStore
 from docket.tools.reporting.tool import register_finding
 from docket.tools.http_request.tools import do_http_request
 
-TARGET = "http://127.0.0.1:5000"
+TARGET = ensure_target()
 
 
 def test_v1_sqli_and_v2_cmdi_end_to_end() -> None:
