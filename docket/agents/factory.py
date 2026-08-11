@@ -250,8 +250,7 @@ def build_agent(
     child agent's decisions (see ScanContext.model_override in core/execution.py).
 
     `sandbox`, if given, builds a SandboxAgent with the SDK's native Filesystem and
-    Shell capabilities bound to that container (matching upstream Docket's factory)
-    instead of a plain Agent. That is what makes apply_patch and view_image work
+    Shell capabilities bound to that container, instead of a plain Agent. That is what makes apply_patch and view_image work
     without custom implementations — they come from the SDK, pointed at our sandbox.
     """
     if role == "root":
@@ -291,9 +290,9 @@ def build_agent(
     if sandbox is not None:
         from docket.runtime.sdk_session import DocketSandboxSession
 
-        # SandboxAgent + capabilities is how upstream Docket builds its agents, and it
-        # is why its tools/shell/, apply_patch/ and view_image/ dirs are README-only:
-        # those tools come from the SDK, aimed at a real container by this session.
+        # SandboxAgent + capabilities is why tools/shell/, apply_patch/ and
+        # view_image/ are README-only: those tools come from the SDK, aimed at a
+        # real container by this session.
         session = DocketSandboxSession(sandbox)
         return SandboxAgent[ScanContext](
             **common, capabilities=[Filesystem(session=session), Shell(session=session)],

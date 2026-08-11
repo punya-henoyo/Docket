@@ -1,4 +1,4 @@
-"""SDK-native LLM usage aggregation for scan reports. Mirrors docket/report/usage.py.
+"""SDK-native LLM usage aggregation for scan reports.
 
 The coordinator tracks dollars because that's what enforces the budget; this tracks
 TOKENS, per agent, because that's what explains the dollars in the report — "the sqli

@@ -1,5 +1,4 @@
-"""Event protocol shared by the TUI and the web viewer. Mirrors
-docket/interface/tui/backend/protocol.py (and its Go twin, internal/protocol).
+"""Event protocol shared by the TUI and the web viewer.
 
 One event vocabulary, serialised as JSON lines, is what lets a live TUI and an
 after-the-fact web dashboard render the same run without either one reaching into

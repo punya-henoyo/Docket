@@ -1,5 +1,4 @@
-"""Run preparation: names, directories, target normalisation. Mirrors
-docket/interface/scan_setup.py.
+"""Run preparation: names, directories, target normalisation.
 
 Split out of main.py so the same preparation is shared by the CLI, the interactive
 mode, and the TUI, instead of each inventing its own run-name and directory logic.
@@ -11,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from docket.core.paths import run_dir_for, runs_base_dir
+from docket.core.paths import run_path, runs_root
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -57,7 +56,7 @@ def prepare_scan(
 ) -> ScanSetup:
     name = sanitize_run_name(run_name) if run_name else default_run_name()
     base = Path(out_dir) if out_dir else None
-    directory = (base / name) if base else run_dir_for(name)
+    directory = (base / name) if base else run_path(name)
     directory.mkdir(parents=True, exist_ok=True)
     return ScanSetup(
         run_name=name, target=normalize_target(target), run_dir=directory,
@@ -66,7 +65,7 @@ def prepare_scan(
 
 
 def list_runs(base: Path | None = None) -> list[Path]:
-    root = base or runs_base_dir()
+    root = base or runs_root()
     if not root.exists():
         return []
     runs = [d for d in root.iterdir() if d.is_dir() and (d / "report.json").exists()]

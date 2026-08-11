@@ -1,4 +1,4 @@
-"""Provider-agnostic conversation compaction. Mirrors docket/llm/compaction.py.
+"""Provider-agnostic conversation compaction.
 
 When an agent's history grows past the model's usable window, older turns are folded
 into a single summary checkpoint while the most recent turns are kept verbatim.

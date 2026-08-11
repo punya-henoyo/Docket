@@ -1,4 +1,4 @@
-"""Redaction helpers. Mirrors docket/utils/secret_files.py.
+"""Redaction helpers.
 
 A pentest report is a document that gets shared, and a run directory is full of things
 that should not travel with it — the API key in the environment, an Authorization

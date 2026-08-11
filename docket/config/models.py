@@ -1,4 +1,4 @@
-"""Model capability detection. Mirrors docket/config/models.py.
+"""Model capability detection.
 
 LiteLLM lets any provider/model string through, but the SDK request we build has to
 match what that model actually supports — asking a non-reasoning model for a reasoning

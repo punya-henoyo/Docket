@@ -1,4 +1,4 @@
-"""Global report state. Mirrors docket/report/state.py.
+"""Global report state.
 
 A process-wide handle on the current run's findings and budget, so components that
 the run loop can't hand a reference to — SDK hooks fire deep inside Runner.run, the

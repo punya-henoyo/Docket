@@ -1,4 +1,4 @@
-"""Runs a scan with the TUI attached. Mirrors docket/interface/tui/runtime.py.
+"""Runs a scan with the TUI attached.
 
 The scan runs on a worker THREAD and the TUI owns the main thread, because Textual
 needs the main thread for terminal I/O and the scan drives its own asyncio loop

@@ -1,4 +1,4 @@
-"""Locating packaged resources. Mirrors docket/utils/resource_paths.py.
+"""Locating packaged resources.
 
 Paths are resolved relative to the package rather than the working directory, so they
 keep working when docket is installed as a wheel and run from anywhere.

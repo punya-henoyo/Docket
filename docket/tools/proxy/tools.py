@@ -1,15 +1,14 @@
 """The `proxy` tool: an intercepting HTTP proxy the agent can inspect and replay from.
 
-mitmdump (mitmproxy's headless mode) stands in for upstream Docket's Caido, which is
-commercial, GUI-first, and needs an SDK client. One genuine simplification falls out of
+mitmdump (mitmproxy's headless mode) is used rather than a commercial, GUI-first proxy
+with its own SDK client. One genuine simplification falls out of
 this target: it speaks plain HTTP, so there is NO TLS to intercept and therefore no
 CA-certificate bootstrap step at all — normally the fiddliest part of putting a MITM
 proxy in front of a browser.
 
-Honest scoping note: of the sandbox's tools this is the least load-bearing for vulnshop
-specifically — shell + http_request + browser already prove all three vulns. It exists
-because the locked-in scope is a full Docket-style clone, and because request
-replay-with-modification is the one capability a pentester reaches for constantly on
+Scoping note: of the sandbox's tools this is the least load-bearing for simple targets —
+shell + http_request + browser already prove the common classes. It exists because
+request replay-with-modification is a capability pentesters reach for constantly on
 real targets.
 
 Runs INSIDE the container (imported by docket/runtime/server.py), so: stdlib only.

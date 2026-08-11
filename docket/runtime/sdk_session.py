@@ -2,9 +2,8 @@
 
 This is what lets SandboxAgent's NATIVE tools — shell and the filesystem/apply_patch
 toolset — execute inside our container instead of wherever the SDK would otherwise put
-them. It's the reason upstream Docket's tools/shell/, apply_patch/ and view_image/
-directories contain only a README: those tools come from the SDK, and the sandbox
-session is the seam that points them at a real container.
+them. It is why tools/shell/, apply_patch/ and view_image/ hold only a README: those tools
+come from the SDK, and this session is the seam that points them at a real container.
 
 Only six methods are abstract, all of which our RPC shim already exposes (or now does):
 _exec_internal, read, write, running, hydrate_workspace, persist_workspace. All six are

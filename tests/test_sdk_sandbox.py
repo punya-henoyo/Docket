@@ -1,8 +1,8 @@
 """R5 check: SandboxAgent + the SDK-native sandbox session bound to our container.
 
-This is the piece that makes docket's agent construction match upstream Docket's:
-SandboxAgent with capabilities=[Filesystem, Shell] rather than a plain Agent, which is
-why upstream's tools/shell, apply_patch and view_image directories are README-only.
+Agents are built as SandboxAgent with capabilities=[Filesystem, Shell] rather than a
+plain Agent, which is why the tools/shell, apply_patch and view_image packages are
+README-only: those tools come from the SDK.
 
 Requires Docker. Run: uv run python tests/test_sdk_sandbox.py
 """

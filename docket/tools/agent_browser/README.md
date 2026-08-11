@@ -6,6 +6,5 @@ The reason it exists: `dialog_message`. Navigating to a reflected `alert()` payl
 capturing the dialog a real DOM raises is what upgrades an XSS finding from "my payload
 appeared in the HTML" (an inference) to "the payload executed" (a proof).
 
-Single page, no multi-tab — a cut from upstream, since nothing in scope needs
-cross-page flow. Chromium runs with `--no-sandbox` because the container is already the
+Single page, no multi-tab, since nothing in scope needs cross-page flow. Chromium runs with `--no-sandbox` because the container is already the
 isolation boundary; that removes Chromium's redundant inner sandbox, not the outer one.

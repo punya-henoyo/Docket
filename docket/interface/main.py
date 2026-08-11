@@ -1,6 +1,6 @@
 """Entrypoint: parse -> check environment -> run_scan -> write report -> exit code.
 
-Exit codes are Docket's contract, kept verbatim because it's the actual CI gate:
+Exit codes follow the conventional CI gate contract:
 0 = clean, 1 = error, 2 = findings present.
 """
 from __future__ import annotations

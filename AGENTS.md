@@ -4,8 +4,7 @@ Orientation for anyone (human or agent) editing this repo.
 
 ## What this is
 An autonomous pentesting tool: LLM agents that exploit a target dynamically and report
-a finding only once they have reproduced it. Modeled on
-[Docket](https://github.com/internal/docket) — independent implementation, same shape.
+a finding only once they have reproduced it with a working proof-of-concept.
 
 ## Layout
 | Path | Role |

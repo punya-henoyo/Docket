@@ -1,12 +1,12 @@
-"""`docket view --web` entry point. Mirrors docket/interface/viewer/cli.py.
+"""`docket view --web` entry point.
 
 Serves the dashboard on loopback and (optionally) opens a browser. Works on a live run
 as well as a finished one — the page polls while a scan is in progress and stops once
 it sees the run finished.
 
-No PDF export: upstream ships one via reportlab/pypdf, but the dashboard prints cleanly
-from the browser, and two more dependencies to re-render a page the browser can already
-print is not a trade worth making here.
+No PDF export: the dashboard prints cleanly from the browser, and two extra
+dependencies to re-render a page the browser already prints is not a trade worth
+making.
 """
 from __future__ import annotations
 

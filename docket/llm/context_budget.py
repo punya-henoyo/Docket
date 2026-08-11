@@ -1,7 +1,5 @@
 """Model-aware token budgets, resolved from LiteLLM model metadata with a large
-configurable fallback for models LiteLLM doesn't map. Mirrors docket/llm/context_budget.py.
-
-Why this exists: the run loop needs to know "is this conversation about to overflow?"
+configurable fallback for models LiteLLM doesn't map. Why this exists: the run loop needs to know "is this conversation about to overflow?"
 BEFORE sending it, because a context-window error costs a full round trip and, for a
 long agent run, tends to recur every turn afterwards. Asking LiteLLM for the model's
 real window is cheaper and more accurate than a hardcoded guess.

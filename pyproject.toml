@@ -1,7 +1,7 @@
 [project]
 name = "docket"
 version = "0.1.0"
-description = "Lab-scale autonomous pentesting agent, Docket-style, targeting vulnshop"
+description = "Autonomous pentesting agent: multi-agent exploitation with proof-of-concept evidence"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

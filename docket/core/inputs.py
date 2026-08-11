@@ -1,4 +1,4 @@
-"""Pure input builders for docket scan runs. Mirrors docket/core/inputs.py.
+"""Pure input builders for docket scan runs.
 
 Everything here is a pure function of (config, model string) -> request settings, with
 no I/O, so the model-capability branching is testable without touching a provider.

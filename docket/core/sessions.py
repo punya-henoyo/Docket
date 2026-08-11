@@ -1,4 +1,4 @@
-"""SDK session helpers. Mirrors docket/core/sessions.py.
+"""SDK session helpers.
 
 Each agent gets its own SQLite-backed conversation history, so history lives on disk
 rather than in a Python list that dies with the process — which is what makes a run
@@ -16,7 +16,7 @@ from typing import Any
 
 from agents.memory import SQLiteSession
 
-from docket.core.paths import runtime_state_dir
+from docket.core.paths import state_path
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ _IMAGE_KEYS = ("image_url", "image", "input_image", "b64_json", "image_data")
 
 
 def session_db_path(run_dir: Path) -> Path:
-    state_dir = runtime_state_dir(run_dir)
+    state_dir = state_path(run_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir / SESSIONS_DB_NAME
 

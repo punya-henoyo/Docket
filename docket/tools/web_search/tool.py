@@ -1,7 +1,6 @@
 """The `web_search` tool: real-time intel lookup for the agent.
 
-Upstream Docket backs this with Perplexity. Rather than hardcode one vendor, this is
-provider-pluggable so whichever key you actually hold works:
+Provider-pluggable rather than hardcoded to one vendor, so whichever key you hold works:
 
     DOCKET_SEARCH_PROVIDER = tavily | brave | serper | perplexity | deepseek
     DOCKET_SEARCH_API_KEY  = <key>

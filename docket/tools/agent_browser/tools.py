@@ -8,8 +8,8 @@ dialog_message coming back IS the proof — no screenshot interpretation require
 Runs INSIDE the container. Playwright is imported lazily so a shim built without it
 returns an error result instead of failing to boot.
 
-Single page, no multi-tab (a cut from upstream Docket): vulnshop has no cross-page
-navigation flow to test, so tabs would buy nothing. Cheap to add if a target ever
+Single page, no multi-tab: the targets in scope have no cross-page navigation flow to
+test, so tabs would buy nothing. Cheap to add if a target ever
 grows a real login-session flow.
 """
 from __future__ import annotations

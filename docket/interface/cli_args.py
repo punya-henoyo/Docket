@@ -1,4 +1,4 @@
-"""Argument definitions, split out of cli.py. Mirrors docket/interface/cli_args.py.
+"""Argument definitions, split out of cli.py.
 
 Kept separate so the TUI and interactive mode can reuse the same flag definitions and
 defaults rather than re-declaring them and drifting.

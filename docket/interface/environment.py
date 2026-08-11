@@ -1,4 +1,4 @@
-"""Pre-flight environment checks. Mirrors docket/interface/environment.py.
+"""Pre-flight environment checks.
 
 Run before a scan starts so a missing prerequisite is reported in one clear message
 up front, rather than surfacing as a confusing failure ten turns in — an agent that

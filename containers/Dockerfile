@@ -38,8 +38,8 @@ RUN git clone --depth 1 --branch ${SQLMAP_TAG} \
         https://github.com/sqlmapproject/sqlmap.git /opt/sqlmap \
     && rm -rf /opt/sqlmap/.git
 
-# mitmproxy as the intercepting-proxy tool (M7). Stands in for upstream Docket's Caido,
-# which is commercial, GUI-first, and needs an SDK client. Note this target is plain
+# mitmproxy as the intercepting-proxy tool: open-source and scriptable, unlike the
+# commercial GUI-first proxies that ship their own SDK client. Note this target is plain
 # HTTP, so there is no TLS to intercept and no CA-cert bootstrap step at all - a real
 # chunk of usual proxy setup that simply evaporates here.
 RUN pip install mitmproxy

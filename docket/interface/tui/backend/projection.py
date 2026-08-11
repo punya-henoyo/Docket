@@ -1,5 +1,4 @@
-"""Folds the event stream into renderable state. Mirrors
-docket/interface/tui/backend/projection.py.
+"""Folds the event stream into renderable state.
 
 A pure reduce over events: (state, event) -> state, with no I/O and no framework
 imports. That is deliberate — it means the TUI, the web viewer, and the tests all

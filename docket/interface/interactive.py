@@ -1,5 +1,4 @@
 """Interactive mode: stream a scan's progress and show findings as they land.
-Mirrors docket/interface/interactive.py.
 
 Deliberately NOT the TUI. This is the plain-stdout path for a normal `docket scan` —
 it works over SSH, in a dumb terminal, and when piped to a file. The Textual TUI

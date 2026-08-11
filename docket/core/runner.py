@@ -1,4 +1,4 @@
-"""Top-level docket scan runner. Mirrors docket/core/runner.py.
+"""Top-level docket scan runner.
 
 The one seam between CLI, orchestration, sandbox, and reporting: docket.interface.main
 calls run_scan() exactly once. Root spawns sqli/cmdi/xss specialists through

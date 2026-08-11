@@ -1,4 +1,4 @@
-"""Shared terminal-output helpers for the CLI. Mirrors docket/interface/utils.py."""
+"""Shared terminal-output helpers for the CLI. """
 from __future__ import annotations
 
 import os

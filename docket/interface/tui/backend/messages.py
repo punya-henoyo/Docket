@@ -1,4 +1,4 @@
-"""Event emission from a running scan. Mirrors docket/interface/tui/backend/messages.py.
+"""Event emission from a running scan.
 
 The emitter is a thin, always-safe writer: a scan must never fail because a UI is
 watching it, so every call is wrapped and any error is swallowed at the protocol layer.

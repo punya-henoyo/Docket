@@ -1,4 +1,4 @@
-"""Local HTTP server for the dashboard. Mirrors docket/interface/viewer/server.py.
+"""Local HTTP server for the dashboard.
 
 Binds to 127.0.0.1 only. Nothing leaves the machine: the page is served from this
 package, the data comes from the run directory on disk, and there is no account, no

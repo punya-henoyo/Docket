@@ -1,9 +1,9 @@
-"""The Textual TUI. Mirrors docket/interface/tui/live_view.py.
+"""The live terminal UI.
 
-Upstream's TUI is Go/Bubble Tea driven by a Python sidecar; this is Textual, so the
-whole thing stays in one language and one process — no Go toolchain, no protocol
-bridge between them. The backend split (protocol/projection/messages) is kept because
-it is what lets the web viewer render the same run from the same events.
+Built in Textual so the whole front-end stays in one language and one process — no
+separate UI toolchain and no protocol bridge. The backend split
+(protocol/projection/messages) exists because it is what lets the web viewer render
+the same run from the same events.
 
 Reads <run>/events.jsonl incrementally, so it works equally as a live monitor during a
 scan and as a replay of a finished one.

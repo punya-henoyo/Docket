@@ -1,7 +1,5 @@
 """The agent run loop and the multi-agent spawn wrapper that guarantees a dead child
-still reports a terminal status back to its parent. Mirrors docket/core/execution.py.
-
-Cost/budget hooks live in docket/core/hooks.py.
+still reports a terminal status back to its parent. Cost/budget hooks live in docket/core/hooks.py.
 """
 from __future__ import annotations
 

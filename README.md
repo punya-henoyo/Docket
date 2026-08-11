@@ -5,10 +5,8 @@
 `docket` is an autonomous pentesting tool: LLM agents that exploit a target *dynamically*
 and report a finding only once they've reproduced it with a working proof-of-concept.
 
-Modeled on [Docket](https://github.com/internal/docket) — an independent implementation
-that mirrors its architecture (module layout, `SandboxAgent` + capabilities, tool set,
-event-driven front-ends), minus the commercial layer: no pricing, accounts, upload, or
-telemetry.
+Built for internal use: no accounts, no upload, no telemetry. Everything stays on the
+machine that runs it.
 
 ## What it actually proves
 
@@ -37,8 +35,7 @@ docket view baseline --full                           # terminal report
 docket view baseline --web                            # local dashboard
 ```
 
-Exit codes (Docket's contract, kept because it's the CI gate): `0` clean, `1` error,
-`2` findings present.
+Exit codes: `0` clean, `1` error, `2` findings present — so it works as a CI gate.
 
 `--no-sandbox` runs without Docker; it costs you `shell` (sqlmap) and `browser` (the
 XSS execution proof).

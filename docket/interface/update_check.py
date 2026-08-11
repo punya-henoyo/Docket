@@ -1,9 +1,8 @@
-"""Version reporting. Mirrors docket/interface/update_check.py in shape, not behaviour.
+"""Version reporting. py in shape, not behaviour.
 
-Upstream phones PyPI to advertise a newer release. docket is an internal tool with no
-package index behind it, and a security tool making an unexpected outbound request on
-startup is exactly the behaviour you would not want to explain in a review — so the
-network check is OFF unless DOCKET_UPDATE_URL is explicitly set.
+docket is an internal tool with no package index behind it, and a security tool making
+an unexpected outbound request on startup is exactly the behaviour you would not want
+to explain in a review — so the network check is OFF unless DOCKET_UPDATE_URL is set.
 """
 from __future__ import annotations
 

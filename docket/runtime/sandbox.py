@@ -1,8 +1,7 @@
 """Host side of the sandbox: build the image, run one container per scan, and drive
 its RPC shim (docket/runtime/server.py) over HTTP.
 
-Deliberate deviation from the original design, which specified the `docker` Python SDK
-(docker>=7.1.0): this needs exactly five verbs — image inspect, build, run, port,
+The `docker` Python SDK (docker>=7.1.0) was considered and rejected: this needs exactly five verbs — image inspect, build, run, port,
 stop/rm — and the `docker` CLI is already installed. Shelling out keeps a dependency
 out of pyproject.toml and makes every operation copy-pasteable when debugging.
 # ponytail: docker via subprocess, not the SDK — revisit only if this starts needing

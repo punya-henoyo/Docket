@@ -1,5 +1,4 @@
 """Assembles a run's on-disk artifacts into the JSON the dashboard renders.
-Mirrors docket/interface/viewer/transcript.py.
 
 Everything is read straight off disk — report.json, events.jsonl, notes, todos. There
 is no upload and no account: `docket view --web` shows YOUR run from YOUR filesystem,

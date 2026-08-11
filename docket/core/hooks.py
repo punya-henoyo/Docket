@@ -1,4 +1,4 @@
-"""SDK run hooks used by docket orchestration. Mirrors docket/core/hooks.py.
+"""SDK run hooks used by docket orchestration.
 
 Two jobs, both of which must happen around a model call rather than inside our own
 code: charge each turn to the coordinator, and refuse to start a turn once the caller
@@ -26,14 +26,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-LLM_TURN_KEY = "llm_turn"
-
-_STAGE_LABELS: tuple[str, ...] = ("NOTICE", "URGENT", "CRITICAL")
-_TURN_WARN_BANDS: tuple[float, ...] = (0.70, 0.85, 0.95)
-_ROOT_BUDGET_WARN_BANDS: tuple[float, ...] = (0.70, 0.85, 0.95)
+_STAGE_LABELS: tuple[str, ...] = ("HEADS-UP", "TIGHT", "LAST-CALL")
+_TURN_WARN_BANDS: tuple[float, ...] = (0.65, 0.85, 0.95)
+_ROOT_BUDGET_WARN_BANDS: tuple[float, ...] = (0.65, 0.85, 0.95)
 # Subagents are warned earlier and more tightly than root: a child that overruns
 # strands its findings, while root only needs enough headroom to aggregate.
-_SUBAGENT_BUDGET_WARN_BANDS: tuple[float, ...] = (0.75, 0.80, 0.85)
+_SUBAGENT_BUDGET_WARN_BANDS: tuple[float, ...] = (0.60, 0.78, 0.90)
 
 
 class BudgetExceeded(Exception):
@@ -155,15 +153,15 @@ def demo() -> None:
 
     reset_report_state()
     assert _stage_for(0.10, _ROOT_BUDGET_WARN_BANDS) is None
-    assert _stage_for(0.72, _ROOT_BUDGET_WARN_BANDS) == "NOTICE"
-    assert _stage_for(0.88, _ROOT_BUDGET_WARN_BANDS) == "URGENT"
-    assert _stage_for(0.99, _ROOT_BUDGET_WARN_BANDS) == "CRITICAL"
-    # Subagents escalate faster than root at the same spend: at 81% a child is already
-    # URGENT while root is still only at NOTICE.
-    assert _stage_for(0.81, _SUBAGENT_BUDGET_WARN_BANDS) == "URGENT"
-    assert _stage_for(0.81, _ROOT_BUDGET_WARN_BANDS) == "NOTICE"
-    assert _stage_for(0.86, _SUBAGENT_BUDGET_WARN_BANDS) == "CRITICAL"
-    assert _stage_for(0.86, _ROOT_BUDGET_WARN_BANDS) == "URGENT"
+    assert _stage_for(0.72, _ROOT_BUDGET_WARN_BANDS) == "HEADS-UP"
+    assert _stage_for(0.88, _ROOT_BUDGET_WARN_BANDS) == "TIGHT"
+    assert _stage_for(0.99, _ROOT_BUDGET_WARN_BANDS) == "LAST-CALL"
+    # Subagents escalate faster than root at the same spend: at 79% a child is already
+    # TIGHT while root is still only at HEADS-UP.
+    assert _stage_for(0.79, _SUBAGENT_BUDGET_WARN_BANDS) == "TIGHT"
+    assert _stage_for(0.79, _ROOT_BUDGET_WARN_BANDS) == "HEADS-UP"
+    assert _stage_for(0.91, _SUBAGENT_BUDGET_WARN_BANDS) == "LAST-CALL"
+    assert _stage_for(0.91, _ROOT_BUDGET_WARN_BANDS) == "TIGHT"
 
     class _U:
         input_tokens, output_tokens = 1000, 500

@@ -11,7 +11,7 @@ packages installed just to serve tool calls.
 
 Only SANDBOXED tools live here — ones whose effects belong inside the container.
 Host-side tools (`finding`, which must reach the host process's FindingStore via its
-on_finding callback) deliberately stay in the host process; see docket/roles/factory.py.
+on_finding callback) deliberately stay in the host process; see docket/agents/factory.py.
 """
 from __future__ import annotations
 
