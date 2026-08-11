@@ -50,9 +50,15 @@ test-fast:
 	  uv run python $$f >/dev/null 2>&1 && echo "ok   $$f" || { echo "FAIL $$f"; exit 1; }; \
 	done
 
+# `A && B || echo` would swallow a real lint failure: if B exits non-zero the || branch
+# runs and the target still exits 0. That is fine for a local nicety and useless as a CI
+# gate, so the skip case is an explicit else instead.
 lint:
-	@command -v ruff >/dev/null 2>&1 && ruff check engine/docket tests && ruff format --check engine/docket tests \
-	  || echo "ruff not installed — skipping (uv tool install ruff)"
+	@if command -v ruff >/dev/null 2>&1; then \
+	  ruff check engine/docket tests && ruff format --check engine/docket tests; \
+	else \
+	  echo "ruff not installed — skipping (uv tool install ruff)"; \
+	fi
 
 clean:
 	rm -rf docket_runs
