@@ -49,7 +49,7 @@ XSS execution proof).
 |---|---|
 | `engine/docket/core/` | `AgentCoordinator`, run loop, budget hooks, sessions, runner |
 | `engine/docket/agents/` | agent factory (`SandboxAgent` + Filesystem/Shell capabilities) + prompts |
-| `engine/docket/tools/` | 14 tool packages |
+| `engine/docket/tools/` | 15 tool packages, plus the shared `output_store` module |
 | `engine/docket/runtime/` | Docker sandbox, in-container RPC shim, SDK sandbox session |
 | `engine/docket/llm/` | context budget + conversation compaction |
 | `engine/docket/report/` | finding model, dedupe, SARIF 2.1.0, writer, usage ledger |

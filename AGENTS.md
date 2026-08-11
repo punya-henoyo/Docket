@@ -15,7 +15,7 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
 |---|---|
 | `engine/docket/core/` | coordinator, run loop, hooks, sessions, paths, runner |
 | `engine/docket/agents/` | agent factory + prompts (root / specialist) |
-| `engine/docket/tools/` | one package per tool (14) |
+| `engine/docket/tools/` | 15 tool packages (several expose more than one tool) + `output_store` |
 | `engine/docket/runtime/` | Docker sandbox, in-container RPC shim, SDK sandbox session |
 | `engine/docket/llm/` | context budget + conversation compaction |
 | `engine/docket/report/` | finding model, dedupe, SARIF, writer, usage |
