@@ -8,6 +8,7 @@ dependencies = [
     "openai-agents[litellm]>=0.19,<0.20",
     "pydantic>=2",
     "python-dotenv>=1",
+    "textual>=8.2.8",
 ]
 
 [project.scripts]

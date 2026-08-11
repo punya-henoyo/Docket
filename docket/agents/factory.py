@@ -19,6 +19,7 @@ from agents.sandbox.capabilities import Filesystem, Shell
 
 from docket.config.settings import Config
 from docket.core.execution import ScanContext
+from docket.interface.tui.backend.messages import get_emitter
 from docket.tools.finish.tool import AgentFinalOutput, agent_finish, finish_scan
 from docket.agents.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
 from docket.agents.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
@@ -124,11 +125,29 @@ async def finding(
     """Register a CONFIRMED vulnerability. poc.request and poc.response_excerpt must
     contain real, reproduced evidence you actually observed — never call this on a
     hunch or before you've tried the exploit."""
-    return register_finding(
+    result = register_finding(
         rule_type=rule_type, severity=severity, title=title, description=description,
         location=location, poc=poc, discovered_by=ctx.context.role,
         run_dir=ctx.context.run_dir, on_finding=ctx.context.on_finding,
     )
+    # Emitted here rather than from the generic tool hook: only this wrapper has the
+    # finding's real fields. The hook only sees the return value, which is just an ID —
+    # emitting that would make every finding render as severity "info".
+    # Normalise the location the same way register_finding does: agents pass a full
+    # `url`, while the UI (and the report) key off method/path/parameter.
+    from urllib.parse import urlparse
+
+    get_emitter().finding(
+        ctx.context.agent_id, ctx.context.role,
+        finding_id=result.get("finding_id"), rule_type=rule_type, severity=severity,
+        title=title,
+        location={
+            "method": location.get("method", "GET"),
+            "path": urlparse(location.get("url", "")).path or location.get("path", ""),
+            "parameter": location.get("parameter"),
+        },
+    )
+    return result
 
 
 @function_tool

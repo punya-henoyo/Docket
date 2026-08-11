@@ -19,6 +19,7 @@ from docket.config.settings import Config
 from docket.core.agents import AgentCoordinator, AgentStatus
 from docket.core.hooks import BudgetExceeded, BudgetHooks
 from docket.core.sessions import make_session
+from docket.interface.tui.backend.messages import get_emitter
 from docket.llm.compaction import compact
 from docket.report.models import Finding
 
@@ -165,6 +166,7 @@ async def _run_child(
         status = "crashed"
     finally:
         await coordinator.mark_terminal(agent_id, status, result)
+        get_emitter().agent_finished(agent_id, role, status, result.get("summary", ""))
 
 
 def spawn_child_agent(

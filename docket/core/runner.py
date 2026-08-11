@@ -19,6 +19,7 @@ from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.core.inputs import DEFAULT_MAX_TURNS
 from docket.report.models import Finding
+from docket.interface.tui.backend.messages import set_emitter
 from docket.report.state import init_report_state, reset_report_state
 from docket.runtime.sandbox import Sandbox, rewrite_for_container
 from docket.tools.agents_graph.tools import create_agent, view_agent_graph, wait_for_agents
@@ -69,6 +70,9 @@ def run_scan(
             store=store, budget_usd=cfg.max_cost_usd,
         )
 
+    emitter = set_emitter(directory)
+    emitter.scan_started(target_url, run_name)
+
     sandbox = Sandbox(directory / "sandbox") if use_sandbox else None
     # Inside the container, "127.0.0.1" is the container itself — the agent has to be
     # handed a hostname that actually reaches the host's app.
@@ -101,6 +105,7 @@ def run_scan(
             sandbox.stop()
 
     findings = output.get("findings", [])
+    emitter.scan_finished(bool(output.get("success", True)), output.get("summary", ""))
     return ScanResult(
         success=bool(output.get("success", True)),
         summary=output.get("summary", ""),

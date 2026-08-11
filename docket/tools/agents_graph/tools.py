@@ -15,6 +15,7 @@ from collections.abc import Awaitable
 from agents import RunContextWrapper, function_tool
 
 from docket.core.execution import ScanContext, run_agent_loop, spawn_child_agent
+from docket.interface.tui.backend.messages import get_emitter
 from docket.agents.factory import SpecialistRole, build_agent
 from docket.agents.prompts.specialist import build_task as build_specialist_task
 
@@ -58,6 +59,7 @@ async def create_agent(
     def run_coro_factory() -> Awaitable[dict]:
         return run_agent_loop(child_agent, child_context, child_task, max_turns=12)
 
+    get_emitter().agent_spawned(agent_id, name, role, parent.agent_id)
     spawn_child_agent(coordinator, agent_id, name, role, parent.agent_id, run_coro_factory)
     return {"agent_id": agent_id, "status": "spawned"}
 

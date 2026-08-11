@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from agents.lifecycle import RunHooks
 
+from docket.interface.tui.backend.messages import get_emitter
 from docket.report.state import get_global_report_state, mark_warned
 
 if TYPE_CHECKING:
@@ -109,6 +110,24 @@ class BudgetHooks(RunHooks):
         )
         if usd:
             await coordinator.record_spend(ctx.agent_id, usd)
+        totals = get_global_report_state().usage.totals()
+        get_emitter().usage(totals["cost_usd"], totals["total_tokens"])
+
+    async def on_tool_start(self, context, agent, tool) -> None:
+        # Emitting from RunHooks rather than wrapping each tool: one place covers all
+        # 14 tools, and a tool added later is instrumented for free.
+        ctx = context.context
+        get_emitter().tool_call(
+            getattr(ctx, "agent_id", "root"), getattr(ctx, "role", "root"),
+            getattr(tool, "name", str(tool)), {},
+        )
+
+    async def on_tool_end(self, context, agent, tool, result) -> None:
+        ctx = context.context
+        name = getattr(tool, "name", str(tool))
+        get_emitter().tool_result(
+            getattr(ctx, "agent_id", "root"), getattr(ctx, "role", "root"), name, result,
+        )
 
     def _warn_if_near_limits(self, ctx: Any, coordinator: Any) -> None:
         is_root = getattr(ctx, "role", "root") == "root"
