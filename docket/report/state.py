@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from docket.report.usage import LLMUsageLedger
+
 if TYPE_CHECKING:
     from docket.report.dedupe import FindingStore
 
@@ -30,6 +32,8 @@ class ReportState:
     spent_usd: float = 0.0
     # Warning bands already emitted, so a crossing is announced once, not every turn.
     warned_stages: set[str] = field(default_factory=set)
+    # Per-agent token accounting; explains the dollar figure the budget enforces.
+    usage: LLMUsageLedger = field(default_factory=LLMUsageLedger)
 
     @property
     def budget_fraction(self) -> float:
@@ -60,6 +64,7 @@ def init_report_state(
         _state.budget_usd = budget_usd
         _state.spent_usd = 0.0
         _state.warned_stages = set()
+        _state.usage = LLMUsageLedger()
     return _state
 
 
@@ -88,6 +93,7 @@ def reset_report_state() -> None:
         _state.budget_usd = 0.0
         _state.spent_usd = 0.0
         _state.warned_stages = set()
+        _state.usage = LLMUsageLedger()
 
 
 def demo() -> None:

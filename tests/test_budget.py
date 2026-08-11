@@ -22,6 +22,7 @@ from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.core.hooks import estimate_cost
 from docket.report.dedupe import FindingStore
+from docket.report.state import get_global_report_state, reset_report_state
 from docket.agents.factory import build_agent
 from docket.tools.finish.tool import agent_finish
 
@@ -55,6 +56,7 @@ class _FakeUsage:
 
 def test_spend_is_recorded_per_agent_and_scan_wide() -> None:
     """A normal (under-budget) run charges the coordinator for every turn it took."""
+    reset_report_state()
     cfg = _config(max_cost=10.0, per_child=5.0)
     store = FindingStore()
     coordinator = AgentCoordinator(
@@ -76,6 +78,16 @@ def test_spend_is_recorded_per_agent_and_scan_wide() -> None:
     # Two model turns were taken, so two turns must have been billed.
     assert coordinator.spent_usd > 0, coordinator.spent_usd
     assert coordinator.agent_spent["solo"] == coordinator.spent_usd
+
+    # ...and the usage ledger recorded the same work in TOKENS, per agent — proving
+    # the hook -> ledger path is live rather than scaffolding.
+    ledger = get_global_report_state().usage
+    totals = ledger.totals()
+    assert totals["requests"] == 2, totals
+    assert totals["input_tokens"] == 2000 and totals["output_tokens"] == 400, totals
+    rows = ledger.per_agent()
+    assert len(rows) == 1 and rows[0]["agent_id"] == "solo", rows
+    assert rows[0]["role"] == "sqli" and rows[0]["total_tokens"] == 2400, rows[0]
 
 
 def test_budget_cutoff_stops_the_loop_and_preserves_earlier_findings() -> None:

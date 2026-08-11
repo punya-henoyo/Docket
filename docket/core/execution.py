@@ -6,6 +6,7 @@ Cost/budget hooks live in docket/core/hooks.py.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +18,11 @@ from agents.models.interface import Model
 from docket.config.settings import Config
 from docket.core.agents import AgentCoordinator, AgentStatus
 from docket.core.hooks import BudgetExceeded, BudgetHooks
+from docket.core.sessions import make_session
+from docket.llm.compaction import compact
 from docket.report.models import Finding
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -45,6 +50,20 @@ class ScanContext:
 _TERMINAL_EXCEPTIONS = (BudgetExceeded, MaxTurnsExceeded, UserError)
 
 
+def _is_context_overflow(exc: BaseException) -> bool:
+    try:
+        from litellm.exceptions import ContextWindowExceededError
+
+        if isinstance(exc, ContextWindowExceededError):
+            return True
+    except ImportError:  # pragma: no cover
+        pass
+    # Providers vary in how they surface it, and LiteLLM doesn't always normalise a
+    # passthrough route's error into its own class.
+    text = str(exc).lower()
+    return "context" in text and ("length" in text or "window" in text or "too long" in text)
+
+
 async def run_agent_loop(
     agent: Agent[ScanContext],
     context: ScanContext,
@@ -53,17 +72,22 @@ async def run_agent_loop(
 ) -> dict:
     """Runs one agent to completion, returns its finish tool's output dict.
 
-    Transient-error recovery is a flat retry (2 attempts, 3s apart), not upstream
-    Docket's full image-strip/compaction/backoff pipeline — vulnshop's known routes
-    will never approach a context-window limit or a real rate-limit wall.
-    # ponytail: flat retry(2) not full backoff/compaction — upgrade if a real
-    # (non-toy) target starts overflowing context or hammering rate limits.
+    Three recovery paths, in order of specificity:
+      - context overflow -> compact the session's history and retry (the retry is
+        pointless without compaction: an unchanged history overflows identically)
+      - terminal errors (budget/max-turns/user error) -> report a clean failure
+      - anything else transient -> one flat retry, 3s later
     """
+    session = make_session(context.run_dir, context.agent_id)
+    model_name = context.config.llm if context.config else ""
     last_exc: Exception | None = None
-    for attempt in range(2):
+    compacted_already = False
+
+    for attempt in range(3):
         try:
             result = await Runner.run(
-                agent, task, context=context, max_turns=max_turns, hooks=BudgetHooks(max_turns=max_turns),
+                agent, task, context=context, max_turns=max_turns,
+                hooks=BudgetHooks(max_turns=max_turns), session=session,
             )
             output = result.final_output
             if not isinstance(output, dict):
@@ -77,12 +101,25 @@ async def run_agent_loop(
             # already registered by this agent are on disk and in the FindingStore,
             # and its parent still deserves a status it can aggregate.
             return {"summary": f"stopped: {type(exc).__name__}: {exc}", "findings": [], "success": False}
-        except Exception as exc:  # transient model/network error
+        except Exception as exc:
             last_exc = exc
-            if attempt == 0:
+            if _is_context_overflow(exc) and not compacted_already:
+                items = await session.get_items()
+                compacted, did = compact(items, model_name)
+                if did:
+                    await session.clear_session()
+                    await session.add_items(compacted)
+                    compacted_already = True
+                    logger.info("compacted history after context overflow; retrying")
+                    continue
+                return {
+                    "summary": f"stopped: context window exceeded and history could not be compacted: {exc}",
+                    "findings": [], "success": False,
+                }
+            if attempt < 2:
                 await asyncio.sleep(3)
                 continue
-    raise last_exc  # pragma: no cover — only reached if both attempts fail
+    raise last_exc  # pragma: no cover — only reached if every attempt fails
 
 
 async def _run_child(

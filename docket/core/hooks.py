@@ -102,6 +102,11 @@ class BudgetHooks(RunHooks):
             return
         self._turns += 1
         usd = estimate_cost(config.llm, response.usage)
+        # Token accounting is recorded even when cost is unavailable — an unpriced
+        # model still tells you which agent did the work.
+        get_global_report_state().usage.record(
+            ctx.agent_id, response.usage, cost_usd=usd, role=ctx.role, model=config.llm,
+        )
         if usd:
             await coordinator.record_spend(ctx.agent_id, usd)
 

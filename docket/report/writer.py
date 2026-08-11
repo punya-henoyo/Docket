@@ -11,6 +11,7 @@ from docket import __version__
 from docket.report.dedupe import FindingStore
 from docket.report.models import Finding, Severity
 from docket.report.sarif import write_sarif
+from docket.report.state import get_global_report_state
 
 _SEVERITY_ORDER = list(Severity)  # CRITICAL first, per declaration order in models.py
 
@@ -48,6 +49,8 @@ def build_report(
         "agents_spawned": agents_spawned,
         "finding_count": len(findings),
         "severity_counts": severity_counts(findings),
+        # Per-agent token accounting: explains where the run's cost actually went.
+        "usage": get_global_report_state().usage.to_dict(),
         "findings": [f.model_dump(mode="json") for f in findings],
     }
 
