@@ -32,8 +32,8 @@ repos:
           uv run python -c "
           import ast, sys, pathlib;
           bad = [];
-          for p in ['docket/tools/shell/tools.py','docket/tools/http_request/tools.py',
-                    'docket/tools/output_store.py','docket/tools/proxy/tools.py']:
+          for p in ['engine/docket/tools/shell/tools.py','engine/docket/tools/http_request/tools.py',
+                    'engine/docket/tools/output_store.py','engine/docket/tools/proxy/tools.py']:
               tree = ast.parse(pathlib.Path(p).read_text());
               mods = {n.module.split('.')[0] for n in ast.walk(tree)
                       if isinstance(n, ast.ImportFrom) and n.module};

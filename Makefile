@@ -51,7 +51,7 @@ test-fast:
 	done
 
 lint:
-	@command -v ruff >/dev/null 2>&1 && ruff check docket tests && ruff format --check docket tests \
+	@command -v ruff >/dev/null 2>&1 && ruff check engine/docket tests && ruff format --check engine/docket tests \
 	  || echo "ruff not installed — skipping (uv tool install ruff)"
 
 clean:

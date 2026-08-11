@@ -42,16 +42,19 @@ XSS execution proof).
 
 ## Architecture
 
+`engine/` is only a source root; the importable package is `docket`, so imports read
+`from docket.core...` no matter what the wrapper is called.
+
 | Path | Role |
 |---|---|
-| `docket/core/` | `AgentCoordinator`, run loop, budget hooks, sessions, runner |
-| `docket/agents/` | agent factory (`SandboxAgent` + Filesystem/Shell capabilities) + prompts |
-| `docket/tools/` | 14 tool packages |
-| `docket/runtime/` | Docker sandbox, in-container RPC shim, SDK sandbox session |
-| `docket/llm/` | context budget + conversation compaction |
-| `docket/report/` | finding model, dedupe, SARIF 2.1.0, writer, usage ledger |
-| `docket/interface/` | CLI, Textual TUI, local web viewer |
-| `docket/skills/` | markdown playbooks agents load on demand |
+| `engine/docket/core/` | `AgentCoordinator`, run loop, budget hooks, sessions, runner |
+| `engine/docket/agents/` | agent factory (`SandboxAgent` + Filesystem/Shell capabilities) + prompts |
+| `engine/docket/tools/` | 14 tool packages |
+| `engine/docket/runtime/` | Docker sandbox, in-container RPC shim, SDK sandbox session |
+| `engine/docket/llm/` | context budget + conversation compaction |
+| `engine/docket/report/` | finding model, dedupe, SARIF 2.1.0, writer, usage ledger |
+| `engine/docket/interface/` | CLI, Textual TUI, local web viewer |
+| `engine/docket/skills/` | markdown playbooks agents load on demand |
 
 Design points worth knowing:
 
@@ -74,7 +77,7 @@ Design points worth knowing:
 search via `DOCKET_SEARCH_PROVIDER` (`tavily|brave|serper|perplexity|deepseek`) +
 `DOCKET_SEARCH_API_KEY`. A `.env` is loaded automatically. See `.env.example`.
 
-**No telemetry.** Nothing is collected or transmitted — see `docket/telemetry/README.md`.
+**No telemetry.** Nothing is collected or transmitted — see `engine/docket/telemetry/README.md`.
 
 ## Development
 

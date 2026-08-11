@@ -7,16 +7,20 @@ An autonomous pentesting tool: LLM agents that exploit a target dynamically and 
 a finding only once they have reproduced it with a working proof-of-concept.
 
 ## Layout
+`engine/` is a source root, nothing more — it is never imported and holds no code of its
+own. The importable package is `docket`, so imports are always `from docket.core...`
+regardless of the wrapper. `containers/`, `tests/`, and packaging live at the repo root.
+
 | Path | Role |
 |---|---|
-| `docket/core/` | coordinator, run loop, hooks, sessions, paths, runner |
-| `docket/agents/` | agent factory + prompts (root / specialist) |
-| `docket/tools/` | one package per tool (14) |
-| `docket/runtime/` | Docker sandbox, in-container RPC shim, SDK sandbox session |
-| `docket/llm/` | context budget + conversation compaction |
-| `docket/report/` | finding model, dedupe, SARIF, writer, usage |
-| `docket/interface/` | CLI, TUI (Textual), local web viewer |
-| `docket/skills/` | markdown playbooks agents load on demand |
+| `engine/docket/core/` | coordinator, run loop, hooks, sessions, paths, runner |
+| `engine/docket/agents/` | agent factory + prompts (root / specialist) |
+| `engine/docket/tools/` | one package per tool (14) |
+| `engine/docket/runtime/` | Docker sandbox, in-container RPC shim, SDK sandbox session |
+| `engine/docket/llm/` | context budget + conversation compaction |
+| `engine/docket/report/` | finding model, dedupe, SARIF, writer, usage |
+| `engine/docket/interface/` | CLI, TUI (Textual), local web viewer |
+| `engine/docket/skills/` | markdown playbooks agents load on demand |
 
 ## Rules that are load-bearing
 1. **A finding requires evidence.** `PoC.request`/`PoC.response` are validated
@@ -30,12 +34,12 @@ a finding only once they have reproduced it with a working proof-of-concept.
 4. **Agents stop only via a finish tool.** Enforced by `tool_use_behavior`, not prompts.
 5. **A dead child still reports.** The `finally:` block in `_run_child` is what stops a
    waiting parent from hanging. Don't make it conditional.
-6. **No telemetry.** See `docket/telemetry/README.md`.
+6. **No telemetry.** See `engine/docket/telemetry/README.md`.
 
 ## Conventions
 - Every module has a runnable `demo()` self-check. Run them all with `make check`
   (43 of them, no Docker or API key needed). Add one for anything non-trivial.
-- Run modules as `python -m docket.x.y`, never `python docket/x/y.py` — the latter puts
+- Run modules as `python -m docket.x.y`, never `python engine/docket/x/y.py` — the latter puts
   the package dir on `sys.path` and shadows the third-party `agents` SDK.
 - Tests are plain-assert scripts, no pytest. `make test` needs Docker.
 - The test target is `tests/fixtures/target_app.py`: self-contained, intentionally

@@ -9,6 +9,11 @@ from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
+# Repo root is derived HERE and nowhere else. It used to be counted independently in
+# runtime/sandbox.py too, and moving the package under engine/ silently broke both
+# counters at once — one depth constant is the whole point of this module.
+REPO_ROOT = PACKAGE_ROOT.parents[1]
+
 
 def package_path(*parts: str) -> Path:
     return PACKAGE_ROOT.joinpath(*parts)
@@ -23,9 +28,9 @@ def dashboard_html() -> Path:
 
 
 def containers_dir() -> Path:
-    """The Dockerfile lives beside the package, not inside it — it is build input,
-    not a runtime resource."""
-    return PACKAGE_ROOT.parent / "containers"
+    """The Dockerfile lives at the repo root, not inside the package — it is build
+    input, not a runtime resource, so it is absent from an installed wheel."""
+    return REPO_ROOT / "containers"
 
 
 def demo() -> None:
@@ -34,7 +39,10 @@ def demo() -> None:
     assert (skills_dir() / "coordination" / "root_agent.md").exists()
     assert dashboard_html().is_file(), dashboard_html()
     assert package_path("core", "runner.py").exists()
-    assert containers_dir().name == "containers"
+    # is_dir(), not just .name — a wrong depth still yields a path ending in
+    # "containers", so only existence actually catches a moved package.
+    assert containers_dir().is_dir(), containers_dir()
+    assert (containers_dir() / "Dockerfile").is_file()
     print("utils.resource_paths: ok")
 
 

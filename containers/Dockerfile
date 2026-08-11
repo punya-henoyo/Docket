@@ -54,7 +54,9 @@ RUN pip install playwright \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY docket/ /app/docket/
+# Source is engine/docket/ on the host but stays /app/docket/ in the image, so the
+# in-container import path and CMD below are unaffected by the host-side layout.
+COPY engine/docket/ /app/docket/
 
 # The shim itself imports only stdlib-backed modules (shell/http_request/output_store),
 # so nothing above is needed to serve tool calls - the deps are for the tools the

@@ -9,21 +9,21 @@ make check                # 43 self-checks, no Docker or key needed
 ```
 
 ## Adding a tool
-1. Create `docket/tools/<name>/` with `tool.py` (single tool) or `tools.py` (several),
+1. Create `engine/docket/tools/<name>/` with `tool.py` (single tool) or `tools.py` (several),
    matching the existing convention.
 2. Keep it **stdlib-only** if it will run inside the sandbox — the container has no
    project dependencies installed.
-3. Add a `@function_tool` wrapper in `docket/agents/factory.py` and put it in the right
+3. Add a `@function_tool` wrapper in `engine/docket/agents/factory.py` and put it in the right
    role's list. Tools that don't touch the target belong in `_COMMON_TOOLS`.
 4. Add a `demo()` self-check and register the module in the `Makefile`'s `check` list.
 
 ## Adding a skill
-Drop a markdown file in `docket/skills/<category>/`. No code change — `load_skill` picks
+Drop a markdown file in `engine/docket/skills/<category>/`. No code change — `load_skill` picks
 it up as `<category>/<filename>`.
 
 ## Adding a specialist role
-Extend the `Role`/`SpecialistRole` literals in `docket/agents/factory.py`, add a
-technique hint in `docket/agents/prompts/specialist.py`, and grant only the tools that
+Extend the `Role`/`SpecialistRole` literals in `engine/docket/agents/factory.py`, add a
+technique hint in `engine/docket/agents/prompts/specialist.py`, and grant only the tools that
 role genuinely needs. Narrow tool sets are deliberate.
 
 ## Style

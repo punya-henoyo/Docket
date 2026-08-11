@@ -17,8 +17,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DOCKERFILE = REPO_ROOT / "containers" / "Dockerfile"
+from docket.utils.resource_paths import REPO_ROOT, containers_dir
+
+DOCKERFILE = containers_dir() / "Dockerfile"
 DEFAULT_IMAGE = "docket-sandbox:latest"
 SHIM_PORT = 8765
 
