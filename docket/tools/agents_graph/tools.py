@@ -15,8 +15,8 @@ from collections.abc import Awaitable
 from agents import RunContextWrapper, function_tool
 
 from docket.core.execution import ScanContext, run_agent_loop, spawn_child_agent
-from docket.roles.factory import SpecialistRole, build_agent
-from docket.roles.prompts.specialist import build_task as build_specialist_task
+from docket.agents.factory import SpecialistRole, build_agent
+from docket.agents.prompts.specialist import build_task as build_specialist_task
 
 
 @function_tool(strict_mode=False)

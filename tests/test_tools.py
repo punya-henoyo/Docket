@@ -10,8 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from docket.report.dedupe import FindingStore
-from docket.tools.finding import register_finding
-from docket.tools.http_request import do_http_request
+from docket.tools.reporting.tool import register_finding
+from docket.tools.http_request.tools import do_http_request
 
 TARGET = "http://127.0.0.1:5000"
 

@@ -15,13 +15,13 @@ from agents import Agent, FunctionToolResult, RunContextWrapper, Tool, ToolsToFi
 from agents.extensions.models.litellm_model import LitellmModel
 from agents.models.interface import Model
 
-from docket.config import Config
+from docket.config.settings import Config
 from docket.core.execution import ScanContext
-from docket.roles.lifecycle import AgentFinalOutput, agent_finish, finish_scan
-from docket.roles.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
-from docket.roles.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
-from docket.tools.finding import FindingType, register_finding
-from docket.tools.http_request import do_http_request
+from docket.tools.finish.tool import AgentFinalOutput, agent_finish, finish_scan
+from docket.agents.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
+from docket.agents.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
+from docket.tools.reporting.tool import FindingType, register_finding
+from docket.tools.http_request.tools import do_http_request
 
 Role = Literal["root", "sqli", "cmdi", "xss"]
 SpecialistRole = Literal["sqli", "cmdi", "xss"]

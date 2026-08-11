@@ -16,10 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mock_model import ScriptedModel
-from docket.config import Config, run_dir
+from docket.config.settings import Config, run_dir
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.report.dedupe import FindingStore
-from docket.roles.factory import build_agent
+from docket.agents.factory import build_agent
 from docket.runtime.sandbox import HOST_ALIAS, Sandbox, rewrite_for_container
 
 HOST_TARGET = "http://127.0.0.1:5000"

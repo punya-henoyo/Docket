@@ -21,17 +21,17 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from docket.tools.browser import browser, browser_close
-from docket.tools.http_request import do_http_request
+from docket.tools.agent_browser.tools import browser, browser_close
+from docket.tools.http_request.tools import do_http_request
 from docket.tools.output_store import get as output_get
-from docket.tools.proxy import (
+from docket.tools.proxy.tools import (
     proxy_get,
     proxy_list,
     proxy_replay,
     proxy_start,
     proxy_stop,
 )
-from docket.tools.shell import run_shell
+from docket.tools.shell.tools import run_shell
 
 PORT = int(os.environ.get("DOCKET_SHIM_PORT", "8765"))
 RUN_DIR = Path(os.environ.get("DOCKET_RUN_DIR", "/work/run"))

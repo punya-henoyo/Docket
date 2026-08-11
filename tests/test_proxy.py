@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from docket.config import run_dir
+from docket.config.settings import run_dir
 from docket.runtime.sandbox import Sandbox, rewrite_for_container
 
 

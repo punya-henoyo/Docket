@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from docket.config import RUNS_DIR, Config, run_dir
+from docket.config.settings import RUNS_DIR, Config, run_dir
 from docket.interface.cli import build_parser
 from docket.interface.scan import run_scan
 from docket.report.dedupe import FindingStore

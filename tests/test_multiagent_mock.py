@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mock_model import ScriptedModel
-from docket.config import Config
+from docket.config.settings import Config
 from docket.interface.scan import run_scan
 from docket.report.dedupe import FindingStore
 

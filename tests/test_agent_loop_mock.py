@@ -23,9 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agents import Agent
 
 from mock_model import ScriptedModel
-from docket.roles.factory import _finish_tool_use_behavior, finding, http_request
-from docket.roles.lifecycle import AgentFinalOutput, finish_scan
-from docket.roles.prompts.root import SYSTEM_PROMPT
+from docket.agents.factory import _finish_tool_use_behavior, finding, http_request
+from docket.tools.finish.tool import AgentFinalOutput, finish_scan
+from docket.agents.prompts.root import SYSTEM_PROMPT
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.report.dedupe import FindingStore
 

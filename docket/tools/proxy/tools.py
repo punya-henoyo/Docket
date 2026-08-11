@@ -22,7 +22,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from docket.tools.http_request import DEFAULT_PROXY_URL, do_http_request
+from docket.tools.http_request.tools import DEFAULT_PROXY_URL, do_http_request
 
 # Derived from http_request's constant rather than repeated, so the port the proxy
 # LISTENS on and the port replay/via_proxy DIALS can never drift apart.

@@ -12,14 +12,14 @@ from dataclasses import dataclass
 
 from agents.models.interface import Model
 
-from docket.config import Config, run_dir
+from docket.config.settings import Config, run_dir
 from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.report.models import Finding
 from docket.runtime.sandbox import Sandbox, rewrite_for_container
-from docket.roles.factory import build_agent
-from docket.roles.graph_tools import create_agent, view_agent_graph, wait_for_agents
-from docket.roles.prompts.root import build_root_task
+from docket.agents.factory import build_agent
+from docket.tools.agents_graph.tools import create_agent, view_agent_graph, wait_for_agents
+from docket.agents.prompts.root import build_root_task
 
 
 @dataclass(slots=True)

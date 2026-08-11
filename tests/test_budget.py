@@ -16,12 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agents import Agent
 
 from mock_model import ScriptedModel
-from docket.config import Config, run_dir
+from docket.config.settings import Config, run_dir
 from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, estimate_cost, run_agent_loop
 from docket.report.dedupe import FindingStore
-from docket.roles.factory import build_agent
-from docket.roles.lifecycle import agent_finish
+from docket.agents.factory import build_agent
+from docket.tools.finish.tool import agent_finish
 
 TARGET = "http://127.0.0.1:5000"
 # A real, priced model string so litellm.cost_per_token returns non-zero — the test is

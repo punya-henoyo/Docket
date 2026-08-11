@@ -13,7 +13,7 @@ from typing import Any
 from agents import Agent, MaxTurnsExceeded, ModelResponse, RunContextWrapper, RunHooks, Runner, UserError
 from agents.models.interface import Model
 
-from docket.config import Config
+from docket.config.settings import Config
 from docket.core.agents import AgentCoordinator, AgentStatus
 from docket.report.models import Finding
 
