@@ -157,6 +157,9 @@ def test_child_reserve_cutoff_reports_terminal_status_to_parent() -> None:
             model=ScriptedModel([("agent_finish", {"summary": "x", "findings": [], "success": True})],
                                  tokens_per_turn=(1000, 200)),
         )
+        # register before spawning — spawn_child_agent's contract, so a same-turn
+        # wait_for_agents can see the child (see test_coordinator).
+        await coordinator.register("c9", name="reserve-starved", role="sqli", parent_id="root")
         task = spawn_child_agent(
             coordinator, "c9", "reserve-starved", "sqli", "root",
             lambda: run_agent_loop(child_agent, child_ctx, "probe", max_turns=5),

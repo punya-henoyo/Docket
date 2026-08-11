@@ -12,6 +12,7 @@ from docket.report.dedupe import FindingStore
 from docket.report.models import Finding, Severity
 from docket.report.sarif import write_sarif
 from docket.report.state import get_global_report_state
+from docket.utils.secret_files import redact
 
 _SEVERITY_ORDER = list(Severity)  # CRITICAL first, per declaration order in models.py
 
@@ -72,7 +73,10 @@ def write_report(
         cost_usd=cost_usd, agents_spawned=agents_spawned, success=success,
     )
     json_path = out_dir / "report.json"
-    json_path.write_text(json.dumps(report, indent=2))
+    # Same redaction boundary as SARIF — see write_sarif. This also catches the raw
+    # exception strings folded into `summary`, which are the one realistic way our OWN
+    # key could reach an artifact (a LiteLLM auth error echoing what it was given).
+    json_path.write_text(redact(json.dumps(report, indent=2)))
     sarif_path = write_sarif(out_dir / "report.sarif", sort_findings(store.findings()), target=target)
     return {"json": json_path, "sarif": sarif_path}
 

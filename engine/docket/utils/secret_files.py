@@ -19,6 +19,12 @@ _PATTERNS = [
     re.compile(r"\b(tvly-[A-Za-z0-9_\-]{8,})"),             # Tavily
     re.compile(r"\b(AKIA[0-9A-Z]{16})\b"),                  # AWS access key id
     re.compile(r"(?i)\b(bearer)\s+([A-Za-z0-9._\-]{12,})"), # bearer tokens
+    # Session cookies were the gap here: a captured `Cookie: session=abc123` is a
+    # credential every bit as usable as a bearer token, and it survived every pattern
+    # above. set-cookie covers the response side. The cookie NAME goes with the value —
+    # keeping it would mean a cookie-aware sub-parser for no security gain.
+    re.compile(r"(?i)\b(cookie|set-cookie|x-api-key|x-auth-token)"
+               r"(\s*[:=]\s*)([\"']?)([^\s\"']{4,})"),
     re.compile(r"(?i)\b(authorization|api[_-]?key|password|secret|token)"
                r"(\s*[:=]\s*)([\"']?)([^\s\"',;&]{6,})"),   # key: value pairs
 ]
@@ -56,6 +62,13 @@ def demo() -> None:
     assert REDACTED in redact("password=hunter2000")
     assert REDACTED in redact("AKIAIOSFODNN7EXAMPLE")
     assert REDACTED in redact("ghp_abcdefghijklmnop123")
+    # Session cookies, both directions. These leaked past every other pattern.
+    assert "abc123def456" not in redact("Cookie: session=abc123def456")
+    assert "abc123def456" not in redact("Set-Cookie: sid=abc123def456; HttpOnly")
+    assert "s3cr3tvalue" not in redact("X-API-Key: s3cr3tvalue")
+    # The header NAME survives, so a redacted PoC still shows what to substitute.
+    assert "Authorization" in redact("Authorization: Bearer abcdef1234567890")
+    assert "Cookie" in redact("Cookie: session=abc123def456")
     # Ordinary text is untouched — over-redaction would gut a report.
     assert redact("GET /login returned 401") == "GET /login returned 401"
     assert redact("") == ""

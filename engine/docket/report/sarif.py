@@ -16,6 +16,7 @@ from pathlib import Path
 
 from docket import __version__
 from docket.report.models import Finding, Severity
+from docket.utils.secret_files import redact
 
 SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
 
@@ -142,7 +143,14 @@ def to_sarif(findings: list[Finding], *, target: str | None = None) -> dict:
 
 def write_sarif(path: Path, findings: list[Finding], *, target: str | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(to_sarif(findings, target=target), indent=2))
+    # Redact at the write boundary, on the serialized text, so every field is covered
+    # rather than the handful someone remembered to wrap. SARIF is the artifact built for
+    # upload, and a PoC quotes the request verbatim — including the target's Authorization
+    # and Cookie headers. redact() replaces the VALUE and keeps the header name, so
+    # "Authorization: [REDACTED]" still shows the operator what to substitute; the repro
+    # stays reproducible. [REDACTED] contains no quotes or backslashes, so substituting it
+    # inside serialized JSON cannot corrupt the document.
+    path.write_text(redact(json.dumps(to_sarif(findings, target=target), indent=2)))
     return path
 
 

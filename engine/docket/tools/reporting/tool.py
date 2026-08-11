@@ -52,6 +52,34 @@ def _render_request(request: dict) -> str:
     return "\n".join(parts)
 
 
+def _evidence(value: object, *, dict_ok: bool = False) -> str:
+    """Coerce model-supplied evidence to text WITHOUT manufacturing content.
+
+    PoC's validator rejects blank strings, but it only ever saw the output of `str()`,
+    and `str()` is happy to invent something non-blank out of nothing:
+
+        str(None)              -> "None"    4 chars, not blank, ACCEPTED
+        _render_request({})    -> "GET "    4 chars, not blank, ACCEPTED
+
+    So a JSON `null` from the model was enough to file a finding with zero reproduced
+    output — the one thing this tool must never emit. Absent or structurally empty
+    evidence now becomes "", which the validator refuses.
+
+    A request dict counts as evidence only if it carries a url; a method alone is a
+    shape, not a repro. `dict_ok` is False for response bodies because there is no
+    sensible rendering of a dict as observed output.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        if not dict_ok or not str(value.get("url", "")).strip():
+            return ""
+        return _render_request(value)
+    if isinstance(value, (list, tuple)):
+        return "\n".join(str(v) for v in value if str(v).strip())
+    return str(value)
+
+
 def register_finding(
     *,
     rule_type: FindingType,
@@ -66,6 +94,29 @@ def register_finding(
     confidence: Literal["confirmed", "likely", "suspected"] = "confirmed",
 ) -> dict:
     path = urlparse(location.get("url", "")).path or location.get("path", "")
+
+    # Refuse before constructing, and say why. PoC's validator would raise a
+    # ValidationError here, which the SDK renders to the model as an opaque tool crash —
+    # the model then has no idea it needs to go and actually reproduce the bug. An
+    # explicit refusal is actionable: it names the missing field and what would satisfy it.
+    request_text = _evidence(poc.get("request"), dict_ok=True)
+    response_text = _evidence(poc.get("response_excerpt"))
+    missing = [
+        field for field, value in (("request", request_text), ("response_excerpt", response_text))
+        if not value.strip()
+    ]
+    if missing:
+        return {
+            "ok": False,
+            "error": (
+                f"finding refused — no reproduced evidence in: {', '.join(missing)}. "
+                "Send the literal request you issued and the literal output you observed. "
+                "A description of what you believe happens is not evidence. Go run the "
+                "exploit, capture the real request/response, then call this again."
+            ),
+            "missing": missing,
+        }
+
     finding = Finding(
         rule_id=_TYPE_TO_RULE_ID[rule_type],
         cwe=_TYPE_TO_CWE.get(rule_type),
@@ -79,9 +130,12 @@ def register_finding(
         ),
         description=description,
         poc=PoC(
-            request=_render_request(poc["request"]) if isinstance(poc.get("request"), dict) else str(poc.get("request", "")),
-            response=str(poc.get("response_excerpt", "")),
-            notes="; ".join(poc.get("steps", [])) or None,
+            # Still routed through PoC's validator, not trusted from the check above:
+            # the model's guarantee is the type's, and the refusal path is only there to
+            # make the failure legible to the agent.
+            request=request_text,
+            response=response_text,
+            notes="; ".join(poc.get("steps") or []) or None,
         ),
         discovered_by=discovered_by,
     )
@@ -138,6 +192,27 @@ def demo() -> None:
         # persisted JSON round-trips
         reloaded = json.loads(Path(result["stored_at"]).read_text())
         assert reloaded["rule_id"] == "sql-injection"
+
+        # An evidence-free finding must be REFUSED. Every shape below used to be accepted,
+        # because str() manufactures something non-blank from nothing: str(None) is "None"
+        # and rendering an empty request dict is "GET ". A finding without reproduced
+        # output is the one thing this tool must never emit, so these stay asserted.
+        def _rejected(poc: dict) -> bool:
+            outcome = register_finding(
+                rule_type="sqli", severity="critical", title="claimed, not proven",
+                description="no evidence attached",
+                location={"url": "http://127.0.0.1:5000/x", "method": "GET", "parameter": "u"},
+                poc=poc, discovered_by="test", run_dir=tmp, on_finding=store.add,
+            )
+            return outcome.get("ok") is not True
+
+        assert _rejected({"request": "GET /x", "response_excerpt": None}), "null response accepted"
+        assert _rejected({"request": {}, "response_excerpt": "body"}), "empty request dict accepted"
+        assert _rejected({}), "wholly absent PoC accepted"
+        assert _rejected({"request": None, "response_excerpt": None}), "explicit nulls accepted"
+        assert _rejected({"request": "GET /x", "response_excerpt": "   "}), "whitespace accepted"
+        # ...while a dict request carrying a real url is still valid evidence.
+        assert len(store) == 1, "a refused finding must not reach the store"
     finally:
         shutil.rmtree(tmp)
     print("finding: ok")
