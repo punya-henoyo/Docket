@@ -1,4 +1,4 @@
-"""M9: the full 4-agent run against vulnshop, through the real Docker sandbox, with
+"""M9: the full 4-agent run against the test target, through the real Docker sandbox, with
 every finding's evidence EXTRACTED FROM ACTUAL TOOL OUTPUT rather than hardcoded —
 sqlmap's own verdict line for V1, a measured latency delta for V2, and the real
 dialog_message a Chromium DOM raised for V3. Then checks report.json / report.sarif.

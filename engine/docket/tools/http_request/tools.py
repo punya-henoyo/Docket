@@ -1,4 +1,4 @@
-"""Direct HTTP client tool. Most of vulnshop's exploitation is plain HTTP — no need to
+"""Direct HTTP client tool. Most exploitation is plain HTTP — no need to
 route everything through a browser. stdlib urllib is enough here; httpx shows up later
 (M6/M7) once the RPC shim and proxy replay need its async/proxy ergonomics.
 """
@@ -33,7 +33,7 @@ def do_http_request(
 ) -> dict:
     """Params/return shape match the tool contract in the delivery-layer design.
     `data` as a dict is form-urlencoded — matches Flask's `request.form.get(...)`
-    exactly, which is what vulnshop's /login reads."""
+    exactly, which is what the test target's /login reads."""
     if params:
         url = f"{url}{'&' if '?' in url else '?'}{urllib.parse.urlencode(params)}"
 

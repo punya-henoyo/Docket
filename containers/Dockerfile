@@ -1,7 +1,7 @@
 # docket sandbox image — where the agents' shell/HTTP/exploit actions actually execute.
 #
 # Deliberately NOT a Kali base. Kali's value is breadth across an unknown estate
-# (subdomains, ports, many hosts, mixed CVEs); vulnshop is one process with three
+# (subdomains, ports, many hosts, mixed CVEs); the test target is one process with three
 # known routes, so that breadth buys nothing and costs a multi-GB pull plus a much
 # larger patch surface. Cut for this target, each for a concrete reason:
 #   nuclei          - template-matches known CVEs/misconfigs; this app has none and no
@@ -10,7 +10,7 @@
 #                     exact parameter names are already known.
 #   subdomain enum, port scanning, WAF detection - one process, one port, no WAF, no DNS.
 #   JWT / secret scanning / SAST linters - no JWTs, no planted secrets, and source
-#                     review is vulnshop's separate Semgrep workflow, not this tool's job.
+#                     review belongs to a static-analysis job, not this tool's job.
 #   OOB/interactsh callback catcher - every vuln here is provable in-band (SQLi via
 #                     boolean/UNION, RCE via a timing side-channel, XSS via a real
 #                     DOM-executed alert), so no external callback listener is needed.
