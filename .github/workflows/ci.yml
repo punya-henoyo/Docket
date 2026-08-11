@@ -1,0 +1,48 @@
+name: ci
+
+# The checks that need neither Docker nor an API key, so they can gate every push.
+# Container work lives in sandbox-image.yml; see that file for why the container-backed
+# TESTS cannot run on a GitHub-hosted runner at all.
+#
+# There is deliberately NO lint job yet. ruff had never actually run in this repo (not
+# installed, and `make lint` swallowed its exit code), and a first real run on ruff
+# 0.16.2 reports 84 findings plus 73 files the formatter would rewrite. A gate that is
+# red on day one gets ignored, so lint is tracked as its own cleanup. To add it: pin a
+# ruff version, commit a [tool.ruff] block setting line-length (this code runs to ~111
+# columns against ruff's default 88) and an explicit select, fix the findings, then run
+# `make lint`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+
+      # --frozen so CI fails on a stale uv.lock instead of quietly resolving something
+      # different from what was committed.
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Module self-checks
+        run: make check
+
+      - name: Tests that don't need Docker
+        run: make test-fast
