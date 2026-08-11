@@ -1,0 +1,90 @@
+name: sandbox-image
+
+# Builds containers/Dockerfile and proves the resulting image actually RUNS. This exists
+# because the image is where breakage hides silently: `make check` and `make test-fast`
+# both pass with a completely broken Dockerfile, since neither touches Docker. Moving the
+# package to engine/docket/ changed the COPY source path, and nothing except building the
+# image would have caught it.
+#
+# Why this does NOT run the container-backed tests (sandbox, proxy, browser, sdk_session,
+# full_run): those need the container to reach a target app on the HOST. The fixture binds
+# 127.0.0.1 (tests/fixtures/target_app.py) and the sandbox passes
+# --add-host host.docker.internal:host-gateway. On Docker Desktop for Mac that alias is
+# proxied to host loopback, so it works. On a Linux runner host-gateway resolves to the
+# docker bridge IP, and a socket bound to 127.0.0.1 refuses connections there — so those
+# tests fail on GitHub-hosted runners for an environment reason, not a code defect.
+# Closing that gap means either binding the fixture to 0.0.0.0 (exposes a deliberately
+# vulnerable app on the runner network) or running the container with --network=host on
+# Linux (which also removes the -p port mapping the shim's port readback depends on).
+# Neither is a workflow change, so those tests stay local: `make test`.
+#
+# Path-filtered because this build pulls Chromium and takes minutes; it should not run on
+# a README edit. No layer caching yet — with these filters it runs rarely enough that
+# buildx + GHA cache is not worth the complexity.
+on:
+  push:
+    branches: [main]
+    paths:
+      - containers/**
+      - engine/docket/**
+      - pyproject.toml
+      - .github/workflows/sandbox-image.yml
+  pull_request:
+    paths:
+      - containers/**
+      - engine/docket/**
+      - pyproject.toml
+      - .github/workflows/sandbox-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the sandbox image
+        run: make image
+
+      # A build that succeeds still proves nothing about whether the shim can start:
+      # a bad COPY path or a broken import surfaces only at runtime. Hitting /health
+      # exercises the real entrypoint and the tool registry behind it.
+      - name: Shim starts and registers every tool
+        run: |
+          set -euo pipefail
+          docker run -d --name shim-smoke -p 127.0.0.1:18765:8765 docket-sandbox:latest
+          for _ in $(seq 30); do
+            curl -fsS http://127.0.0.1:18765/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          body=$(curl -fsS http://127.0.0.1:18765/health)
+          echo "$body"
+          python3 - "$body" <<'PY'
+          import json, sys
+          got = json.loads(sys.argv[1])
+          assert got.get("ok") is True, got
+          expected = {
+              "browser", "exec_argv", "http_request", "output_get",
+              "proxy_get", "proxy_list", "proxy_replay", "proxy_start",
+              "proxy_stop", "read_file", "shell", "write_file",
+          }
+          missing = expected - set(got.get("tools", []))
+          assert not missing, f"shim did not register: {sorted(missing)}"
+          print(f"ok — {len(expected)} tools registered")
+          PY
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs shim-smoke || true
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f shim-smoke || true
