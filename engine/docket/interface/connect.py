@@ -257,6 +257,55 @@ def list_repos(token: str) -> list[dict[str, Any]]:
     ) or []
 
 
+def _diagnose_404(full_name: str, token: str, ref: str | None) -> str:
+    """Work out WHICH 404 this is, instead of listing the possibilities.
+
+    GitHub returns 404 for a missing ref, a repository the token cannot see, and one
+    that does not exist — and will not distinguish them, deliberately, so that nobody
+    can probe for private repositories. But a second call to /repos/{full_name} does
+    distinguish them, because it fails the same way ONLY for the no-access case:
+
+        /repos 404s          -> no access, or no such repository
+        /repos ok, size == 0 -> the repository exists and is EMPTY (no commits). This
+                                one is easy to miss and looks identical to no access.
+        /repos ok, has size  -> the ref is wrong, or points at nothing
+
+    One extra request, made only on the failure path, turns three maybes into an
+    answer.
+    """
+    try:
+        meta = _api(f"/repos/{full_name}", token, timeout=10)
+    except Exception:
+        return (
+            f"GitHub will not show docket {full_name}. Either the repository does not "
+            "exist under that name, or your token cannot reach it — a private repo you "
+            "lack access to returns 404, not 403, so the two look identical from here. "
+            "If it belongs to an organisation, check that the OAuth app is approved "
+            "for that organisation."
+        )
+
+    if not isinstance(meta, dict):
+        return f"GitHub returned nothing usable for {full_name}."
+
+    if meta.get("size", 0) == 0:
+        return (
+            f"{full_name} exists and docket can see it, but it is EMPTY — no commits, "
+            "so there is no source to download. Push some code and scan again."
+        )
+
+    default = meta.get("default_branch") or "the default branch"
+    if ref:
+        return (
+            f"{full_name} exists, but it has no branch, tag or commit called '{ref}'. "
+            f"Its default branch is '{default}'. Leave the branch blank to use it."
+        )
+    return (
+        f"{full_name} exists and is not empty, but GitHub served no tarball for its "
+        f"default branch ('{default}'). That usually means the branch was just created "
+        "and has no commits on it yet."
+    )
+
+
 def fetch_source(full_name: str, token: str, dest: Path, ref: str | None = None) -> Path:
     """Download a tarball of `full_name` at `ref` and extract it under `dest`.
 
@@ -295,18 +344,7 @@ def fetch_source(full_name: str, token: str, dest: Path, ref: str | None = None)
         # what was requested and list the causes; the operator can tell which is which
         # instantly, and the raw status alone has them guessing.
         if exc.code == 404:
-            where = f"{full_name}@{ref}" if ref else f"{full_name} (default branch)"
-            raise RuntimeError(
-                f"GitHub has no source at {where}. That 404 means one of three things, "
-                f"and GitHub will not say which: the branch or tag '{ref}' does not "
-                "exist; your token cannot see this repository (a private repo you lack "
-                "access to returns 404, not 403); or the repository name is wrong. "
-                "Leave the branch blank to use the default."
-                if ref else
-                f"GitHub has no source for {full_name}. That 404 means either your "
-                "token cannot see this repository — a private repo you lack access to "
-                "returns 404, not 403 — or the name is wrong."
-            ) from exc
+            raise RuntimeError(_diagnose_404(full_name, token, ref)) from exc
         if exc.code in (401, 403):
             raise RuntimeError(
                 f"GitHub refused the request for {full_name} ({exc.code}). The token "
@@ -1264,12 +1302,35 @@ def demo() -> None:
                 urllib.request.urlopen = saved
             raise AssertionError("a 404 must not pass silently")
 
-        with_ref = _fetch_404("nope")
-        assert "o/r@nope" in with_ref and "does not exist" in with_ref, with_ref
-        assert "not 403" in with_ref, "the private-repo case must be named"
-        no_ref = _fetch_404(None)
-        assert "default branch" not in no_ref, "no ref means no ref to blame"
-        assert "the name is wrong" in no_ref, no_ref
+        # Patch THIS module's globals, not `import docket.interface.connect`. Run via
+        # `python -m`, this file is __main__ and that import yields a SECOND module
+        # object — patching it leaves the copy _diagnose_404 actually reads untouched.
+        _g = globals()
+        _saved_api = _g["_api"]
+        try:
+            # No access: the /repos probe fails the same way. This is the ONLY case
+            # where it does, which is what makes the diagnosis possible at all.
+            _g["_api"] = lambda *a, **k: (_ for _ in ()).throw(
+                _ue.HTTPError("u", 404, "n", {}, None))
+            no_access = _diagnose_404("o/r", "tok", None)
+            assert "cannot reach it" in no_access, no_access
+            assert "OAuth app is approved" in no_access, "the org case must be named"
+
+            # Empty repository: exists, visible, no commits. Identical on the status
+            # code alone, and the cause most easily missed.
+            _g["_api"] = lambda *a, **k: {"size": 0, "default_branch": "main"}
+            empty = _diagnose_404("o/r", "tok", None)
+            assert "EMPTY" in empty and "no commits" in empty, empty
+
+            # Has content: then it really is the ref, and the message names the
+            # default branch so the fix is obvious.
+            _g["_api"] = lambda *a, **k: {"size": 42, "default_branch": "main"}
+            bad_ref = _diagnose_404("o/r", "tok", "nope")
+            assert "no branch, tag or commit called 'nope'" in bad_ref, bad_ref
+            assert "default branch is 'main'" in bad_ref, bad_ref
+            assert "no branch, tag or commit" not in _diagnose_404("o/r", "tok", None)
+        finally:
+            _g["_api"] = _saved_api
 
         # ── per-scan budget ───────────────────────────────────────────────────
         # Validated, not clamped: the operator chooses the ceiling. Refusing a
