@@ -63,6 +63,27 @@ def _is_context_overflow(exc: BaseException) -> bool:
     return "context" in text and ("length" in text or "window" in text or "too long" in text)
 
 
+def _finish_output(result: object) -> object:
+    """The finish tool's own return value, preferred over `result.final_output`.
+
+    `final_output` is only a dict when Agent.output_type is set, and setting it costs
+    real model compatibility: a response schema sent alongside the tool list makes some
+    models answer the schema and never call a tool. Reading the tool's output directly
+    removes that trade-off — `ToolCallOutputItem.output` is the actual object the tool
+    returned, not a re-serialization of it.
+
+    Scanned newest-first and matched on shape rather than tool name, because the two
+    finish tools (`agent_finish`, `finish_scan`) return the same three keys and a role
+    only ever has one of them.
+    """
+    for item in reversed(getattr(result, "new_items", []) or []):
+        output = getattr(item, "output", None)
+        if isinstance(output, dict) and "summary" in output and "success" in output:
+            return output
+    # No finish tool ran, or output_type is on and the SDK already parsed it.
+    return getattr(result, "final_output", None)
+
+
 _NO_TOOL_CORRECTION = """You ended your last turn by writing a summary instead of using
 your tools. Nothing you wrote was verified, so it was discarded in full — including this:
 
@@ -117,7 +138,7 @@ async def run_agent_loop(
                 hooks=BudgetHooks(max_turns=max_turns), session=session,
                 run_config=run_config,
             )
-            output = result.final_output
+            output = _finish_output(result)
             if not isinstance(output, dict):
                 # NOT a defensive fallback — this fires in practice, and it is the one
                 # hole in the "nothing is reported unproven" guarantee.

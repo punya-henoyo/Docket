@@ -23,6 +23,10 @@ from agents.sandbox.capabilities import Filesystem, Shell
 # OpenAI's Responses API. See build_agent() for what breaks and why this defaults off.
 SDK_SANDBOX_TOOLS = os.environ.get("DOCKET_SDK_SANDBOX_TOOLS") == "1"
 
+# Opt-IN structured final output. Off by default because a response schema sent with the
+# tool list stops several models from calling tools at all. See build_agent().
+STRUCTURED_OUTPUT = os.environ.get("DOCKET_STRUCTURED_OUTPUT") == "1"
+
 
 def _absolutize(url: str, target_url: str) -> str:
     """Resolve a bare path against the scan target.
@@ -316,9 +320,17 @@ def build_agent(
             model=config.llm, api_key=config.llm_api_key, base_url=config.llm_base_url,
         ),
         "tool_use_behavior": _finish_tool_use_behavior,
-        # non-str output_type — see AgentFinalOutput's docstring for why it's required
-        "output_type": AgentFinalOutput,
     }
+    if STRUCTURED_OUTPUT:
+        # A non-str output_type stops the SDK force-stringifying a tool-driven final
+        # output (see AgentFinalOutput's docstring). The cost is model compatibility:
+        # sending a response schema alongside tools makes some models satisfy the schema
+        # and never call a tool, which ends the run having done nothing. Measured on one
+        # gateway: DeepSeek-V4-Pro, DeepSeek-V3.2, Kimi-K2.5 and Llama-3.3-70B each make
+        # a tool call with tools alone and zero with both. So it is off by default, and
+        # run_agent_loop reads the finish tool's dict out of the run items instead of
+        # relying on final_output.
+        common["output_type"] = AgentFinalOutput
     if sandbox is not None and SDK_SANDBOX_TOOLS:
         from docket.runtime.sdk_session import DocketSandboxSession
 

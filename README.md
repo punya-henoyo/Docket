@@ -122,8 +122,10 @@ Every payload was the model's own choice. The sqli specialist did not reach for 
 all: it found `admin' --` comments out the password check, and proved the bypass with a
 request and a `Welcome`. The `[REDACTED]` is redaction firing at the write boundary.
 
-Reproduce it with `DOCKET_LLM=openai/gpt-4.1` against `tests/serve_target.py`. Read
-"Current limits" first for which models can drive this and which silently cannot.
+A second run on `DeepSeek-V4-Pro` through an OpenAI-compatible gateway found the same three
+classes, at 6x the tokens. Reproduce either against `tests/serve_target.py`. Read
+"Current limits" first: model choice changes cost by an order of magnitude, and one of these
+runs proved its XSS more weakly than the other.
 
 Findings carry a `Severity` (`critical`/`high`/`medium`/`low`/`info`), a CWE tag where the
 class has one, and a stable dedupe key: `sha256(rule_id|method|path|parameter)` truncated to
@@ -293,6 +295,8 @@ server serving it. No account, no upload, nothing hosted by us.
 | `DOCKET_LLM` | Any LiteLLM `provider/model`, e.g. `anthropic/claude-sonnet-5` |
 | `LLM_API_KEY` | Or a provider-specific variable |
 | `DOCKET_LLM_BASE_URL` | Point at a self-hosted or proxied deployment. For an OpenAI-compatible gateway, use `openai/<gateway-model-name>` as `DOCKET_LLM` |
+| `DOCKET_STRUCTURED_OUTPUT` | `1` to send a response schema with the tool list. Off by default: it stops some models calling tools at all |
+| `DOCKET_SDK_SANDBOX_TOOLS` | `1` to add the SDK's hosted `Filesystem`/`Shell` tools. Off by default: they only work on OpenAI's Responses API |
 | `DOCKET_MAX_COST_USD` | Scan-wide budget ceiling. Default `2.00` |
 | `DOCKET_MAX_CHILD_COST_USD` | Per-specialist ceiling. Default `0.75` |
 | `DOCKET_MAX_AGENTS` | Concurrent agent cap. Default `6` |
@@ -376,12 +380,22 @@ gaps is worse than one that has none.
   edge to mean anything
 - **Three vulnerability classes.** Specialists exist for SQL injection, command injection
   and reflected XSS. Anything else goes untested
-- **The model must do tool calls and structured output *together*.** docket sets both
-  `tools` and a response schema on every turn. Some models satisfy the schema immediately and
-  never touch a tool, which ends the run before any work happens. Verified working:
-  `gpt-4.1`, `gpt-4o`. Verified *not* working this way: `DeepSeek-V3.2`, `Kimi-K2.5`,
-  `Llama-3.3-70B` — each does tool calls fine alone, and skips them when a schema is also
-  present. Check a new model against the fixture before trusting a run
+- **Model cost varies enormously for the same result.** Two live runs, same fixture, all
+  three classes found by both: `gpt-4.1` took 19 model requests and 46k tokens; DeepSeek-V4-Pro
+  took 70 requests and 297k tokens, and spawned 7 specialists for 3 routes. Both correct,
+  6x apart. Nothing caps agent count per route beyond `DOCKET_MAX_AGENTS`
+- **The evidence gate proves the output is real, not that it proves the claim.** It rejects an
+  empty or invented `request`/`response`, which is what stops fabrication. It cannot judge
+  whether what came back supports the verdict. Seen live: an XSS specialist filed
+  reflection-only evidence — the payload echoed in the HTML — where the prompt asks for a
+  captured `dialog_message` from a real DOM. A true finding, proved weakly. Read the PoC,
+  do not just count findings
+- **A response schema and tools together defeat some models**, which is why `output_type` is
+  off unless `DOCKET_STRUCTURED_OUTPUT=1`. With a schema present, `DeepSeek-V4-Pro`,
+  `DeepSeek-V3.2`, `Kimi-K2.5` and `Llama-3.3-70B` each answered the schema and called no
+  tool at all; each calls tools normally without one. docket reads the finish tool's dict out
+  of the run items instead, so the schema is not needed. Turn it on only for a model that
+  needs it, and check a new model against the fixture first either way
 - **A run can still end without the finish tool, it just cannot lie about it now.** The SDK
   ends a run on any plain assistant message matching `output_type`, and it checks that
   *before* the tool-use gate. Observed live: a model emitted a schema-shaped message on turn

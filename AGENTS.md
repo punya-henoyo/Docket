@@ -44,6 +44,10 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
    with zero tool calls and invented findings. `run_agent_loop` now discards such output,
    re-prompts with `_NO_TOOL_CORRECTION`, and refuses on the third attempt. **Keep that
    path** — without it a fabricated summary reaches the report, which defeats rule 1.
+   `output_type` itself is now opt-in (`DOCKET_STRUCTURED_OUTPUT=1`): a response schema sent
+   with the tool list stops several models calling tools at all. `_finish_output()` reads the
+   finish tool's dict out of the run items instead — don't go back to `result.final_output`,
+   which is only a dict when the schema is on.
 5. **A dead child still reports.** Two halves. `coordinator.register()` is the *caller's*
    job in `create_agent`, before `spawn_child_agent` — that makes the child visible to a
    same-turn `wait_for_agents` and puts a `max_agents` refusal somewhere the model can see
