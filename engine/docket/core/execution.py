@@ -63,6 +63,22 @@ def _is_context_overflow(exc: BaseException) -> bool:
     return "context" in text and ("length" in text or "window" in text or "too long" in text)
 
 
+_NO_TOOL_CORRECTION = """You ended your last turn by writing a summary instead of using
+your tools. Nothing you wrote was verified, so it was discarded in full — including this:
+
+{claim}
+
+You have sent no requests and observed no responses. You cannot know any of that.
+
+Do it properly this time. Use your tools to actually interact with the target. Register a
+finding only after you have sent a real request and seen a real response, and quote both
+literally. Then end by CALLING your finish tool — not by writing another summary.
+
+Your original task follows.
+
+{task}"""
+
+
 async def run_agent_loop(
     agent: Agent[ScanContext],
     context: ScanContext,
@@ -92,6 +108,7 @@ async def run_agent_loop(
         run_config = RunConfig(sandbox=SandboxRunConfig(session=DocketSandboxSession(context.sandbox)))
     last_exc: Exception | None = None
     compacted_already = False
+    original_task = task
 
     for attempt in range(3):
         try:
@@ -102,10 +119,37 @@ async def run_agent_loop(
             )
             output = result.final_output
             if not isinstance(output, dict):
-                # tool_use_behavior + Agent.output_type guarantee the run only ends
-                # via finish_scan/agent_finish with a dict — this is a defensive
-                # fallback, not the expected path.
-                output = {"summary": str(output), "findings": [], "success": False}
+                # NOT a defensive fallback — this fires in practice, and it is the one
+                # hole in the "nothing is reported unproven" guarantee.
+                #
+                # tool_use_behavior gates the TOOL path, but the SDK also ends a run on
+                # any plain assistant message matching Agent.output_type, and it checks
+                # that FIRST. Seen on the first live run: the model emitted a
+                # schema-shaped message on turn one having made zero tool calls,
+                # inventing finding IDs ('finding_sqli_1'), inventing a verdict for
+                # routes it never requested, and declaring success=True.
+                #
+                # Accepting that would print a fabricated pentest summary into a report
+                # whose whole premise is that nothing enters it unproven. So: correct
+                # the agent and retry, and if it still will not use its tools, refuse
+                # and say exactly that. The FindingStore stays the source of truth for
+                # findings either way — a claimed id that was never registered does not
+                # exist.
+                logger.warning(
+                    "%s ended without calling its finish tool (attempt %d) — discarding "
+                    "its unverified output", context.agent_id, attempt + 1,
+                )
+                if attempt < 2:
+                    task = _NO_TOOL_CORRECTION.format(claim=str(output)[:400], task=original_task)
+                    continue
+                return {
+                    "summary": (
+                        "refused: agent ended without calling its finish tool, so nothing "
+                        "it stated was verified. Unverified claim discarded: "
+                        f"{str(output)[:400]}"
+                    ),
+                    "findings": [], "success": False,
+                }
             return output
         except _TERMINAL_EXCEPTIONS as exc:
             # Report it as a failed-but-clean result rather than raising: findings

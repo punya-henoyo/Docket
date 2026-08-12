@@ -54,7 +54,7 @@ async def create_agent(
         sandbox=parent.sandbox,
     )
     child_agent = build_agent(role, parent.config, model=child_model, sandbox=parent.sandbox)
-    child_task = build_specialist_task(role, target_route, task)
+    child_task = build_specialist_task(role, target_route, task, parent.target_url)
 
     def run_coro_factory() -> Awaitable[dict]:
         return run_agent_loop(child_agent, child_context, child_task, max_turns=12)

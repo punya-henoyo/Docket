@@ -8,6 +8,8 @@ construct the children it spawns), so importing it back here would cycle. The ca
 """
 from __future__ import annotations
 
+import os
+
 import asyncio
 from typing import Any, Literal
 
@@ -16,6 +18,33 @@ from agents.extensions.models.litellm_model import LitellmModel
 from agents.models.interface import Model
 from agents.sandbox import SandboxAgent
 from agents.sandbox.capabilities import Filesystem, Shell
+
+# The SDK's native Filesystem/Shell capabilities are hosted tools and only work against
+# OpenAI's Responses API. See build_agent() for what breaks and why this defaults off.
+SDK_SANDBOX_TOOLS = os.environ.get("DOCKET_SDK_SANDBOX_TOOLS") == "1"
+
+
+def _absolutize(url: str, target_url: str) -> str:
+    """Resolve a bare path against the scan target.
+
+    Models pass "/login" as often as the full URL. urllib answers that with
+    `ValueError: unknown url type: '/login'`, which taught the first live run's agents
+    nothing except to start guessing hosts — they landed on `localhost`, which inside
+    the sandbox container is the container. Resolving here, at the one wrapper every
+    HTTP tool call passes through, is cheaper than a prompt telling them not to.
+
+    A host the model supplied is left alone, including a wrong one: silently rewriting
+    an absolute URL would hide an out-of-scope request instead of letting it fail
+    visibly.
+    """
+    url = (url or "").strip()
+    if not url:
+        return url
+    if url.startswith("/") and target_url:
+        return target_url.rstrip("/") + url
+    if "://" not in url and target_url:
+        return target_url.rstrip("/") + "/" + url
+    return url
 
 from docket.config.settings import Config
 from docket.core.execution import ScanContext
@@ -55,6 +84,7 @@ async def http_request(
     # blocking call (e.g. the deliberate 3s timing probe for blind command injection)
     # must not freeze the event loop for every other concurrently running agent.
     # Without this, "multi-agent" would be multi-agent in name only.
+    url = _absolutize(url, ctx.context.target_url)
     sandbox = ctx.context.sandbox
     if sandbox is not None:
         return await asyncio.to_thread(
@@ -282,21 +312,32 @@ def build_agent(
         "name": name,
         "instructions": instructions,
         "tools": [*base_tools, *(extra_tools or []), finish_tool],
-        "model": model or LitellmModel(model=config.llm, api_key=config.llm_api_key),
+        "model": model or LitellmModel(
+            model=config.llm, api_key=config.llm_api_key, base_url=config.llm_base_url,
+        ),
         "tool_use_behavior": _finish_tool_use_behavior,
         # non-str output_type — see AgentFinalOutput's docstring for why it's required
         "output_type": AgentFinalOutput,
     }
-    if sandbox is not None:
+    if sandbox is not None and SDK_SANDBOX_TOOLS:
         from docket.runtime.sdk_session import DocketSandboxSession
 
-        # SandboxAgent + capabilities is why tools/shell/, apply_patch/ and
-        # view_image/ are README-only: those tools come from the SDK, aimed at a
-        # real container by this session.
+        # OPT-IN, and off by default, because these are HOSTED tools: the SDK sends them
+        # as provider-side tool types that only OpenAI's Responses API accepts. Over the
+        # Chat Completions API — which is what LiteLLM uses for every other provider and
+        # for OpenAI-compatible gateways — the run dies before its first turn with
+        # "Hosted tools are not supported with the ChatCompletions API. Got tool type:
+        # SandboxApplyPatchTool". No scripted test could catch that, because a scripted
+        # model never serializes the tool list to a provider.
+        #
+        # Nothing load-bearing is lost by leaving this off: `common["tools"]` already
+        # carries our own shell/browser function tools, which reach the same container
+        # through the RPC shim. Only apply_patch and view_image go away, and neither is
+        # used by any of the three vulnerability classes.
         session = DocketSandboxSession(sandbox)
         return SandboxAgent[ScanContext](
             **common, capabilities=[Filesystem(session=session), Shell(session=session)],
         )
-    # No container: a plain Agent, since the SDK's native shell/filesystem tools would
-    # otherwise have nowhere safe to run.
+    # Plain Agent. With a container, our own tools still reach it via the shim; without
+    # one, shell and browser refuse rather than falling back to the host.
     return Agent[ScanContext](**common)

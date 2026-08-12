@@ -35,6 +35,11 @@ class Config:
     max_cost_usd: float
     max_child_cost_usd: float
     max_agents: int
+    # Self-hosted or proxied models (a company gateway, vLLM, Ollama, an
+    # OpenAI-compatible reseller) are reachable only by overriding the provider's
+    # default host. Without this, DOCKET_LLM can name any provider LiteLLM knows but
+    # can never point at your own deployment of it.
+    llm_base_url: str | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -46,6 +51,7 @@ class Config:
         return cls(
             llm=llm,
             llm_api_key=os.environ.get("LLM_API_KEY"),
+            llm_base_url=os.environ.get("DOCKET_LLM_BASE_URL") or None,
             max_cost_usd=float(os.environ.get("DOCKET_MAX_COST_USD", "2.00")),
             max_child_cost_usd=float(os.environ.get("DOCKET_MAX_CHILD_COST_USD", "0.75")),
             max_agents=int(os.environ.get("DOCKET_MAX_AGENTS", "6")),
