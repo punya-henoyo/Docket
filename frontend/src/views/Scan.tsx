@@ -47,6 +47,44 @@ export function Scan({
     (scan.historical || scan.status === "done" || scan.status === "cancelled");
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
+  const [brief, setBrief] = useState<"idle" | "working">("idle");
+  const [briefError, setBriefError] = useState<string | null>(null);
+
+  /** Fetch the brief, then open it.
+   *
+   *  A plain <a target="_blank"> looked broken: the first request for a run costs a
+   *  model call and takes ~20s, so the new tab sat blank with no explanation, and a
+   *  server-side refusal (no model configured, or a brief that failed verification)
+   *  arrived as plain text in a tab nobody was watching. Fetching means the waiting
+   *  and the failure both happen where the user is looking.
+   */
+  async function openBrief() {
+    if (!scan) return;
+    setBrief("working");
+    setBriefError(null);
+    try {
+      const res = await fetch(downloadUrl(scan.id, "brief"));
+      const text = await res.text();
+      if (!res.ok) throw new Error(text.trim() || `server said ${res.status}`);
+      // A blob URL rather than the endpoint URL, so opening the tab cannot trigger a
+      // second generation, and the document is already in hand when the tab appears.
+      const url = URL.createObjectURL(new Blob([text], { type: "text/html" }));
+      const win = window.open(url, "_blank", "noopener");
+      if (!win) {
+        // Popup blocked. Fall back to a download so the click still produces the
+        // document rather than silently doing nothing.
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${scan.id}-brief.html`;
+        a.click();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      setBriefError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBrief("idle");
+    }
+  }
 
   async function stop() {
     setStopping(true);
@@ -68,11 +106,11 @@ export function Scan({
         <div className="head-actions">
           {finished && (
             <>
-              <a className="btn primary" href={downloadUrl(scan!.id, "brief")}
-                 target="_blank" rel="noopener"
-                 title="An executive brief written by the model from this scan's output. Costs one model call the first time; cached after that.">
-                Executive brief
-              </a>
+              <button className="btn primary" onClick={openBrief}
+                 disabled={brief === "working"}
+                 title="An executive brief written by the model over this scan's output, with the full findings table rendered from the report itself. One model call the first time; cached after that.">
+                {brief === "working" ? "Writing brief…" : "Executive brief"}
+              </button>
               <a className="btn" href={downloadUrl(scan!.id, "md")} download>report .md</a>
               <a className="btn" href={downloadUrl(scan!.id, "json")} download>.json</a>
               <a className="btn" href={downloadUrl(scan!.id, "sarif")} download>.sarif</a>
@@ -91,6 +129,17 @@ export function Scan({
 
       {scanError && <div className="note bad">{scanError}</div>}
       {stopError && <div className="note bad">Could not stop the scan: {stopError}</div>}
+      {brief === "working" && (
+        <div className="note">
+          Writing the executive brief. This is one model call over the finished report
+          and takes about 20 seconds the first time; after that it is cached.
+        </div>
+      )}
+      {briefError && (
+        <div className="note bad" style={{ whiteSpace: "pre-wrap" }}>
+          No brief was produced. {briefError}
+        </div>
+      )}
       {stopping && running && (
         <div className="note">
           Stopping. The scan halts at its next checkpoint, so a scanner already running

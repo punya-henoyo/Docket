@@ -165,11 +165,19 @@ def _facts(report: dict[str, Any]) -> tuple[set[str], set[str]]:
 _PROOF = re.compile(
     r"\b(proven|proved|confirms?|confirmed|verified|demonstrated|exploited|reproduced)\b",
     re.I)
-# A lookbehind cannot express this: the negation can sit several words back, as in
-# "nothing was proven by exploitation" or "no request was ever reproduced" — both of
-# which the caveats section SHOULD say. So scan a window instead.
-_NEGATION = re.compile(r"\b(no|not|nothing|never|none|without|un\w+|cannot|neither)\b", re.I)
-_NEGATION_WINDOW = 40
+# A lookbehind cannot express this: the qualifier can sit a whole clause back, as in
+# "none were triaged, executed, or confirmed against a live target" — 55 characters
+# between "none" and "confirmed". So scan a window, and make it wide enough for a real
+# sentence rather than a phrase.
+_NEGATION = re.compile(r"\b(no|not|nothing|never|none|without|un\w+|cannot|neither|"
+                       r"lack\w*|absent|un-?verified)\b", re.I)
+# The other legitimate use is forward-looking: a RECOMMENDATION to go and confirm
+# something is the opposite of a claim that it was confirmed. "straightforward to
+# confirm or rule out" is exactly the sentence this product should be producing.
+_FORWARD = re.compile(r"\b(to|should|must|can|could|would|will|need\w*|require\w*|"
+                      r"recommend\w*|pending|before|until|whether|if|be|being|been)\b",
+                      re.I)
+_CLAIM_WINDOW = 90
 
 
 def _executed_anything(report: dict[str, Any]) -> bool:
@@ -204,13 +212,83 @@ def verify_brief(brief: dict[str, Any], report: dict[str, Any]) -> list[str]:
     # sentence in the prompt.
     if not _executed_anything(report):
         for match in _PROOF.finditer(text):
-            preceding = text[max(0, match.start() - _NEGATION_WINDOW):match.start()]
-            if _NEGATION.search(preceding):
-                continue  # "nothing was proven", "no request was reproduced" — fine
+            preceding = text[max(0, match.start() - _CLAIM_WINDOW):match.start()]
+            if _NEGATION.search(preceding) or _FORWARD.search(preceding):
+                continue  # denial or recommendation, not an assertion of proof
             problems.append(
                 f'says "{match.group(0).lower()}" when nothing was executed; this '
                 "scan read source and demonstrated no vulnerability")
     return problems
+
+
+_SEV_COLOUR = {"critical": "#b42318", "high": "#b54708", "medium": "#a15c07",
+               "low": "#175cd3", "info": "#475467"}
+_VERDICT = {"exploitable": ("Reachable", "#b42318"),
+            "not_reachable": ("Ruled out", "#067647"),
+            "uncertain": ("Uncertain", "#a15c07")}
+
+
+def _finding_table(report: dict[str, Any]) -> str:
+    """Every finding, rendered from report.json directly.
+
+    Deliberately NOT written by the model. The prose above it is an interpretation and
+    is labelled as one; this table is the record, and it must match report.json row for
+    row. Nothing here passes through a language model, so nothing here can be invented.
+    """
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    findings = sorted(report.get("findings", []),
+                      key=lambda f: (order.get(str(f.get("severity")), 9),
+                                     str(f.get("rule_id", ""))))
+    if not findings:
+        return '<p>No findings were reported.</p>'
+
+    rows = []
+    for f in findings:
+        severity = str(f.get("severity", "info"))
+        location = f.get("location") or {}
+        where = (location.get("source_file")
+                 or f"{location.get('method','')} {location.get('path','')}".strip() or "—")
+        where = where.replace("/work/source/", "")
+
+        cvss = f.get("cvss")
+        score = (f'<span class="score">{cvss["score"]:.1f}</span>'
+                 if cvss and isinstance(cvss.get("score"), (int, float)) else '<span class="dash">—</span>')
+
+        triage = f.get("triage")
+        if triage:
+            label, colour = _VERDICT.get(triage.get("verdict", ""), ("—", "#475467"))
+            verdict = f'<span style="color:{colour}">{label}</span>'
+        else:
+            verdict = '<span class="dash">not triaged</span>'
+
+        weakness = escape(str(f.get("cwe"))) if f.get("cwe") else ""
+        if f.get("merged_cwes"):
+            weakness = ('<span class="dash" title="the matching rules disagreed">'
+                        f'disputed: {escape(", ".join(f["merged_cwes"]))}</span>')
+
+        extra = ""
+        if len(f.get("merged_rules") or []) > 1:
+            extra = (f'<span class="dash"> · {len(f["merged_rules"])} rules matched '
+                     'this line</span>')
+
+        rule = escape(str(f.get("rule_id", "")).rsplit("/", 1)[-1].rsplit(".", 1)[-1])
+        rows.append(
+            f'<tr><td><span class="sev" style="--c:{_SEV_COLOUR.get(severity, "#475467")}">'
+            f'{escape(severity)}</span></td>'
+            f'<td class="num">{score}</td>'
+            f'<td><b>{rule}</b>{extra}<br><span class="loc">{escape(where)}</span></td>'
+            f'<td>{weakness}</td>'
+            f'<td>{verdict}</td></tr>'
+        )
+
+    return f"""<table>
+  <thead><tr><th>Severity</th><th>CVSS</th><th>Finding</th><th>Weakness</th>
+  <th>Triage</th></tr></thead>
+  <tbody>{"".join(rows)}</tbody>
+</table>
+<p class="small">CVSS is shown only where a scoring body published one, which means
+dependency advisories. A blank is "nobody scored this", not a score of zero. Triage is
+an agent's reasoning over source; nothing was executed.</p>"""
 
 
 def render_html(brief: dict[str, Any], report: dict[str, Any]) -> str:
@@ -280,7 +358,23 @@ def render_html(brief: dict[str, Any], report: dict[str, Any]) -> str:
   .note p {{ color:inherit; margin:0 }}
   footer {{ margin-top:44px; padding-top:18px; border-top:1px solid var(--line);
             font-size:12.5px; color:var(--ink3) }}
+  table {{ width:100%; border-collapse:collapse; margin-top:4px; font-size:13.5px }}
+  th {{ text-align:left; font-size:11.5px; letter-spacing:.04em; text-transform:uppercase;
+        color:var(--ink3); font-weight:600; padding:0 10px 8px 0;
+        border-bottom:1px solid var(--line) }}
+  td {{ padding:10px 10px 10px 0; border-bottom:1px solid var(--line);
+        vertical-align:top; color:var(--ink2) }}
+  td b {{ color:var(--ink); font-weight:600 }}
+  .sev {{ color:var(--c); font-weight:600; font-size:12.5px; white-space:nowrap }}
+  .score {{ font-variant-numeric:tabular-nums; font-weight:600; color:var(--ink) }}
+  .dash {{ color:var(--ink3) }}
+  .loc {{ font:12px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--ink3);
+          word-break:break-all }}
+  .num {{ font-variant-numeric:tabular-nums }}
+  .small {{ font-size:12.5px; color:var(--ink3); margin-top:14px }}
   @media print {{ body {{ background:#fff; padding:0 }}
+                  table {{ page-break-inside:auto }}
+                  tr {{ page-break-inside:avoid }}
                   main {{ border:0; border-radius:0; padding:0; max-width:none }} }}
 </style>
 <main>
@@ -298,14 +392,18 @@ def render_html(brief: dict[str, Any], report: dict[str, Any]) -> str:
   <h2>Recommended order of work</h2>
   <ol>{actions or "<li><p>No actions proposed.</p></li>"}</ol>
 
+  <h2>All findings ({total})</h2>
+  {_finding_table(report)}
+
   <h2>What this scan could not tell you</h2>
   <div class="note"><p>{escape(brief.get("caveats", ""))}</p></div>
 
   <footer>
-    The prose in this brief was written by a language model from this scan's own
-    output. It saw no source code and could add no finding. Every figure above comes
-    from the scan; nothing here was proven by exploitation. The machine-readable
-    report.json and report.sarif remain the authoritative record.
+    The prose sections of this brief were written by a language model from this
+    scan's own output. It saw no source code and could add no finding. The findings
+    table is rendered directly from report.json and passed through no model at all.
+    Nothing here was proven by exploitation. The machine-readable report.json and
+    report.sarif remain the authoritative record.
   </footer>
 </main>
 """
@@ -393,11 +491,25 @@ def demo() -> None:
     assert _executed_anything(report) is False, "semgrep + trivy execute nothing"
     overclaim = dict(good, headline="Multiple proven, reachable injection flaws")
     assert any("proven" in p for p in verify_brief(overclaim, report)), verify_brief(overclaim, report)
-    # Negated and prefixed forms are fine — the caveats section needs to say them.
+    # Real sentences from real briefs that MUST pass. Each of these was a false
+    # positive at some point, and each is a sentence the product should be writing.
     for safe in ("nothing was proven by exploitation",
                  "these are unconfirmed static matches",
-                 "no request was ever reproduced" ):
+                 "no request was ever reproduced",
+                 # negation a whole clause back
+                 "none were triaged, executed, or confirmed against a live target",
+                 # a recommendation to go and check, not a claim of having checked
+                 "this is straightforward to confirm or rule out",
+                 "they flag code patterns that may be reachable but have not been verified",
+                 "no dynamic testing was performed, and no vulnerabilities were reproduced",
+                 "reachability should be confirmed with a live test"):
         assert verify_brief(dict(good, caveats=safe), report) == [], safe
+
+    # ...while a bare assertion still fails.
+    for unsafe in ("The scan confirmed remote code execution",
+                   "We reproduced the injection end to end",
+                   "Three findings were verified as exploitable"):
+        assert verify_brief(dict(good, caveats=unsafe), report), unsafe
     # Once something really was executed, the words are allowed.
     live = dict(report, findings=report["findings"] + [
         {"rule_id": "nuclei/x", "severity": "high", "discovered_by": "nuclei",
@@ -408,7 +520,25 @@ def demo() -> None:
     html = render_html(good, report)
     assert "acme/api" in html and "SQLi" in html
     assert "written by a language model" in html, "authorship must be stated"
-    assert "nothing here was proven by exploitation" in html
+    assert "Nothing here was proven by exploitation" in html
+    # The table is the record and must not be attributed to the model.
+    assert "passed through no model at all" in html
+
+    # ── the findings table ──────────────────────────────────────────────────
+    assert "All findings (2)" in html
+    assert "tainted-sql-string" in html and "app/auth.py:41" in html
+    assert "CVE-2024-56201" in html and "8.8" in html
+    assert "Reachable" in html, "triage verdict must appear per finding"
+    assert "not triaged" in html, "an untriaged finding must say so, not show blank"
+    # The mount prefix is an implementation detail, never a path a reader sees.
+    assert "/work/source/" not in html
+    # A disputed weakness is labelled, never resolved silently.
+    disputed = dict(report, findings=[dict(report["findings"][0], cwe=None,
+                                           merged_cwes=["CWE-704", "CWE-915"],
+                                           merged_rules=["a.x", "b.x"])])
+    table = render_html(good, disputed)
+    assert "disputed: CWE-704, CWE-915" in table
+    assert "2 rules matched this line" in table
     # Model output is escaped: a brief is rendered into a page someone opens.
     nasty = dict(good, headline="<script>alert(1)</script>")
     assert "<script>alert(1)</script>" not in render_html(nasty, report)
