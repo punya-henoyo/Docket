@@ -5,18 +5,13 @@ import type { Finding, Repo, RunSummary, ScanState, Session, Severity } from "./
 import { useHashRoute } from "./hooks/useHashRoute";
 import { Dashboard } from "./views/Dashboard";
 import { Findings } from "./views/Findings";
-import { LiveRun } from "./views/LiveRun";
 import { Repositories } from "./views/Repositories";
 import { Integrations } from "./views/Integrations";
 
-type View = "dashboard" | "live" | "findings" | "repos" | "integrations";
+type View = "dashboard" | "findings" | "repos" | "integrations";
 
 const VIEWS: { id: View; label: string }[] = [
   { id: "dashboard", label: "Dashboard" },
-  // The two halves of docket, kept as separate views rather than one merged feed: a repo
-  // scan is deterministic scanners over source, a live run is agents proving exploits
-  // against a target. Different evidence, different cadence, different questions.
-  { id: "live", label: "Live run" },
   { id: "findings", label: "Findings" },
   { id: "repos", label: "Repositories" },
   { id: "integrations", label: "Integrations" },
@@ -26,8 +21,6 @@ const VIEW_IDS = VIEWS.map((v) => v.id);
 
 export default function App() {
   const [view, go] = useHashRoute<View>(VIEW_IDS, "dashboard");
-  const [localRuns, setLocalRuns] = useState<RunSummary[]>([]);
-  const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [repos, setRepos] = useState<Repo[] | null>(null);
@@ -39,25 +32,6 @@ export default function App() {
   const [newestId, setNewestId] = useState<string | undefined>();
   const [cweFilter, setCweFilter] = useState<string | null>(null);
   const prevIds = useRef<Set<string>>(new Set());
-
-  const reloadLocalRuns = useCallback(() => {
-    api.runs
-      .getRuns()
-      .then((rows) => {
-        setLocalRuns(rows);
-        // Land on something useful rather than an empty pane on first open.
-        setSelectedRun((cur) => cur ?? rows.find((r) => r.running)?.run_name ?? rows[0]?.run_name ?? null);
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(reloadLocalRuns, [reloadLocalRuns]);
-
-  // The run list must notice runs this tab did not start.
-  useEffect(() => {
-    const timer = setInterval(reloadLocalRuns, 5000);
-    return () => clearInterval(timer);
-  }, [reloadLocalRuns]);
 
   // Boot: session + run history. A failure here means the backend is not running,
   // which every view needs to know before it renders anything.
@@ -211,9 +185,6 @@ export default function App() {
           >
             {v.label}
             {(v.id === "dashboard" && scanning) && <span className="live">● live</span>}
-            {v.id === "live" && localRuns.some((r) => r.running) && (
-              <span className="live">● live</span>
-            )}
             {v.id === "findings" && findings.length > 0 && (
               <span className="count">{findings.length}</span>
             )}
@@ -256,14 +227,6 @@ export default function App() {
             cweFilter={cweFilter}
             onCweSelect={setCweFilter}
             onOpenRun={openRun}
-          />
-        ) : view === "live" ? (
-          <LiveRun
-            runs={localRuns}
-            selected={selectedRun}
-            onSelectRun={setSelectedRun}
-            onReloadRuns={reloadLocalRuns}
-            onSelectFinding={openFinding}
           />
         ) : view === "findings" ? (
           <Findings
