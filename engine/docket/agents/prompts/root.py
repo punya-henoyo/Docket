@@ -26,21 +26,48 @@ Rules:
 """
 
 
-def build_root_task(target_url: str, instruction: str | None) -> str:
-    """Renders root's opening task. The route list below is the fixture's, asserted as fact
-    for ANY --target, which is wrong for every target but the fixture. It is stated rather
-    than discovered because nothing in this tool discovers: no crawl, no spec parsing, no
-    traffic-derived surface. Note the failure mode is worse than an empty list — root is
-    handed fiction confidently, so it tests routes that may not exist and reports nothing
-    without ever signalling that it was misinformed.
-    # ponytail: hardcoded fixture routes, ceiling is "works on one app". Upgrade path is a
-    # typed attack surface built by deterministic code (spec/HAR -> well-known paths ->
-    # captured proxy flows -> bounded crawl) and rendered here, with an explicit "no routes
-    # found" branch. Roadmap item 2. Land scope + rate controls first.
+def build_root_task(target_url: str, instruction: str | None,
+                    surface: dict | None = None) -> str:
+    """Renders root's opening task, from the recon agent's map when there is one.
+
+    This closes the gap this docstring used to describe: the route list was the test
+    fixture's three routes, asserted as fact for ANY target. That is worse than an
+    empty list — root was handed fiction confidently, went looking for routes that do
+    not exist on the actual target, and reported nothing without ever signalling it
+    had been misinformed.
+
+    The AI recon agent now produces a real map by reading the repository, and
+    render_attack_plan turns it into these lines. Each carries the parameters the
+    handler reads, whether anything guards it, and the file it was read from — so a
+    specialist knows where to aim and root can say where a route came from.
+
+    When there is no map, the fixture list is used and LABELLED as a fixture, so a
+    misinformed run is visible instead of silent. That fallback is the remaining half
+    of the old problem, and it now announces itself.
     """
+    from docket.core.surface_findings import render_attack_plan
+
+    discovered = render_attack_plan(surface)
+    if discovered:
+        lines = [
+            f"Target: {target_url}",
+            "Attack surface mapped from source by the recon agent. Every route below "
+            "was read out of a real file, named at the end of each line:",
+            *discovered,
+            "",
+            "Routes marked with no auth, or an auth check its siblings have and it "
+            "does not, are where to start. Spawn one specialist per route worth "
+            "testing, wait for them, then aggregate their findings.",
+        ]
+        if instruction:
+            lines.append(f"Extra context from the operator: {instruction}")
+        return "\n".join(lines)
+
     lines = [
         f"Target: {target_url}",
-        "Known routes and the vulnerability class each is worth checking for:",
+        "NO ATTACK SURFACE WAS MAPPED for this target — the routes below are the test "
+        "fixture's, not this application's. Treat them as a guess: confirm each one "
+        "exists before spending a specialist on it, and say so if they do not.",
         "- POST /login (form fields: username, password) -> role \"sqli\": check for "
         "an injection-style auth bypass.",
         "- GET /export?file=... -> role \"cmdi\": check whether `file` can influence "

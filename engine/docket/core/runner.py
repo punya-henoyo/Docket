@@ -126,6 +126,7 @@ def run_scan(
     on_surface: Callable[[dict], None] | None = None,
     cancel: CancelToken = NEVER,
     on_agent: Callable[[dict], None] | None = None,
+    surface: dict | None = None,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -149,6 +150,9 @@ def run_scan(
         if static_only and not triage_max and not recon
         else Config.from_env()
     )
+    # Bound here so the name exists whether or not recon runs — root reads it much
+    # later when building its task, and `if recon:` is otherwise the only binder.
+    surface = surface if isinstance(surface, dict) else None
     coordinator = AgentCoordinator(
         max_agents=cfg.max_agents,
         budget_usd=cfg.max_cost_usd,
@@ -203,9 +207,10 @@ def run_scan(
             if recon:
                 from docket.core.recon import run_recon
 
+
                 if on_stage:
                     on_stage("recon", "running")
-                surface = run_recon(
+                surface = run_recon(  # noqa: F841 — read below when building root's task
                     str(whitebox_path or target_url or "repository"),
                     run_dir=directory, config=cfg, sandbox=sandbox,
                     findings=[f.model_dump(mode="json") for f in store.findings()]
@@ -213,6 +218,18 @@ def run_scan(
                     model_override=model_override, cancel=cancel,
                     on_agent=on_agent,
                 )
+                if surface:
+                    # Into the SAME store the scanners feed, so candidates appear in
+                    # the findings list, the report, the SARIF and the brief rather
+                    # than only on a tab nobody opens. They carry discovered_by
+                    # "recon" and status OPEN so nothing mistakes them for a match.
+                    from docket.core.surface_findings import candidates_to_findings
+
+                    for candidate in candidates_to_findings(surface):
+                        if store is not None:
+                            store.add(candidate)
+                        if on_finding is not None:
+                            on_finding(candidate)
                 if surface and on_surface is not None:
                     on_surface(surface)
                 if on_stage:
@@ -282,7 +299,9 @@ def run_scan(
                 extra_tools=[create_agent, wait_for_agents, view_agent_graph],
                 model=root_model, sandbox=sandbox,
             )
-            task = build_root_task(agent_target, instruction)
+            # The map recon just built, when it ran. This is what stops root being
+            # handed the test fixture's routes and told they are this target's.
+            task = build_root_task(agent_target, instruction, surface)
             output = asyncio.run(run_agent_loop(agent, context, task, max_turns=max_turns))
     finally:
         if sandbox is not None:

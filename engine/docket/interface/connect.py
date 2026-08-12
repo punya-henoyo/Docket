@@ -99,6 +99,33 @@ MAX_TARBALL_BYTES = 512 * 1024 * 1024
 # enforces nothing. Unpriced + unbounded count is genuinely unbounded spend.
 
 
+def _merge_live_usage(state: dict[str, Any]) -> dict[str, Any]:
+    """Refresh a scan state's per-agent turns and cost from the usage ledger.
+
+    Called on every READ, not only when something happens to call snapshot(). During
+    recon nothing calls snapshot() for minutes at a time — the runner's on_progress
+    fires only after recon finishes — so the console sat on "Model turns 0, Spend
+    $0.0000" for the entire run while the agent was demonstrably burning turns.
+    Joining at read time means a poll can never show a stale number, whatever the
+    callbacks do or do not do.
+    """
+    from docket.report.state import get_global_report_state
+
+    ledger = get_global_report_state().usage
+    totals = ledger.totals()
+    state["cost_usd"] = round(totals.get("cost_usd", 0.0), 4)
+    state["input_tokens"] = totals.get("input_tokens", 0)
+    state["output_tokens"] = totals.get("output_tokens", 0)
+
+    rows = {row["agent_id"]: row for row in ledger.per_agent()}
+    for agent in state.get("agents", []):
+        row = rows.get(agent["id"])
+        if row:
+            agent["turns"] = row["requests"]
+            agent["cost_usd"] = round(row["cost_usd"], 4)
+    return state
+
+
 @dataclass
 class Session:
     """One operator's connection. Module-level singleton — see the module docstring."""
@@ -287,18 +314,9 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
         from docket.report.state import get_global_report_state
 
         current = [f.model_dump(mode="json") for f in store.findings()]
-        ledger = get_global_report_state().usage
-        totals = ledger.totals()
-        # Turns and cost per agent come from the usage ledger, which the budget hook
-        # already writes on every model turn. Joining here rather than tracking them
-        # a second time keeps one source of truth for what a turn cost.
-        spend_by_agent = {row["agent_id"]: row for row in ledger.per_agent()}
+        totals = get_global_report_state().usage.totals()
         with SESSION.lock:
-            for agent in SESSION.scans[scan_id].get("agents", []):
-                row = spend_by_agent.get(agent["id"])
-                if row:
-                    agent["turns"] = row["requests"]
-                    agent["cost_usd"] = round(row["cost_usd"], 4)
+            _merge_live_usage(SESSION.scans[scan_id])
         set_state(
             findings=current, finding_count=len(current),
             cost_usd=round(totals.get("cost_usd", 0.0), 4),
@@ -751,7 +769,14 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 scan_id = path.rsplit("/", 1)[-1]
                 with SESSION.lock:
                     state = SESSION.scans.get(scan_id)
-                self._json(200 if state else 404, state or {"error": "unknown scan"})
+                    # Refreshed inside the lock: a live scan mutates this dict from
+                    # its own thread while the handler serialises it.
+                    if state is not None and state.get("status") not in (
+                        "done", "error", "cancelled"
+                    ):
+                        _merge_live_usage(state)
+                    payload = dict(state) if state else None
+                self._json(200 if payload else 404, payload or {"error": "unknown scan"})
             elif path.startswith("/api/") or path.startswith("/auth/"):
                 self._json(404, {"error": "no such endpoint"})
             else:
@@ -1065,6 +1090,31 @@ def demo() -> None:
             raise AssertionError("unknown API path must 404")
         except urllib.error.HTTPError as exc:
             assert exc.code == 404, exc.code
+
+        # ── live usage is joined on READ, not only on write ───────────────────
+        # The bug this guards: during recon nothing calls snapshot() for minutes, so
+        # a state written once at agent-start kept reporting 0 turns and $0.0000 for
+        # the whole run while the agent was plainly spending money.
+        from docket.report.state import get_global_report_state
+
+        ledger = get_global_report_state().usage
+
+        from agents.usage import Usage
+
+        ledger.record(
+            "recon",
+            Usage(requests=4, input_tokens=900, output_tokens=60, total_tokens=960),
+            cost_usd=0.05, role="recon", model="m",
+        )
+        live = {"status": "scanning", "agents": [{"id": "recon", "role": "recon"}]}
+        merged = _merge_live_usage(live)
+        assert merged["agents"][0]["turns"] == 4, merged
+        assert merged["agents"][0]["cost_usd"] == 0.05, merged
+        assert merged["cost_usd"] >= 0.05 and merged["input_tokens"] >= 900, merged
+        # An agent the ledger has never seen keeps whatever it had rather than being
+        # zeroed — absence of a row means "no turn charged yet", not "0 turns".
+        untouched = _merge_live_usage({"agents": [{"id": "triage-9", "turns": 3}]})
+        assert untouched["agents"][0]["turns"] == 3, untouched
 
         # ── cancel ────────────────────────────────────────────────────────────
         def post(path: str, payload: dict) -> tuple[int, dict]:
