@@ -42,6 +42,12 @@ class ScanContext:
     # model_override(role) instead of building a real LitellmModel — lets a mock
     # harness script every spawned agent's decisions without touching production code.
     model_override: Callable[[str], Model] | None = None
+    # Turn ceiling for spawned specialists. Was hardcoded at 12, which was fine until a
+    # live run showed model verbosity varies ~6x for the same result: gpt-4.1 finishes an
+    # endpoint in a handful of turns, DeepSeek-V4-Pro burned all 12 on every child and the
+    # whole scan died on MaxTurnsExceeded with 1 finding of 3. --max-steps raised root's
+    # ceiling but children were unreachable, so there was no way to run a verbose model.
+    child_max_turns: int = 12
 
 
 # Errors that mean "this run is over", not "the network hiccuped". Retrying any of
