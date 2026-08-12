@@ -16,7 +16,7 @@ from pathlib import Path
 
 from docket import __version__
 from docket.report.models import Finding, Severity
-from docket.utils.secret_files import redact
+from docket.utils.secret_files import redact_document
 
 SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
 
@@ -150,7 +150,8 @@ def write_sarif(path: Path, findings: list[Finding], *, target: str | None = Non
     # "Authorization: [REDACTED]" still shows the operator what to substitute; the repro
     # stays reproducible. [REDACTED] contains no quotes or backslashes, so substituting it
     # inside serialized JSON cannot corrupt the document.
-    path.write_text(redact(json.dumps(to_sarif(findings, target=target), indent=2)))
+    path.write_text(json.dumps(
+        redact_document(to_sarif(findings, target=target)), indent=2))
     return path
 
 
