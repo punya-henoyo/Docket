@@ -155,7 +155,8 @@ export default function App() {
   }, [scan, pollTick]);
 
   const runScan = useCallback(
-    async (repo: string, ref?: string, triageMax = 0, recon = false) => {
+    async (repo: string, ref?: string, triageMax = 0, recon = false,
+           budgetUsd = 0) => {
       setScanError(null);
       setSelected(null);
       setCweFilter(null);
@@ -163,7 +164,7 @@ export default function App() {
       prevIds.current = new Set();
       setNewestId(undefined);
       try {
-        const { id } = await api.startScan(repo, ref, triageMax, recon);
+        const { id } = await api.startScan(repo, ref, triageMax, recon, budgetUsd);
         setScan({
           id,
           repo,

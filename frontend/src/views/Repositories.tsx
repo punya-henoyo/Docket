@@ -16,7 +16,8 @@ export function Repositories({
   repos: Repo[] | null;
   error: string | null;
   onReload: () => void;
-  onScan: (repo: string, ref?: string, triageMax?: number, recon?: boolean) => void;
+  onScan: (repo: string, ref?: string, triageMax?: number, recon?: boolean,
+           budgetUsd?: number) => void;
   scanning: boolean;
   activeRepo?: string;
   onGoIntegrations: () => void;
@@ -30,6 +31,9 @@ export function Repositories({
   const [triage, setTriage] = useState(0);
   // Off by default like triage: one agent per repo, but still real money.
   const [recon, setRecon] = useState(false);
+  // A dollar ceiling for the whole scan. 0 means "use the server's
+  // DOCKET_MAX_COST_USD", so an operator who does not care is not forced to pick.
+  const [budget, setBudget] = useState(0);
 
 const APPROX_USD_PER_FINDING = 0.033;
 
@@ -79,6 +83,33 @@ const APPROX_USD_PER_FINDING = 0.033;
           >
             AI recon {recon ? "on" : "off"}
           </button>
+          {/* The dollar cap sits NEXT TO the two controls that spend, because it is
+              the only one that bounds what they actually cost. triage_max caps how
+              many findings get judged and says nothing about the price of each. */}
+          <label
+            className="btn"
+            style={{ display: "flex", alignItems: "center", gap: 7, cursor: "text" }}
+            title="Hard ceiling for this scan in US dollars, checked before every model turn. The run stops mid-way when it is reached rather than being refused up front, so you keep whatever was finished. Leave 0 to use the server default."
+          >
+            Budget $
+            <input
+              type="number"
+              min={0}
+              step={0.25}
+              value={budget || ""}
+              placeholder="default"
+              onChange={(e) => setBudget(Math.max(0, Number(e.target.value) || 0))}
+              style={{
+                width: 62,
+                background: "none",
+                border: 0,
+                color: "var(--ink)",
+                font: "inherit",
+                padding: 0,
+                outline: "none",
+              }}
+            />
+          </label>
           <label
             className="btn"
             style={{ display: "flex", alignItems: "center", gap: 7, cursor: "text" }}
@@ -141,7 +172,8 @@ const APPROX_USD_PER_FINDING = 0.033;
                   className="btn sm"
                   disabled={scanning}
                   onClick={() =>
-                    onScan(repo.full_name, refs[repo.full_name]?.trim() || undefined, triage, recon)
+                    onScan(repo.full_name, refs[repo.full_name]?.trim() || undefined,
+                           triage, recon, budget)
                   }
                 >
                   {scanning && activeRepo === repo.full_name ? "scanning…" : "scan"}

@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 from docket.agents.factory import build_agent
 from docket.agents.prompts.root import build_root_task
+from dataclasses import replace
+
 from docket.config.settings import Config, run_dir
 from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, run_agent_loop
@@ -127,6 +129,7 @@ def run_scan(
     cancel: CancelToken = NEVER,
     on_agent: Callable[[dict], None] | None = None,
     surface: dict | None = None,
+    budget_usd: float | None = None,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -150,6 +153,13 @@ def run_scan(
         if static_only and not triage_max and not recon
         else Config.from_env()
     )
+    # A per-scan ceiling from the operator overrides DOCKET_MAX_COST_USD. Replacing
+    # the value on the config is what makes it real: the pre-turn gate in core/hooks
+    # reads coordinator.budget_usd, which is built from this, so a budget set here
+    # stops a run mid-flight rather than being a label on a dashboard.
+    if budget_usd is not None and budget_usd > 0:
+        cfg = replace(cfg, max_cost_usd=float(budget_usd),
+                      max_child_cost_usd=min(cfg.max_child_cost_usd, float(budget_usd)))
     # Bound here so the name exists whether or not recon runs — root reads it much
     # later when building its task, and `if recon:` is otherwise the only binder.
     surface = surface if isinstance(surface, dict) else None

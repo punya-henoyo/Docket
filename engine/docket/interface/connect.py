@@ -276,7 +276,8 @@ def fetch_source(full_name: str, token: str, dest: Path, ref: str | None = None)
 
 
 def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = None,
-                  triage_max: int = 0, recon: bool = False, cancel: Any = None) -> None:
+                  triage_max: int = 0, recon: bool = False, cancel: Any = None,
+                  budget_usd: float | None = None) -> None:
     """Fetch + scan, updating SESSION.scans[scan_id] as it goes. Never raises: the
     status dict is how the browser learns something failed.
 
@@ -301,7 +302,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
     try:
         from docket.config.settings import Config
 
-        cfg_budget = Config.from_env().max_cost_usd
+        cfg_budget = budget_usd if budget_usd else Config.from_env().max_cost_usd
     except Exception:
         # static-only scans need no DOCKET_LLM; a missing budget just means nothing to
         # draw a meter against, not a failure.
@@ -374,6 +375,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             on_surface=lambda surface: set_state(surface=surface),
             cancel=cancel,
             on_agent=note_agent,
+            budget_usd=budget_usd,
         )
         # Persist the same artifacts `docket scan` writes, so a console scan is
         # visible to `docket view`, to the run-history panel, and to anything reading
@@ -457,7 +459,8 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
 
 
 def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
-                   triage_max: int = 0, recon: bool = False) -> dict[str, Any]:
+                   triage_max: int = 0, recon: bool = False,
+                   budget_usd: float | None = None) -> dict[str, Any]:
     return {
         "id": scan_id,
         "repo": full_name,
@@ -473,6 +476,9 @@ def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
         "coverage": {},
         "agents": [],
         "cost_usd": 0.0,
+        # Shown as the denominator on the spend meter. 0 means "whatever
+        # DOCKET_MAX_COST_USD says", resolved once the scan thread starts.
+        "requested_budget_usd": budget_usd or 0.0,
         "input_tokens": 0,
         "output_tokens": 0,
         "budget_usd": 0.0,
@@ -823,6 +829,20 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             # rather than starting a scan that dies partway. Config.from_env() is what
             # loads .env, so asking it beats reading os.environ directly — an earlier
             # version did the latter and refused on a correctly-configured machine.
+            # A ceiling in dollars, not a count. This is the only control that bounds
+            # an AI phase by the thing actually worth bounding — triage_max caps how
+            # many findings are judged, but says nothing about what each one costs.
+            budget_usd: float | None = None
+            if body.get("budget_usd") not in (None, ""):
+                try:
+                    budget_usd = float(body["budget_usd"])
+                except (TypeError, ValueError):
+                    self._json(400, {"error": "budget_usd must be a number"})
+                    return
+                if budget_usd <= 0:
+                    self._json(400, {"error": "budget_usd must be greater than zero"})
+                    return
+
             recon = bool(body.get("recon"))
             if triage_max or recon:
                 try:
@@ -838,11 +858,13 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             scan_id = secrets.token_hex(8)
             token = CancelToken()
             with SESSION.lock:
-                SESSION.scans[scan_id] = new_scan_state(scan_id, full_name, ref, triage_max, recon)
+                SESSION.scans[scan_id] = new_scan_state(scan_id, full_name, ref,
+                                                        triage_max, recon, budget_usd)
                 SESSION.cancels[scan_id] = token
             threading.Thread(
                 target=run_repo_scan,
-                args=(full_name, SESSION.token, scan_id, ref, triage_max, recon, token),
+                args=(full_name, SESSION.token, scan_id, ref, triage_max, recon, token,
+                      budget_usd),
                 name=f"docket-scan-{scan_id}", daemon=True,
             ).start()
             self._json(202, {"id": scan_id, "status": "queued"})
@@ -1151,6 +1173,39 @@ def demo() -> None:
         finally:
             SESSION.scans.pop("fake", None)
             SESSION.cancels.pop("fake", None)
+
+        # ── per-scan budget ───────────────────────────────────────────────────
+        # Validated, not clamped: the operator chooses the ceiling. Refusing a
+        # nonsense value beats silently substituting one, because a budget the caller
+        # did not set is a budget nobody is watching.
+        assert new_scan_state("s", "o/r", None, 0, False, 0.5)["requested_budget_usd"] == 0.5
+        assert new_scan_state("s", "o/r")["requested_budget_usd"] == 0.0
+
+        # /api/scan refuses an unconnected session before it validates anything, so
+        # a token has to exist for the validation path to be reachable at all.
+        SESSION.token = "test-token"
+        try:
+            for bad in ("abc", -1, 0):
+                code, payload = post("/api/scan", {"repo": "o/r", "budget_usd": bad})
+                assert code == 400, (bad, code, payload)
+                assert "budget_usd" in payload.get("error", ""), payload
+        finally:
+            SESSION.token = None
+
+        # A per-scan ceiling must reach the config the pre-turn gate reads, or it is
+        # a label on a dashboard rather than a control.
+        from dataclasses import replace as _replace
+
+        from docket.config.settings import Config as _Config
+
+        _base = _Config(llm="m", llm_api_key=None, max_cost_usd=2.0,
+                        max_child_cost_usd=0.75, max_agents=6)
+        _capped = _replace(_base, max_cost_usd=0.25,
+                           max_child_cost_usd=min(_base.max_child_cost_usd, 0.25))
+        assert _capped.max_cost_usd == 0.25
+        # A child reserve larger than the whole scan budget would let one agent
+        # consume more than the operator allowed for everything.
+        assert _capped.max_child_cost_usd <= _capped.max_cost_usd
 
         runs = json.loads(urllib.request.urlopen(base + "/api/runs", timeout=5).read())
         assert isinstance(runs.get("runs"), list), runs

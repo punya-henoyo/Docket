@@ -60,7 +60,8 @@ export const cancelScan = (id?: string) =>
     body: JSON.stringify(id ? { id } : {}),
   });
 
-export const startScan = (repo: string, ref?: string, triageMax = 0, recon = false) =>
+export const startScan = (repo: string, ref?: string, triageMax = 0, recon = false,
+                          budgetUsd = 0) =>
   req<{ id: string; status: string }>("/api/scan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -69,6 +70,7 @@ export const startScan = (repo: string, ref?: string, triageMax = 0, recon = fal
       ...(ref ? { ref } : {}),
       ...(triageMax ? { triage_max: triageMax } : {}),
       ...(recon ? { recon: true } : {}),
+      ...(budgetUsd > 0 ? { budget_usd: budgetUsd } : {}),
     }),
   });
 
