@@ -1,4 +1,4 @@
-import { AUTH_START } from "../api";
+import { github } from "../api";
 import type { Session } from "../types";
 import { Panel } from "../components/ui";
 
@@ -39,7 +39,7 @@ export function Integrations({ session }: { session: Session | null }) {
           {connected ? (
             <div className="note good">Connected as {session?.login ?? "GitHub user"}.</div>
           ) : configured ? (
-            <a className="btn primary" href={AUTH_START} style={{ textDecoration: "none", alignSelf: "flex-start" }}>
+            <a className="btn primary" href={github.AUTH_START} style={{ textDecoration: "none", alignSelf: "flex-start" }}>
               Connect GitHub
             </a>
           ) : (

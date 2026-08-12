@@ -1,179 +1,262 @@
-import { useCallback, useEffect, useState } from "react";
-import { getHealth, getLog, getRun, getRuns, startScan, stopScan, streamRun } from "./api";
-import type { Finding, Health, RunPayload, RunSummary } from "./types";
-import { Activity } from "./components/Activity";
-import { AgentTree } from "./components/AgentTree";
-import { FindingDialog, FindingsTable } from "./components/Findings";
-import { RunList } from "./components/RunList";
-import { StartPanel } from "./components/StartPanel";
-import { StatBar } from "./components/StatBar";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as api from "./api";
+import { ApiError } from "./api";
+import type { Finding, Repo, RunSummary, ScanState, Session, Severity } from "./types";
+import { useHashRoute } from "./hooks/useHashRoute";
+import { Dashboard } from "./views/Dashboard";
+import { Findings } from "./views/Findings";
+import { LiveRun } from "./views/LiveRun";
+import { Repositories } from "./views/Repositories";
+import { Integrations } from "./views/Integrations";
 
-const BUDGET_USD = 2.0; // DOCKET_MAX_COST_USD default, shown as the meter's ceiling
+type View = "dashboard" | "live" | "findings" | "repos" | "integrations";
 
-function useTheme() {
-  const [theme, setTheme] = useState<string | null>(() => localStorage.getItem("docket-theme"));
-  useEffect(() => {
-    if (theme) {
-      document.documentElement.setAttribute("data-theme", theme);
-      localStorage.setItem("docket-theme", theme);
-    } else {
-      document.documentElement.removeAttribute("data-theme");
-    }
-  }, [theme]);
-  return [theme, setTheme] as const;
-}
+const VIEWS: { id: View; label: string }[] = [
+  { id: "dashboard", label: "Dashboard" },
+  // The two halves of docket, kept as separate views rather than one merged feed: a repo
+  // scan is deterministic scanners over source, a live run is agents proving exploits
+  // against a target. Different evidence, different cadence, different questions.
+  { id: "live", label: "Live run" },
+  { id: "findings", label: "Findings" },
+  { id: "repos", label: "Repositories" },
+  { id: "integrations", label: "Integrations" },
+];
 
-export function App() {
-  const [health, setHealth] = useState<Health | null>(null);
+const VIEW_IDS = VIEWS.map((v) => v.id);
+
+export default function App() {
+  const [view, go] = useHashRoute<View>(VIEW_IDS, "dashboard");
+  const [localRuns, setLocalRuns] = useState<RunSummary[]>([]);
+  const [selectedRun, setSelectedRun] = useState<string | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [repos, setRepos] = useState<Repo[] | null>(null);
+  const [reposError, setReposError] = useState<string | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [run, setRun] = useState<RunPayload | null>(null);
-  const [finding, setFinding] = useState<Finding | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
-  const [theme, setTheme] = useTheme();
+  const [scan, setScan] = useState<ScanState | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Finding | null>(null);
+  const [newestId, setNewestId] = useState<string | undefined>();
+  const prevIds = useRef<Set<string>>(new Set());
 
-  const refreshRuns = useCallback(async () => {
-    try {
-      const rows = await getRuns();
-      setRuns(rows);
-      // Land on something useful instead of an empty pane on first load.
-      setSelected((current) => current ?? rows.find((r) => r.running)?.run_name ?? rows[0]?.run_name ?? null);
-    } catch { /* backend not up yet; the interval retries */ }
+  const reloadLocalRuns = useCallback(() => {
+    api.runs
+      .getRuns()
+      .then((rows) => {
+        setLocalRuns(rows);
+        // Land on something useful rather than an empty pane on first open.
+        setSelectedRun((cur) => cur ?? rows.find((r) => r.running)?.run_name ?? rows[0]?.run_name ?? null);
+      })
+      .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    getHealth().then(setHealth).catch(() => setHealth(null));
-    refreshRuns();
-  }, [refreshRuns]);
+  useEffect(reloadLocalRuns, [reloadLocalRuns]);
 
-  // One socket per selected run. It pushes only when the event log actually grows,
-  // so an idle run costs nothing here.
+  // The run list must notice runs this tab did not start.
   useEffect(() => {
-    if (!selected) { setRun(null); return; }
-    let live = true;
-    getRun(selected).then((payload) => { if (live) setRun(payload); }).catch(() => {});
-    setFailure(null);
-    const close = streamRun(selected, (payload) => {
-      if (!live) return;
-      setRun(payload);
-      // A run flipping to finished changes its row in the sidebar too.
-      if (!payload.running) refreshRuns();
-      // Exit 2 is "findings present", which is success here. Only 1 (and anything
-      // unexpected) is a failure, and without this the UI shows an empty run with no
-      // hint that the scan never actually started.
-      const code = payload.exit_code;
-      if (code !== null && code !== undefined && code !== 0 && code !== 2) {
-        getLog(selected).then((text) => { if (live) setFailure(text.trim() || `exited ${code}`); });
-      }
-    });
-    return () => { live = false; close(); };
-  }, [selected, refreshRuns]);
-
-  // The sidebar needs to notice runs this tab did not start.
-  useEffect(() => {
-    const timer = setInterval(refreshRuns, 5000);
+    const timer = setInterval(reloadLocalRuns, 5000);
     return () => clearInterval(timer);
-  }, [refreshRuns]);
+  }, [reloadLocalRuns]);
 
-  const running = run?.running ?? false;
+  // Boot: session + run history. A failure here means the backend is not running,
+  // which every view needs to know before it renders anything.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const s = await api.github.getSession();
+        if (!alive) return;
+        setSession(s);
+        setBootError(null);
+        if (s.connected) loadRepos();
+      } catch (err) {
+        if (alive) setBootError(err instanceof ApiError ? err.message : String(err));
+      }
+      try {
+        const r = await api.runs.getRuns();
+        if (alive) setRuns(r);
+      } catch {
+        /* run history is optional context, not a blocker */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  async function onStarted(runName: string) {
-    setSelected(runName);
-    await refreshRuns();
-  }
+  // Landed back from GitHub: jump to the repo picker.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("connected")) {
+      window.history.replaceState({}, "", window.location.pathname);
+      go("repos");
+    }
+  }, [go]);
 
-  async function rerun() {
-    if (!run?.target) return;
-    const scan = await startScan({ target: run.target, max_steps: 20 });
-    onStarted(scan.run_name);
-  }
+  const loadRepos = useCallback(async () => {
+    setReposError(null);
+    try {
+      setRepos(await api.github.getRepos());
+    } catch (err) {
+      setRepos([]);
+      setReposError(err instanceof ApiError ? err.message : String(err));
+    }
+  }, []);
+
+  // Poll an in-flight scan. Stops as soon as it reaches a terminal state, so a
+  // finished scan is not still being polled in the background.
+  useEffect(() => {
+    if (!scan || scan.status === "done" || scan.status === "error") return;
+    const timer = setTimeout(async () => {
+      try {
+        const next = await api.github.getScan(scan.id);
+        const fresh = next.findings.find((f) => !prevIds.current.has(f.id));
+        if (fresh) setNewestId(fresh.id);
+        prevIds.current = new Set(next.findings.map((f) => f.id));
+        setScan(next);
+        if (next.status === "done") api.runs.getRuns().then(setRuns).catch(() => {});
+      } catch (err) {
+        setScanError(err instanceof ApiError ? err.message : String(err));
+      }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [scan]);
+
+  const runScan = useCallback(
+    async (repo: string) => {
+      setScanError(null);
+      setSelected(null);
+      prevIds.current = new Set();
+      setNewestId(undefined);
+      try {
+        const { id } = await api.github.startRepoScan(repo);
+        setScan({
+          id,
+          repo,
+          status: "queued",
+          stages: { fetch: "pending", trivy: "pending", semgrep: "pending", nuclei: "pending" },
+          findings: [],
+          finding_count: 0,
+          error: null,
+        });
+        go("dashboard");
+      } catch (err) {
+        setScanError(err instanceof ApiError ? err.message : String(err));
+      }
+    },
+    [go],
+  );
+
+  const findings = scan?.findings ?? [];
+
+  const counts = useMemo(() => {
+    const acc: Partial<Record<Severity, number>> = {};
+    for (const f of findings) acc[f.severity] = (acc[f.severity] ?? 0) + 1;
+    return acc;
+  }, [findings]);
+
+  const openFinding = useCallback(
+    (finding: Finding) => {
+      setSelected(finding);
+      go("findings");
+    },
+    [go],
+  );
+
+  const scanning = scan?.status === "queued" || scan?.status === "fetching" || scan?.status === "scanning";
 
   return (
     <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <strong><h1>docket</h1></strong>
-          <span className="tag">proof, not maybes</span>
-        </div>
-        <RunList runs={runs} selected={selected} onSelect={setSelected} />
-      </aside>
-
-      <div className="main">
-        <div className="topbar">
-          {run ? (
-            <>
-              <strong>{run.run_name}</strong>
-              <span className="target">{run.target}</span>
-              <span className={`pill ${running ? "live" : run.finished ? "done" : ""}`}>
-                <span className={`dot ${running ? "running" : run.finished ? "completed" : ""}`}
-                      aria-hidden="true" />
-                {running ? "scanning" : run.finished ? "finished" : "idle"}
-              </span>
-            </>
-          ) : (
-            <strong>No run selected</strong>
-          )}
-          <span className="spacer" />
-          {running && selected && (
-            <button className="btn danger" onClick={() => stopScan(selected)}>Stop</button>
-          )}
-          {!running && run?.target && (
-            <button className="btn" onClick={rerun}>Re-run</button>
-          )}
-          {run?.has_sarif && selected && (
-            <a className="btn" href={`/api/runs/${encodeURIComponent(selected)}/sarif`}>SARIF</a>
-          )}
-          <button className="btn icon" title="Toggle theme"
-                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>◐</button>
+      <nav className="rail">
+        <div className="org">
+          <span className="dot" />
+          <span>{session?.login ?? "docket"}</span>
+          {session?.connected && <span className="tag">GITHUB</span>}
         </div>
 
-        {health?.loopback_only === false && (
-          <div className="banner">
-            <span aria-hidden="true">⚠</span>
-            Unrestricted targets are enabled. docket sends real exploit payloads — only
-            point it at systems you own or are authorised to test.
-          </div>
-        )}
+        {VIEWS.map((v) => (
+          <button
+            key={v.id}
+            className="nav"
+            aria-current={view === v.id ? "page" : undefined}
+            onClick={() => go(v.id)}
+          >
+            {v.label}
+            {(v.id === "dashboard" && scanning) && <span className="live">● live</span>}
+            {v.id === "live" && localRuns.some((r) => r.running) && (
+              <span className="live">● live</span>
+            )}
+            {v.id === "findings" && findings.length > 0 && (
+              <span className="count">{findings.length}</span>
+            )}
+          </button>
+        ))}
 
-        <div className="content">
-          <StartPanel health={health} onStarted={onStarted} />
+        <div className="rail-sep" />
+        <div className="rail-foot">$ docket connect</div>
+      </nav>
 
-          {failure && (
-            <div className="card">
-              <h2>Scan did not complete</h2>
-              <pre>{failure}</pre>
+      <main className="main">
+        {bootError ? (
+          <>
+            <div className="page-head">
+              <h1>Cannot reach docket</h1>
             </div>
-          )}
-
-          {run && (
-            <>
-              <div className="card">
-                <h2>Summary</h2>
-                <StatBar run={run} budget={BUDGET_USD} />
-                {run.summary && <p style={{ marginBottom: 0 }}>{run.summary}</p>}
-              </div>
-
-              <div className="card">
-                <h2>Findings — reproduced, with evidence</h2>
-                <FindingsTable findings={run.findings ?? []} onSelect={setFinding} />
-              </div>
-
-              <div className="cols">
-                <div className="card">
-                  <h2>Agents</h2>
-                  <AgentTree agents={run.agents ?? []} />
+            <div className="panel">
+              <div className="body">
+                <div className="note bad">{bootError}</div>
+                <div className="note">
+                  Start the backend from the repo root, then reload:
                 </div>
-                <div className="card">
-                  <h2>Activity</h2>
-                  <Activity lines={run.transcript ?? []} />
+                <div className="evidence">
+                  <pre>docket connect</pre>
                 </div>
               </div>
-            </>
-          )}
-        </div>
-      </div>
-
-      <FindingDialog finding={finding} runName={selected ?? ""} onClose={() => setFinding(null)} />
+            </div>
+          </>
+        ) : view === "dashboard" ? (
+          <Dashboard
+            scan={scan}
+            runs={runs}
+            counts={counts}
+            scanError={scanError}
+            session={session}
+            onSelectFinding={openFinding}
+            newestId={newestId}
+            onGoRepos={() => go("repos")}
+            onGoIntegrations={() => go("integrations")}
+          />
+        ) : view === "live" ? (
+          <LiveRun
+            runs={localRuns}
+            selected={selectedRun}
+            onSelectRun={setSelectedRun}
+            onReloadRuns={reloadLocalRuns}
+            onSelectFinding={openFinding}
+          />
+        ) : view === "findings" ? (
+          <Findings
+            findings={findings}
+            selected={selected}
+            onSelect={setSelected}
+            scan={scan}
+            onGoRepos={() => go("repos")}
+          />
+        ) : view === "repos" ? (
+          <Repositories
+            session={session}
+            repos={repos}
+            error={reposError}
+            onReload={loadRepos}
+            onScan={runScan}
+            scanning={scanning}
+            activeRepo={scan?.repo}
+            onGoIntegrations={() => go("integrations")}
+          />
+        ) : (
+          <Integrations session={session} />
+        )}
+      </main>
     </div>
   );
 }

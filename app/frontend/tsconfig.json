@@ -9,10 +9,10 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "noEmit": true,
+    "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "isolatedModules": true,
-    "verbatimModuleSyntax": true
+    "noEmit": true,
+    "isolatedModules": true
   },
   "include": ["src"]
 }

@@ -1,40 +1,30 @@
-"""FastAPI backend for the docket demo app.
+"""The docket console: one server, one frontend, both halves of the tool.
 
-Thin on purpose. docket already writes everything a UI needs to the run directory,
-and `docket.interface.viewer.transcript.build_payload` already assembles it into JSON
-that renders both a live run (events only) and a finished one (validated report). This
-server adds the three things the built-in viewer cannot do: start a scan, stream it,
-and switch between runs.
+docket does two quite different things, and the console shows both rather than making
+you pick a window:
 
-Binds to loopback. Nothing here is hardened for exposure — it can launch a process
-that fires exploit payloads, so it must never be reachable from anything but this
-machine.
+  - a REPO SCAN: deterministic scanners (trivy, semgrep, nuclei) over source pulled
+    read-only from GitHub. Four ordered stages, polls fine.
+  - a LIVE RUN: agents choosing payloads against a target and proving what they find.
+    Bursts and stalls unpredictably, so it streams over a WebSocket.
+
+Routes are split by which of those they serve — `routers/github.py` and `routers/runs.py`
+— rather than by HTTP verb, so a change to one half cannot quietly reach into the other.
+
+Binds to loopback. Nothing here is hardened for exposure: it can start a process that
+fires real exploit payloads, so it must never be reachable from anything but this machine.
 """
 from __future__ import annotations
 
-import asyncio
-import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
-from docket.core.paths import runs_root
-from docket.interface.environment import check_environment
-from docket.interface.scan_setup import sanitize_run_name
-from docket.interface.tui.backend.protocol import read_events
-from docket.interface.viewer.transcript import build_payload
+from app.backend.routers import github, runs
 
-from app.backend.scans import ScanManager, TargetRefused, allow_any_target
-
-POLL_SECONDS = 0.5
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-
-manager = ScanManager()
 
 
 @asynccontextmanager
@@ -42,228 +32,66 @@ async def lifespan(_: FastAPI):
     yield
     # A scan outliving the server would keep a container up and keep writing to a run
     # directory nothing is watching.
-    manager.stop_all()
+    runs.manager.stop_all()
 
 
-api = FastAPI(title="docket demo", lifespan=lifespan)
+api = FastAPI(title="docket console", lifespan=lifespan)
+api.include_router(runs.router)
+api.include_router(github.router)
 
-
-# --- helpers ------------------------------------------------------------------------
-
-def run_dir_for(run_name: str) -> Path:
-    """Resolve a run name to its directory, refusing anything that escapes runs_root.
-
-    The name arrives from an HTTP client, and it is used to build a filesystem path.
-    sanitize_run_name strips separators; the containment check is the belt to that
-    braces, and uses parent traversal rather than string prefixes so a sibling
-    directory sharing a name prefix cannot be reached.
-    """
-    root = runs_root().resolve()
-    candidate = (root / sanitize_run_name(run_name)).resolve()
-    if candidate != root and root not in candidate.parents:
-        raise HTTPException(400, "invalid run name")
-    if not candidate.is_dir():
-        raise HTTPException(404, f"no run named {run_name!r}")
-    return candidate
-
-
-def list_all_runs() -> list[dict]:
-    """Every run directory, including ones still in progress.
-
-    interface.scan_setup.list_runs only returns runs that already have a report.json,
-    which is exactly the set a live demo needs to NOT filter out.
-    """
-    root = runs_root()
-    if not root.exists():
-        return []
-    rows = []
-    for directory in root.iterdir():
-        if not directory.is_dir():
-            continue
-        report = directory / "report.json"
-        events = directory / "events.jsonl"
-        log = directory / "scan.log"
-        # scan.log counts: a scan that died before writing its first event (no API key,
-        # Docker down) has only a log, and dropping it from the list makes a failed
-        # start look like nothing happened at all.
-        if not any(p.exists() for p in (report, events, log)):
-            continue
-        newest = max((p.stat().st_mtime for p in (report, events, log) if p.exists()), default=0.0)
-        summary = {}
-        if report.exists():
-            try:
-                data = json.loads(report.read_text())
-                summary = {
-                    "target": data.get("target"),
-                    "finding_count": data.get("finding_count"),
-                    "severity_counts": data.get("severity_counts", {}),
-                    "cost_usd": data.get("cost_usd"),
-                }
-            except (OSError, json.JSONDecodeError):
-                pass
-        scan = manager.active.get(directory.name)
-        rows.append({
-            "run_name": directory.name,
-            "modified": newest,
-            "finished": report.exists(),
-            "running": bool(scan and scan.running),
-            "failed": bool(scan and not scan.running and scan.exit_code not in (0, 2, None)),
-            **summary,
-        })
-    return sorted(rows, key=lambda r: r["modified"], reverse=True)
-
-
-# --- models -------------------------------------------------------------------------
-
-class ScanRequest(BaseModel):
-    target: str
-    run_name: str | None = None
-    instruction: str | None = None
-    max_steps: int = Field(default=20, ge=1, le=200)
-    use_sandbox: bool = True
-
-
-# --- routes -------------------------------------------------------------------------
-
-@api.get("/api/health")
-def health() -> dict:
-    # Re-read .env on every call. docket loads it once, at import of
-    # docket.config.settings, so a long-lived server started before the file was
-    # filled in reports "no LLM key" forever while scans launched from it work fine —
-    # they are subprocesses that load .env themselves. A health check that reports the
-    # state at boot rather than the state now is worse than none: it made a working
-    # setup look broken and real findings look fabricated.
-    load_dotenv(override=True)
-    report = check_environment(require_sandbox=False)
-    scan = manager.current()
-    return {
-        "ok": report.ok,
-        "llm": report.llm_model,
-        "docker": report.docker_available,
-        "docker_error": report.docker_error,
-        "search": report.search_provider,
-        "warnings": list(report.warnings),
-        "loopback_only": not allow_any_target(),
-        "active_scan": scan.run_name if scan else None,
-    }
-
-
-@api.get("/api/runs")
-def get_runs() -> dict:
-    return {"runs": list_all_runs()}
-
-
-@api.get("/api/runs/{run_name}")
-def get_run(run_name: str) -> dict:
-    payload = build_payload(run_dir_for(run_name))
-    scan = manager.active.get(run_name)
-    payload["running"] = bool(scan and scan.running)
-    payload["exit_code"] = scan.exit_code if scan else None
-    return payload
-
-
-@api.get("/api/runs/{run_name}/sarif")
-def get_sarif(run_name: str) -> FileResponse:
-    path = run_dir_for(run_name) / "report.sarif"
-    if not path.is_file():
-        raise HTTPException(404, "no report.sarif for this run")
-    return FileResponse(path, media_type="application/json", filename=f"{run_name}.sarif")
-
-
-@api.get("/api/runs/{run_name}/log")
-def get_log(run_name: str) -> PlainTextResponse:
-    path = run_dir_for(run_name) / "scan.log"
-    return PlainTextResponse(path.read_text() if path.is_file() else "")
-
-
-@api.get("/api/runs/{run_name}/artifacts/{path:path}")
-def get_artifact(run_name: str, path: str) -> FileResponse:
-    directory = run_dir_for(run_name)
-    target = (directory / "artifacts" / path).resolve()
-    # Containment via parent traversal, not a string prefix: "<run>-other/x" shares a
-    # prefix with "<run>" but is a different directory.
-    if directory.resolve() not in target.parents or not target.is_file():
-        raise HTTPException(404, "not found")
-    kind = "image/png" if target.suffix == ".png" else "text/plain; charset=utf-8"
-    return FileResponse(target, media_type=kind)
-
-
-@api.post("/api/scans", status_code=201)
-def start_scan(request: ScanRequest) -> dict:
-    try:
-        scan = manager.start(
-            request.target, run_name=request.run_name, instruction=request.instruction,
-            max_steps=request.max_steps, use_sandbox=request.use_sandbox,
-        )
-    except TargetRefused as exc:
-        raise HTTPException(403, str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return scan.to_dict()
-
-
-@api.delete("/api/scans/{run_name}")
-def stop_scan(run_name: str) -> JSONResponse:
-    stopped = manager.stop(run_name)
-    return JSONResponse({"stopped": stopped}, status_code=200 if stopped else 404)
-
-
-@api.websocket("/ws/runs/{run_name}")
-async def stream_run(socket: WebSocket, run_name: str) -> None:
-    """Push a fresh payload whenever the run's event log grows.
-
-    Polls the event file's line offset rather than pushing on a timer: read_events()
-    already returns (events, next_offset) for exactly this, and an idle run then costs
-    one stat-and-read per tick instead of a full payload rebuild plus a socket write.
-    """
-    await socket.accept()
-    try:
-        directory = run_dir_for(run_name)
-    except HTTPException as exc:
-        await socket.send_json({"error": exc.detail})
-        await socket.close()
-        return
-
-    offset = 0
-    last_finished = None
-    try:
-        while True:
-            _, next_offset = await asyncio.to_thread(read_events, directory, offset)
-            scan = manager.active.get(run_name)
-            running = bool(scan and scan.running)
-            # Send on new events, and once more when the run stops, so the client sees
-            # the final report.json without needing a refresh.
-            if next_offset != offset or last_finished != running:
-                offset = next_offset
-                last_finished = running
-                payload = await asyncio.to_thread(build_payload, directory)
-                payload["running"] = running
-                payload["exit_code"] = scan.exit_code if scan else None
-                await socket.send_json(json.loads(json.dumps(payload, default=str)))
-            await asyncio.sleep(POLL_SECONDS)
-    except (WebSocketDisconnect, RuntimeError):
-        return
-
-
-# Mount last: a catch-all static mount at "/" would otherwise shadow every /api route.
+# Mounted LAST: a catch-all static mount at "/" would otherwise shadow every API route.
+# html=True serves index.html for unknown paths, which is what the hash router needs.
 if FRONTEND_DIST.is_dir():
-    api.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+    api.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="console")
 
 
 def demo() -> None:
     from fastapi.testclient import TestClient
 
     with TestClient(api) as client:
-        health_body = client.get("/api/health").json()
-        assert "docker" in health_body and health_body["loopback_only"] in (True, False)
+        health = client.get("/api/health").json()
+        assert "docker" in health and health["loopback_only"] in (True, False)
         assert isinstance(client.get("/api/runs").json()["runs"], list)
 
-        # A target the guard refuses must 403, not start a process.
-        refused = client.post("/api/scans", json={"target": "example.com"})
-        assert refused.status_code == 403, refused.status_code
-        assert manager.current() is None
+        # Both halves are mounted, and neither shadows the other. Read off the routers
+        # rather than api.routes, which wraps included routers in an opaque object.
+        paths = {r.path for r in (*runs.router.routes, *github.router.routes)}
+        assert {"/api/health", "/api/runs", "/api/scans"} <= paths, paths
+        assert {"/api/session", "/api/repos", "/api/scan"} <= paths, paths
+
+        # The GitHub half degrades to a clear 401/503 rather than a 500 when nothing is
+        # configured — this is the state a first-time user actually opens the console in.
+        assert client.get("/api/session").json()["connected"] is False
+        assert client.get("/api/repos").status_code == 401
+        assert client.get("/auth/start", follow_redirects=False).status_code in (302, 503)
+
+        # The loopback guard, tested through check_target with the override forced OFF
+        # rather than by POSTing a real hostname. POSTing was the original test and it was
+        # dangerous: on a machine where the operator has legitimately set
+        # DOCKET_APP_ALLOW_ANY_TARGET=1, it does not 403 — it STARTS A SCAN against
+        # whatever hostname the test named. A self-check must never be able to send
+        # exploit traffic anywhere, whatever the local config says.
+        import app.backend.scans as scans_mod
+
+        original = scans_mod.allow_any_target
+        scans_mod.allow_any_target = lambda: False
+        try:
+            for host in ("example.com", "http://10.0.0.5", "https://staging.internal"):
+                try:
+                    scans_mod.check_target(host)
+                    raise AssertionError(f"{host} must be refused while loopback-only")
+                except scans_mod.TargetRefused:
+                    pass
+            # Keys on the parsed HOST, not a substring: this merely mentions localhost.
+            try:
+                scans_mod.check_target("http://evil.test/localhost")
+                raise AssertionError("path-only 'localhost' must not pass the guard")
+            except scans_mod.TargetRefused:
+                pass
+            assert scans_mod.check_target("127.0.0.1:8000") == "http://127.0.0.1:8000"
+        finally:
+            scans_mod.allow_any_target = original
+        assert runs.manager.current() is None, "no self-check may leave a scan running"
 
         # Run-name traversal must not escape the runs root.
         for bad in ("../../etc", "..%2f..%2fetc"):

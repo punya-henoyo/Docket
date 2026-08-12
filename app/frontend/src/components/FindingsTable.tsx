@@ -68,8 +68,11 @@ export function FindingDetail({ finding }: { finding: Finding }) {
 
       <div className="evidence">
         <div className="lbl">{findingLocation(finding)}</div>
-        <pre>{finding.poc.request}</pre>
-        {finding.poc.response && (
+        {/* An event-stream finding has no poc at all: the validated request/response
+            only exists in report.json. Say so rather than rendering an empty pre, which
+            reads as "we found this and there was no evidence". */}
+        <pre>{finding.poc?.request || "no reproduced request in this projection"}</pre>
+        {finding.poc?.response && (
           <>
             <div className="lbl">OBSERVED</div>
             <pre>{finding.poc.response}</pre>

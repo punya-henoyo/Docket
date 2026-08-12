@@ -1,17 +1,21 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// `npm run dev` serves the UI on 5173 and forwards data calls to the FastAPI backend
-// on 7717, so the two run independently during development. `npm run build` emits
-// dist/, which the backend mounts itself — one process, one port, for the demo.
+// Build output is served by engine/docket/interface/connect.py (frontend_dist()).
+// In dev, /api and /auth proxy to that same server so the OAuth round-trip and the
+// scan endpoints behave identically with hot-reload on.
+const BACKEND = "http://127.0.0.1:7717";
+
 export default defineConfig({
+  plugins: [react()],
   server: {
-    port: 5173,
     proxy: {
-      "/api": { target: "http://127.0.0.1:7717", changeOrigin: true },
-      "/ws": { target: "ws://127.0.0.1:7717", ws: true },
+      "/api": { target: BACKEND, changeOrigin: false },
+      "/auth": { target: BACKEND, changeOrigin: false },
+      // ws:true, or the live-run stream silently fails under `npm run dev` while
+      // working fine in the built console — the most confusing possible split.
+      "/ws": { target: BACKEND.replace("http", "ws"), ws: true },
     },
   },
-  build: { outDir: "dist", emptyOutDir: true },
-  plugins: [react()],
+  build: { outDir: "dist", emptyOutDir: true, sourcemap: false },
 });

@@ -28,11 +28,15 @@ def dashboard_html() -> Path:
 
 
 def frontend_dir() -> Path:
-    """The console's React source (interface/connect.py serves its build output from
-    frontend/dist). Lives at the repo root rather than inside the package: it is the
-    product surface for a hosted deployment and build input, not a runtime resource
-    the CLI needs, so it is absent from an installed wheel."""
-    return REPO_ROOT / "frontend"
+    """The console's source tree (its build output is at app/frontend/dist).
+
+    Lives under app/ rather than inside the package or at the repo root: the console is
+    not part of the tool. `docket scan` and `docket view` never touch it, it installs as
+    an optional extra, and it ships in no wheel. There used to be two consoles — one at
+    the repo root and one under app/ — which is exactly the drift this consolidation
+    removed.
+    """
+    return REPO_ROOT / "app" / "frontend"
 
 
 def containers_dir() -> Path:

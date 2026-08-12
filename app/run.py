@@ -1,7 +1,7 @@
-"""Launch the demo app:  uv run python -m app.run
+"""Launch the docket console:  uv run python -m app.run
 
-Serves the built frontend and the API from one process on one port, which is what you
-want in front of an audience. For frontend work run `npm run dev` in app/frontend
+Serves the built console and both API halves from one process on one port, which is
+what you want in front of an audience. For frontend work run `npm run dev` in app/frontend
 instead — it proxies /api and /ws back here.
 
 Run it as a module, never as `python app/run.py`: the latter puts app/ on sys.path
@@ -25,7 +25,7 @@ if __name__ == "__main__":
         print("frontend not built. Run:\n  cd app/frontend && npm install && npm run build",
               file=sys.stderr)
         sys.exit(1)
-    print(f"docket demo → http://127.0.0.1:{PORT}")
+    print(f"docket console → http://127.0.0.1:{PORT}")
     # Loopback only, always. This process can start a subprocess that fires real
     # exploit payloads; it must never be reachable off this machine.
     uvicorn.run("app.backend.main:api", host="127.0.0.1", port=PORT, log_level="warning")

@@ -1,7 +1,15 @@
-# docket demo app
+# docket console
 
-A browser front end for demoing docket: start a scan, watch agents prove vulnerabilities
-live, and page back through past runs.
+One browser console for both halves of docket:
+
+- **Repo scan** — authorize GitHub, pick a repo, pull it read-only, and run the
+  deterministic scanners (trivy, semgrep, nuclei) over it. Four ordered stages, polled.
+- **Live run** — agents choosing payloads against a target and proving what they find.
+  Bursts and stalls unpredictably, so it streams over a WebSocket.
+
+There used to be two consoles, one at the repo root and one here. This is the merge:
+Sarthak's console (rail, radar, views, GitHub connect) is the base, with the live-run
+half folded in as a fifth view.
 
 **Not part of the tool.** `docket scan` and `docket view` do not need any of this, and
 none of it ships in the wheel. It exists so a scan can be demonstrated to people who are
@@ -51,9 +59,19 @@ Receiver.
 
 | Path | Role |
 |---|---|
-| `backend/main.py` | FastAPI: run listing, payloads, artifacts, WebSocket stream, scan control |
-| `backend/scans.py` | Subprocess lifecycle and the target guard |
-| `frontend/src/` | React + TypeScript, Vite |
+| `backend/main.py` | Composes the app, mounts both routers, serves the built console |
+| `backend/routers/runs.py` | Local runs: history, payloads, artifacts, WebSocket, scan control |
+| `backend/routers/github.py` | Session, repos, auth, repo scans — thin over `interface/connect.py` |
+| `backend/scans.py` | Subprocess lifecycle and the loopback target guard |
+| `frontend/src/api/` | One client per backend surface, over a shared fetch wrapper |
+| `frontend/src/hooks/` | `useRunStream` (WebSocket), `useHashRoute` |
+| `frontend/src/views/` | Dashboard, Live run, Findings, Repositories, Integrations |
+| `frontend/src/components/` | Radar, FindingsTable, charts, AgentTree, Activity, StatBar, ui |
+
+Routes are split by which half they serve, not by HTTP verb, so a change to one cannot
+quietly reach into the other. The GitHub router is thin on purpose: `connect.py` already
+separates its logic from its HTTP layer, so this exposes those functions rather than
+duplicating 600 lines.
 
 The backend is thin because docket already writes what a UI needs. Run payloads come
 straight from `docket.interface.viewer.transcript.build_payload`, the same function the
@@ -77,3 +95,18 @@ hostname, not a substring, so `http://evil.test/localhost` is refused.
 ## Security
 
 Binds to 127.0.0.1 and must stay there. This process can launch one that attacks things.
+
+
+## Two things that bit during the merge
+
+**One endpoint, one shape.** Both old backends served `/api/runs`, with different shapes —
+mine omitted `finding_count` for a run with no report, his required it. The dashboard does
+`runs.map(r => r.finding_count)` and feeds that to a chart, so one `undefined` blanked the
+whole page. Every row now carries every field, defaulted, and `routers/runs.py`'s demo
+asserts it so the shapes cannot drift apart again.
+
+**A display helper must not be able to blank the page.** `ruleLeaf` assumed `rule_id` was
+a string. A run with no `report.json` is projected from `events.jsonl`, where a finding
+carries `rule_type` but not `rule_id` — and that one missing optional field took the
+console down. The `Finding` type now marks what is optional, which immediately surfaced
+the same latent crash in `FindingsTable` and `Radar`.

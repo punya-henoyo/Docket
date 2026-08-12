@@ -1,33 +1,102 @@
+/** Mirrors docket's own report model (engine/docket/report/models.py). Kept in the
+ *  same field names so what the console shows and what report.json contains cannot
+ *  drift into two different vocabularies. */
+
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
+export const SEVERITIES: Severity[] = ["critical", "high", "medium", "low", "info"];
+
 export interface Location {
-  url?: string;
-  method?: string;
-  path?: string;
-  parameter?: string;
-  line?: number;
+  method: string;
+  path: string;
+  parameter: string | null;
+  source_file: string | null;
 }
 
 export interface PoC {
-  request?: string;
-  response?: string;
-  steps?: string[];
-  screenshot?: string;
+  request: string;
+  response: string;
+  notes: string | null;
 }
 
 export interface Finding {
-  finding_id?: string;
+  id: string;
+  /* Optional because a run with no report.json is projected from events.jsonl, where a
+     finding carries rule_type but not rule_id. Anything rendering these must tolerate
+     both — see ui.ruleLeaf. */
   rule_id?: string;
   rule_type?: string;
-  title?: string;
+  cwe: string | null;
+  title: string;
   severity: Severity;
-  cwe?: string;
-  description?: string;
   location?: Location;
+  description?: string;
   poc?: PoC;
-  discovered_by?: string;
-  dedupe_key?: string;
+  discovered_by: string;
+  discovered_at: string;
+  status: string;
+  corroborating_evidence: PoC[];
 }
+
+export type StageState = "pending" | "running" | "done" | "skipped" | "error";
+export type ScanStatus = "queued" | "fetching" | "scanning" | "done" | "error";
+
+export interface ScanState {
+  id: string;
+  repo: string;
+  status: ScanStatus;
+  stages: Record<string, StageState>;
+  findings: Finding[];
+  finding_count: number;
+  error: string | null;
+  summary?: string;
+  elapsed_sec?: number;
+}
+
+export interface Session {
+  connected: boolean;
+  login: string | null;
+  configured: boolean;
+}
+
+export interface Repo {
+  full_name: string;
+  private: boolean;
+  language: string | null;
+  updated_at: string | null;
+}
+
+export interface RunSummary {
+  run_name: string;
+  target: string | null;
+  generated_at?: string | null;
+  finding_count: number;
+  severity_counts: Partial<Record<Severity, number>>;
+  cost_usd: number;
+  /* app/backend adds these so the run list can show in-flight and failed runs, not
+     just finished ones. A scan that died before its first event has only a log. */
+  modified?: number;
+  finished?: boolean;
+  running?: boolean;
+  failed?: boolean;
+}
+
+export const SCANNERS = ["fetch", "trivy", "semgrep", "nuclei"] as const;
+export type Scanner = (typeof SCANNERS)[number];
+
+export const SCANNER_LABEL: Record<Scanner, string> = {
+  fetch: "fetch source",
+  trivy: "trivy · dependencies",
+  semgrep: "semgrep · source",
+  nuclei: "nuclei · live target",
+};
+
+
+/* ---------------------------------------------------------------------------------
+ * Local agent runs. The types above cover a repo scan (deterministic scanners over
+ * GitHub source); these cover a full agent run against a live target, which is the
+ * other half of what docket does and what app/backend serves.
+ * --------------------------------------------------------------------------------- */
 
 export interface AgentNode {
   agent_id: string;
@@ -41,8 +110,8 @@ export interface AgentNode {
   depth: number;
 }
 
-/** Emitted by interface/tui/backend/projection.py — one row per tool call and per
- *  tool result, not a free-text log. */
+/** One row per tool call and per tool result, from
+ *  engine/docket/interface/tui/backend/projection.py. NOT a free-text log. */
 export interface TranscriptLine {
   ts?: number;
   agent_id?: string;
@@ -51,6 +120,26 @@ export interface TranscriptLine {
   tool?: string;
   args?: Record<string, unknown>;
   output?: string;
+}
+
+/** A static-analysis candidate. Deliberately NOT a Finding: it carries no reproduced
+ *  request/response and never will, so it lives in its own list and never touches
+ *  finding_count or the exit code. See engine/docket/report/writer.py. */
+export interface FlaggedCandidate {
+  rule_id: string;
+  engine: string;
+  severity: Severity;
+  cwe: string | null;
+  message: string;
+  file: string;
+  line: number;
+  snippet: string | null;
+  status: "flagged_not_proven";
+  endpoint: string | null;
+  reachable: boolean;
+  correlation_confidence: string;
+  correlation_reason: string;
+  cwe_proven_dynamically: boolean;
 }
 
 export interface RunPayload {
@@ -62,26 +151,16 @@ export interface RunPayload {
   summary?: string;
   severity_counts: Partial<Record<Severity, number>>;
   finding_count: number;
+  flagged_count?: number;
+  flagged_not_proven?: FlaggedCandidate[];
   cost_usd: number;
-  usage: Record<string, unknown>;
+  usage: { totals?: { total_tokens?: number } } & Record<string, unknown>;
   agents: AgentNode[];
   findings: Finding[];
   transcript: TranscriptLine[];
   notes: unknown[];
   todos: unknown[];
   has_sarif: boolean;
-}
-
-export interface RunSummary {
-  run_name: string;
-  modified: number;
-  finished: boolean;
-  running: boolean;
-  failed?: boolean;
-  target?: string;
-  finding_count?: number;
-  severity_counts?: Partial<Record<Severity, number>>;
-  cost_usd?: number;
 }
 
 export interface Health {
@@ -94,5 +173,3 @@ export interface Health {
   loopback_only: boolean;
   active_scan?: string | null;
 }
-
-export const SEVERITIES: Severity[] = ["critical", "high", "medium", "low", "info"];
