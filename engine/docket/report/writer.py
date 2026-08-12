@@ -12,7 +12,7 @@ from docket.report.dedupe import FindingStore
 from docket.report.models import Finding, Severity
 from docket.report.sarif import write_sarif
 from docket.report.state import get_global_report_state
-from docket.utils.secret_files import redact
+from docket.utils.secret_files import redact_tree
 
 _SEVERITY_ORDER = list(Severity)  # CRITICAL first, per declaration order in models.py
 
@@ -38,6 +38,7 @@ def build_report(
     agents_spawned: int = 0,
     success: bool = True,
     coverage: dict | None = None,
+    surface: dict | None = None,
 ) -> dict:
     findings = sort_findings(store.findings())
     return {
@@ -53,6 +54,9 @@ def build_report(
         # What was actually analysed. Without it, "0 findings" and "nothing was
         # scanned" are the same number.
         "coverage": coverage or {},
+        # The agent-mapped attack surface, when recon ran. Persisted so a reloaded run
+        # keeps the entry points a dynamic scan would need.
+        "surface": surface or {},
         "severity_counts": severity_counts(findings),
         # Per-agent token accounting: explains where the run's cost actually went.
         "usage": get_global_report_state().usage.to_dict(),
@@ -71,18 +75,22 @@ def write_report(
     agents_spawned: int = 0,
     success: bool = True,
     coverage: dict | None = None,
+    surface: dict | None = None,
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     report = build_report(
         store, run_name=run_name, target=target, summary=summary,
         cost_usd=cost_usd, agents_spawned=agents_spawned, success=success,
-        coverage=coverage,
+        coverage=coverage, surface=surface,
     )
     json_path = out_dir / "report.json"
     # Same redaction boundary as SARIF — see write_sarif. This also catches the raw
     # exception strings folded into `summary`, which are the one realistic way our OWN
     # key could reach an artifact (a LiteLLM auth error echoing what it was given).
-    json_path.write_text(redact(json.dumps(report, indent=2)))
+    # Redact the STRUCTURE, then serialize. Redacting the serialized text could
+    # break a JSON escape and produce a report nothing can read back — see
+    # utils/secret_files.redact_tree.
+    json_path.write_text(json.dumps(redact_tree(report), indent=2))
     sarif_path = write_sarif(out_dir / "report.sarif", sort_findings(store.findings()), target=target)
     return {"json": json_path, "sarif": sarif_path}
 

@@ -63,6 +63,12 @@ export function TriagePanel({
             {counts.filter((c) => c.n).map((c) => (
               <span key={c.id} style={{ flex: c.n, background: c.colour }} title={`${c.n} ${c.label}`} />
             ))}
+            {/* The unjudged remainder is part of the picture. Without it, 2-of-13 all
+                reachable paints a solid red bar that reads as "everything is reachable". */}
+            {findings.length > triaged.length && (
+              <span style={{ flex: findings.length - triaged.length, background: "var(--line-2)" }}
+                    title={`${findings.length - triaged.length} not judged`} />
+            )}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
             {counts.map((c) => (

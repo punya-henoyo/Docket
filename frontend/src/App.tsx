@@ -2,15 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
 import { ApiError } from "./api";
 import type { Finding, Repo, RunSummary, ScanState, Session, Severity, Verdict } from "./types";
-import { Dashboard } from "./views/Dashboard";
+import { Overview } from "./views/Overview";
+import { Scan } from "./views/Scan";
+import { Surface } from "./views/Surface";
 import { Findings } from "./views/Findings";
 import { Repositories } from "./views/Repositories";
 import { Integrations } from "./views/Integrations";
 
-type View = "dashboard" | "findings" | "repos" | "integrations";
+type View = "overview" | "scan" | "surface" | "findings" | "repos" | "integrations";
 
+// Ordered by who asks the question: posture first (a security lead), then the live
+// run, then the map, then the detail an engineer works from.
 const VIEWS: { id: View; label: string }[] = [
-  { id: "dashboard", label: "Dashboard" },
+  { id: "overview", label: "Overview" },
+  { id: "scan", label: "Scan" },
+  { id: "surface", label: "Attack surface" },
   { id: "findings", label: "Findings" },
   { id: "repos", label: "Repositories" },
   { id: "integrations", label: "Integrations" },
@@ -18,7 +24,7 @@ const VIEWS: { id: View; label: string }[] = [
 
 const routeOf = (): View => {
   const hash = window.location.hash.replace("#/", "") as View;
-  return VIEWS.some((v) => v.id === hash) ? hash : "dashboard";
+  return VIEWS.some((v) => v.id === hash) ? hash : "overview";
 };
 
 export default function App() {
@@ -142,7 +148,7 @@ export default function App() {
   }, [scan, pollTick]);
 
   const runScan = useCallback(
-    async (repo: string, ref?: string, triageMax = 0) => {
+    async (repo: string, ref?: string, triageMax = 0, recon = false) => {
       setScanError(null);
       setSelected(null);
       setCweFilter(null);
@@ -150,7 +156,7 @@ export default function App() {
       prevIds.current = new Set();
       setNewestId(undefined);
       try {
-        const { id } = await api.startScan(repo, ref, triageMax);
+        const { id } = await api.startScan(repo, ref, triageMax, recon);
         setScan({
           id,
           repo,
@@ -158,13 +164,15 @@ export default function App() {
           status: "queued",
           stages: {
             fetch: "pending", trivy: "pending", semgrep: "pending",
-            nuclei: "pending", triage: "pending",
+            nuclei: "pending", recon: "pending", triage: "pending",
           },
+          recon,
+          surface: null,
           findings: [],
           finding_count: 0,
           error: null,
         });
-        go("dashboard");
+        go("scan");
       } catch (err) {
         setScanError(err instanceof ApiError ? err.message : String(err));
       }
@@ -222,7 +230,7 @@ export default function App() {
             onClick={() => go(v.id)}
           >
             {v.label}
-            {v.id === "dashboard" && scanning && <span className="live">● live</span>}
+            {v.id === "scan" && scanning && <span className="live">● live</span>}
             {v.id === "findings" && findings.length > 0 && (
               <span className="count">{findings.length}</span>
             )}
@@ -251,23 +259,30 @@ export default function App() {
               </div>
             </div>
           </>
-        ) : view === "dashboard" ? (
-          <Dashboard
+        ) : view === "overview" ? (
+          <Overview
             scan={scan}
             runs={runs}
+            onGoFindings={() => go("findings")}
+            onGoRepos={() => go("repos")}
+            onSelectFinding={openFinding}
+            onOpenRun={openRun}
+          />
+        ) : view === "scan" ? (
+          <Scan
+            scan={scan}
             counts={counts}
             scanError={scanError}
-            session={session}
             onSelectFinding={openFinding}
             newestId={newestId}
-            onGoRepos={() => go("repos")}
-            onGoIntegrations={() => go("integrations")}
             cweFilter={cweFilter}
             onCweSelect={setCweFilter}
-            onOpenRun={openRun}
             verdictFilter={verdictFilter}
             onVerdictSelect={setVerdictFilter}
+            onGoRepos={() => go("repos")}
           />
+        ) : view === "surface" ? (
+          <Surface scan={scan} onGoRepos={() => go("repos")} />
         ) : view === "findings" ? (
           <Findings
             findings={findings}

@@ -111,6 +111,8 @@ def run_scan(
     on_stage: Callable[[str, str], None] | None = None,
     triage_max: int = 0,
     on_progress: Callable[[], None] | None = None,
+    recon: bool = False,
+    on_surface: Callable[[dict], None] | None = None,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -130,7 +132,9 @@ def run_scan(
     # pointed at source, so it still needs a real model — Config.static_only() has an
     # empty llm and would build a LitellmModel(model="") that fails on every call.
     cfg = config or (
-        Config.static_only() if static_only and not triage_max else Config.from_env()
+        Config.static_only()
+        if static_only and not triage_max and not recon
+        else Config.from_env()
     )
     coordinator = AgentCoordinator(
         max_agents=cfg.max_agents,
@@ -176,6 +180,34 @@ def run_scan(
             # level up and found nothing — confirmed by an end-to-end CLI run before
             # this fix, not assumed.
             _run_scanner_prescans(sandbox, agent_target, sandbox.run_dir, on_finding, on_stage)
+
+            # Recon BEFORE triage, deliberately. It maps the application once and
+            # cheaply (~$0.06 regardless of finding count), and the candidates it
+            # surfaces — an unguarded route, a guard that an env var disables — are
+            # exactly the things worth triaging. Triage that only sees semgrep's output
+            # can only ever judge what a pattern already matched.
+            if recon:
+                from docket.core.recon import run_recon
+
+                if on_stage:
+                    on_stage("recon", "running")
+                surface = run_recon(
+                    str(whitebox_path or target_url or "repository"),
+                    run_dir=directory, config=cfg, sandbox=sandbox,
+                    findings=[f.model_dump(mode="json") for f in store.findings()]
+                    if store is not None else [],
+                    model_override=model_override,
+                )
+                if surface and on_surface is not None:
+                    on_surface(surface)
+                if on_stage:
+                    # No surface means the agent never produced one. Reporting that as
+                    # "done" would present a missing map as an empty application.
+                    on_stage("recon", "done" if surface else "error")
+                if on_progress is not None:
+                    on_progress()
+            elif on_stage:
+                on_stage("recon", "skipped")
 
             # Triage runs INSIDE this sandbox, after the scanners: the source is
             # already mounted at /work/source and tearing the container down just to

@@ -16,7 +16,7 @@ export function Repositories({
   repos: Repo[] | null;
   error: string | null;
   onReload: () => void;
-  onScan: (repo: string, ref?: string, triageMax?: number) => void;
+  onScan: (repo: string, ref?: string, triageMax?: number, recon?: boolean) => void;
   scanning: boolean;
   activeRepo?: string;
   onGoIntegrations: () => void;
@@ -28,6 +28,8 @@ export function Repositories({
   // The backend does not cap this — DOCKET_MAX_COST_USD is what actually stops a run,
   // so the number chosen here is the only place the count is decided.
   const [triage, setTriage] = useState(0);
+  // Off by default like triage: one agent per repo, but still real money.
+  const [recon, setRecon] = useState(false);
 
 const APPROX_USD_PER_FINDING = 0.033;
 
@@ -69,6 +71,13 @@ const APPROX_USD_PER_FINDING = 0.033;
           />
           <button className="btn" onClick={onReload}>
             reload
+          </button>
+          <button
+            className={recon ? "btn primary" : "btn"}
+            onClick={() => setRecon(!recon)}
+            title="Before triage, an agent reads the repository and maps its attack surface: entry points, auth model, and issues no scanner rule matches. One agent per repo, ~$0.06."
+          >
+            AI recon {recon ? "on" : "off"}
           </button>
           <label
             className="btn"
@@ -132,7 +141,7 @@ const APPROX_USD_PER_FINDING = 0.033;
                   className="btn sm"
                   disabled={scanning}
                   onClick={() =>
-                    onScan(repo.full_name, refs[repo.full_name]?.trim() || undefined, triage)
+                    onScan(repo.full_name, refs[repo.full_name]?.trim() || undefined, triage, recon)
                   }
                 >
                   {scanning && activeRepo === repo.full_name ? "scanning…" : "scan"}
@@ -142,6 +151,15 @@ const APPROX_USD_PER_FINDING = 0.033;
           </div>
         )}
       </Panel>
+
+      {recon && (
+        <div className="note">
+          AI recon on: one agent reads the repository and maps where input enters, how auth
+          works, and what no scanner rule would flag. Roughly <b>$0.06</b> per repo regardless
+          of finding count, and its candidates give triage something better to judge than
+          pattern matches alone.
+        </div>
+      )}
 
       {triage > 0 && (
         <div className="note">

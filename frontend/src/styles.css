@@ -301,3 +301,8 @@ tbody tr[aria-selected="true"] td { background: var(--wash); }
 @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
 
 .stack { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+/* Grid children default to min-width:auto, so one long path or a wide table refuses
+   to shrink and pushes the whole track past the viewport. Every grid here wants its
+   children to shrink and scroll internally instead. */
+.split > *, .cols > *, .kpis > * { min-width: 0; }

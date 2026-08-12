@@ -51,11 +51,16 @@ export const getScan = (id: string) => req<ScanState>(`/api/scan/${id}`);
 export const getRun = (runName: string) =>
   req<ScanState>(`/api/run/${encodeURIComponent(runName)}`);
 
-export const startScan = (repo: string, ref?: string, triageMax = 0) =>
+export const startScan = (repo: string, ref?: string, triageMax = 0, recon = false) =>
   req<{ id: string; status: string }>("/api/scan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo, ...(ref ? { ref } : {}), ...(triageMax ? { triage_max: triageMax } : {}) }),
+    body: JSON.stringify({
+      repo,
+      ...(ref ? { ref } : {}),
+      ...(triageMax ? { triage_max: triageMax } : {}),
+      ...(recon ? { recon: true } : {}),
+    }),
   });
 
 export const AUTH_START = "/auth/start";

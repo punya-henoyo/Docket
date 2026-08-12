@@ -46,6 +46,31 @@ export interface Finding {
   triage: Triage | null;
 }
 
+export interface EntryPoint {
+  method?: string;
+  path?: string;
+  handler?: string;
+  /** Required by record_surface: a route nobody can point at in source is not a route. */
+  file?: string;
+  params?: string[];
+  auth?: string;
+  kind?: string;
+}
+
+export interface Candidate {
+  title?: string;
+  file?: string;
+  why?: string;
+}
+
+/** What the recon agent mapped. Null until recon runs, which is opt-in. */
+export interface Surface {
+  entry_points: EntryPoint[];
+  auth_model: string;
+  candidates: Candidate[];
+  notes: string;
+}
+
 export type StageState = "pending" | "running" | "done" | "skipped" | "error";
 export type ScanStatus = "queued" | "fetching" | "scanning" | "done" | "error";
 
@@ -62,6 +87,8 @@ export interface ScanState {
   summary?: string;
   elapsed_sec?: number;
   triage_max?: number;
+  recon?: boolean;
+  surface?: Surface | null;
   coverage?: {
     semgrep?: {
       files_scanned?: number;
@@ -107,7 +134,7 @@ export interface RunSummary {
   cost_usd: number;
 }
 
-export const SCANNERS = ["fetch", "trivy", "semgrep", "nuclei", "triage"] as const;
+export const SCANNERS = ["fetch", "trivy", "semgrep", "nuclei", "recon", "triage"] as const;
 export type Scanner = (typeof SCANNERS)[number];
 
 export const SCANNER_LABEL: Record<Scanner, string> = {
@@ -115,5 +142,6 @@ export const SCANNER_LABEL: Record<Scanner, string> = {
   trivy: "trivy · dependencies",
   semgrep: "semgrep · source",
   nuclei: "nuclei · live target",
+  recon: "recon · AI attack surface",
   triage: "triage · AI reachability",
 };

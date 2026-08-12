@@ -243,7 +243,7 @@ def fetch_source(full_name: str, token: str, dest: Path, ref: str | None = None)
 
 
 def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = None,
-                  triage_max: int = 0) -> None:
+                  triage_max: int = 0, recon: bool = False) -> None:
     """Fetch + scan, updating SESSION.scans[scan_id] as it goes. Never raises: the
     status dict is how the browser learns something failed.
 
@@ -314,6 +314,8 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             on_stage=stage,
             triage_max=triage_max,
             on_progress=snapshot,
+            recon=recon,
+            on_surface=lambda surface: set_state(surface=surface),
         )
         # Persist the same artifacts `docket scan` writes, so a console scan is
         # visible to `docket view`, to the run-history panel, and to anything reading
@@ -325,6 +327,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             store, run_path(run_name), run_name=run_name,
             target=f"github:{full_name}" + (f"@{ref}" if ref else ""),
             coverage=read_coverage(run_path(run_name) / "sandbox"),
+            surface=SESSION.scans[scan_id].get("surface"),
             summary=result.summary, cost_usd=result.cost_usd,
             agents_spawned=result.agents_spawned, success=result.success,
         )
@@ -364,7 +367,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
 
 
 def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
-                   triage_max: int = 0) -> dict[str, Any]:
+                   triage_max: int = 0, recon: bool = False) -> dict[str, Any]:
     return {
         "id": scan_id,
         "repo": full_name,
@@ -373,6 +376,10 @@ def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
         "ref": ref,
         "status": "queued",
         "triage_max": triage_max,
+        "recon": recon,
+        # The attack surface an agent mapped: entry points, auth model, and candidates
+        # no scanner rule encodes. None until recon runs, which is off by default.
+        "surface": None,
         "coverage": {},
         "cost_usd": 0.0,
         "input_tokens": 0,
@@ -382,7 +389,7 @@ def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
         # nuclei needs a live URL and a source-only scan has none, and triage is off
         # unless asked for because it costs LLM money per finding.
         "stages": {"fetch": "pending", "trivy": "pending", "semgrep": "pending",
-                   "nuclei": "pending", "triage": "pending"},
+                   "nuclei": "pending", "recon": "pending", "triage": "pending"},
         "findings": [],
         "finding_count": 0,
         "error": None,
@@ -509,6 +516,7 @@ def load_run(run_name: str) -> tuple[int, dict[str, Any]]:
 
     target = str(data.get("target") or "")
     repo, _, ref = target.removeprefix("github:").partition("@")
+    totals = (data.get("usage") or {}).get("totals") or {}
     return 200, {
         "id": run_name,
         "repo": repo or target or run_name,
@@ -522,6 +530,16 @@ def load_run(run_name: str) -> tuple[int, dict[str, Any]]:
         "finding_count": data.get("finding_count", 0),
         "error": None,
         "summary": data.get("summary", ""),
+        "surface": data.get("surface") or None,
+        # Coverage and spend are in the report and must survive a reload. Without them
+        # the console showed "not recorded" and "$0.0000" for a run that recorded both,
+        # which reads as "nothing was analysed and nothing was spent" — the two claims
+        # a security report can least afford to get wrong.
+        "coverage": data.get("coverage") or None,
+        "cost_usd": round(totals.get("cost_usd", 0.0), 4),
+        "input_tokens": totals.get("input_tokens", 0),
+        "output_tokens": totals.get("output_tokens", 0),
+        "budget_usd": 0.0,  # the live cap; a finished run was not bounded by today's
         "historical": True,
     }
 
@@ -639,20 +657,21 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             # rather than starting a scan that dies partway. Config.from_env() is what
             # loads .env, so asking it beats reading os.environ directly — an earlier
             # version did the latter and refused on a correctly-configured machine.
-            if triage_max:
+            recon = bool(body.get("recon"))
+            if triage_max or recon:
                 try:
                     from docket.config.settings import Config
 
                     Config.from_env()
                 except Exception as exc:
-                    self._json(400, {"error": f"triage needs a model configured: {exc}"})
+                    self._json(400, {"error": f"AI agents need a model configured: {exc}"})
                     return
 
             scan_id = secrets.token_hex(8)
             with SESSION.lock:
-                SESSION.scans[scan_id] = new_scan_state(scan_id, full_name, ref, triage_max)
+                SESSION.scans[scan_id] = new_scan_state(scan_id, full_name, ref, triage_max, recon)
             threading.Thread(
-                target=run_repo_scan, args=(full_name, SESSION.token, scan_id, ref, triage_max),
+                target=run_repo_scan, args=(full_name, SESSION.token, scan_id, ref, triage_max, recon),
                 name=f"docket-scan-{scan_id}", daemon=True,
             ).start()
             self._json(202, {"id": scan_id, "status": "queued"})
@@ -781,8 +800,13 @@ def demo() -> None:
     state = new_scan_state("abc", "o/r")
     assert state["status"] == "queued" and state["finding_count"] == 0
     assert state["ref"] is None  # None means "whatever GitHub calls the default"
-    assert set(state["stages"]) == {"fetch", "trivy", "semgrep", "nuclei", "triage"}
+    assert set(state["stages"]) == {"fetch", "trivy", "semgrep", "nuclei", "recon", "triage"}
+    # Both AI phases cost real money per run, so both are opt-in and neither can be
+    # switched on by a caller that simply forgot to pass a flag.
     assert state["triage_max"] == 0, "triage costs money, so it must be opt-in"
+    assert state["recon"] is False, "recon costs money, so it must be opt-in"
+    assert state["surface"] is None, "no surface until an agent actually maps one"
+    assert new_scan_state("abc", "o/r", None, 0, True)["recon"] is True
     assert new_scan_state("abc", "o/r", "feat/x")["ref"] == "feat/x"
     assert new_scan_state("abc", "o/r", None, 5)["triage_max"] == 5
 
@@ -793,6 +817,36 @@ def demo() -> None:
     for bad in ("../../etc/passwd", "-rf", "feat//x", "feat/", "", "a b",
                 "main;rm -rf /", "..", "/abs"):
         assert not valid_ref(bad), bad
+
+    # A reloaded run must carry coverage and spend. Dropping them showed "not recorded"
+    # and "$0.0000" for a run that recorded both — silently, because a missing key
+    # renders as a plausible zero rather than as an error.
+    import tempfile as _tempfile
+    with _tempfile.TemporaryDirectory() as tmp:
+        from docket.core import paths as _paths
+        _orig = _paths.runs_root
+        _root = Path(tmp)
+        _paths.runs_root = lambda: _root  # type: ignore[assignment]
+        try:
+            (_root / "connect-1").mkdir()
+            (_root / "connect-1" / "report.json").write_text(json.dumps({
+                "run_name": "connect-1", "target": "github:o/r@main", "finding_count": 1,
+                "findings": [{"id": "f1"}],
+                "coverage": {"semgrep": {"files_scanned": 3}},
+                "usage": {"totals": {"input_tokens": 35773, "output_tokens": 2368,
+                                     "cost_usd": 0.077928}},
+            }))
+            code, run = load_run("connect-1")
+            assert code == 200, (code, run)
+            assert run["repo"] == "o/r" and run["ref"] == "main", run
+            assert run["coverage"]["semgrep"]["files_scanned"] == 3, run["coverage"]
+            assert run["input_tokens"] == 35773 and run["output_tokens"] == 2368, run
+            assert run["cost_usd"] == 0.0779, run["cost_usd"]
+            # Traversal is rejected before any read.
+            assert load_run("../../etc")[0] == 400
+            assert load_run("connect-missing")[0] == 404
+        finally:
+            _paths.runs_root = _orig  # type: ignore[assignment]
 
     saved = {k: os.environ.pop(k, None)
              for k in ("DOCKET_GITHUB_CLIENT_ID", "DOCKET_GITHUB_CLIENT_SECRET")}

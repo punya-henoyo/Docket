@@ -212,7 +212,17 @@ def demo() -> None:
         input_tokens, output_tokens = 1000, 500
 
     assert estimate_cost("anthropic/claude-sonnet-4-5-20250929", _U()) > 0
-    assert estimate_cost("totally-made-up-xyz", _U()) == 0.0
+    # An unpriced model costs 0 only when no manual fallback is configured. The
+    # developer running this usually HAS DOCKET_PRICE_* set, so clear it first —
+    # otherwise this asserts the fallback is broken.
+    _cleared = {k: os.environ.pop(k, None)
+                for k in ("DOCKET_PRICE_INPUT_PER_1M", "DOCKET_PRICE_OUTPUT_PER_1M")}
+    try:
+        assert estimate_cost("totally-made-up-xyz", _U()) == 0.0
+    finally:
+        for k, v in _cleared.items():
+            if v is not None:
+                os.environ[k] = v
 
     # Manual per-1M rates rescue an unpriced model (a custom Azure deployment name is
     # arbitrary text, so LiteLLM will never know it) — without which the budget gate
