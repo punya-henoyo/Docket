@@ -76,6 +76,11 @@ def cmd_scan(args) -> int:
             use_sandbox=setup.use_sandbox,
             max_turns=args.max_steps,
             store=store,
+            openapi_path=args.openapi,
+            har_path=args.har,
+            sarif_path=args.sarif,
+            whitebox_path=args.source,
+            discovery=not args.no_discovery,
         )
     except KeyboardInterrupt:
         print("\ninterrupted — writing what was confirmed so far", file=sys.stderr)
@@ -93,7 +98,8 @@ def cmd_scan(args) -> int:
             reporter.stop()
 
     kwargs |= dict(summary=result.summary, cost_usd=result.cost_usd,
-                   agents_spawned=result.agents_spawned, success=result.success)
+                   agents_spawned=result.agents_spawned, success=result.success,
+                   leads=result.leads)
     paths = write_report(store, setup.run_dir, **kwargs)
     print(format_summary(build_report(store, **kwargs), paths=paths))
     return exit_code(store, result.success)
