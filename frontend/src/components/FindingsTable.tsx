@@ -37,7 +37,17 @@ export function FindingsTable({
                 }
               }}
             >
-              <td title={finding.rule_id}>{ruleLeaf(finding.rule_id)}</td>
+              {/* Recon findings have no rule — the title IS the finding, so show that
+                  rather than a slugified copy of it. Both clamp to one line: a
+                  wrapping cell makes every row a different height and the table
+                  stops being scannable, which is the whole point of a table. */}
+              <td title={finding.discovered_by === "recon" ? finding.title : finding.rule_id}
+                  style={{ maxWidth: "26rem", overflow: "hidden",
+                           textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {finding.discovered_by === "recon"
+                  ? finding.title
+                  : ruleLeaf(finding.rule_id)}
+              </td>
               <td>
                 <SevTag severity={finding.severity} />
               </td>
