@@ -53,6 +53,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from docket.utils.resource_paths import frontend_dir
 
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
@@ -99,7 +101,16 @@ SESSION = Session()
 
 
 def oauth_config() -> tuple[str, str, str] | None:
-    """(client_id, client_secret, redirect_uri) or None when unconfigured."""
+    """(client_id, client_secret, redirect_uri) or None when unconfigured.
+
+    Reads .env on every call, for the same reason app/backend/scans.py and runs.py do.
+    Nothing in this module's import chain loads it: `docket connect` got it for free
+    because interface/main.py imports docket.config.settings (which calls load_dotenv at
+    import), but the app console imports only this module — so credentials sat in .env
+    while /api/session answered `configured: false` and /auth/start answered 503. The
+    Connect GitHub button did nothing, with no error anywhere to explain why.
+    """
+    load_dotenv(override=True)
     client_id = os.environ.get("DOCKET_GITHUB_CLIENT_ID", "").strip()
     client_secret = os.environ.get("DOCKET_GITHUB_CLIENT_SECRET", "").strip()
     if not client_id or not client_secret:
