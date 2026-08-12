@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -49,6 +50,21 @@ class PoC(BaseModel):
         return v
 
 
+class Triage(BaseModel):
+    """An agent's judgement on whether a STATIC finding is reachable.
+
+    Deliberately not folded into `poc`. A PoC is a reproduction — the thing that makes
+    a finding "validated" rather than "flagged". Triage is weaker: it is reasoning over
+    source about whether untrusted input can arrive, with no exploitation attempted.
+    Keeping them separate stops a read-and-judge verdict from ever being mistaken for
+    a reproduction.
+    """
+
+    verdict: Literal["exploitable", "not_reachable", "uncertain"]
+    reasoning: str
+    evidence: str  # file:line references the agent actually read
+
+
 class Finding(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)  # internal only, not report-facing
     rule_id: str  # "sql-injection" | "command-injection" | "reflected-xss"
@@ -62,6 +78,9 @@ class Finding(BaseModel):
     discovered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: FindingStatus = FindingStatus.VALIDATED
     corroborating_evidence: list[PoC] = Field(default_factory=list)  # filled by dedupe merges
+    # Set by the triage pass (core/triage.py) for static findings. None means
+    # nobody looked, which is different from "looked and was unsure" (uncertain).
+    triage: Triage | None = None
 
     @property
     def dedupe_key(self) -> str:
@@ -98,6 +117,15 @@ def demo() -> None:
         raise AssertionError("should have rejected empty response")
     except ValidationError:
         pass
+
+    # Triage is optional and separate from the PoC: a verdict is reasoning, never a
+    # reproduction, and must not be able to masquerade as one.
+    assert f.triage is None
+    f.triage = Triage(verdict="not_reachable", reasoning="only called from tests",
+                      evidence="tests/conftest.py:14")
+    dumped = f.model_dump(mode="json")
+    assert dumped["triage"]["verdict"] == "not_reachable"
+    assert "triage" not in dumped["poc"]
     print("models: ok")
 
 

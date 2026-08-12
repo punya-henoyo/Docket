@@ -1,5 +1,5 @@
 import type { Finding } from "../types";
-import { findingLocation, ruleLeaf, SevTag } from "./ui";
+import { findingLocation, ruleLeaf, SevTag, VerdictTag } from "./ui";
 
 export function FindingsTable({
   findings,
@@ -19,6 +19,7 @@ export function FindingsTable({
             <th>Sev</th>
             <th>Location</th>
             <th>Found by</th>
+            <th>Triage</th>
           </tr>
         </thead>
         <tbody>
@@ -43,6 +44,7 @@ export function FindingsTable({
               <td>
                 <span className="chip">{finding.discovered_by}</span>
               </td>
+              <td>{finding.triage ? <VerdictTag verdict={finding.triage.verdict} /> : null}</td>
             </tr>
           ))}
         </tbody>
@@ -76,6 +78,31 @@ export function FindingDetail({ finding }: { finding: Finding }) {
           </>
         )}
       </div>
+
+      {finding.triage && (
+        <div
+          style={{
+            border: "1px solid var(--line)",
+            borderRadius: 6,
+            padding: "10px 11px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 7,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+            <VerdictTag verdict={finding.triage.verdict} />
+            <span className="note">agent triage · read the source, ran nothing</span>
+          </div>
+          <div className="note" style={{ color: "var(--ink-2)", maxWidth: "72ch" }}>
+            {finding.triage.reasoning}
+          </div>
+          <div className="evidence">
+            <div className="lbl">CODE IT READ</div>
+            <pre>{finding.triage.evidence}</pre>
+          </div>
+        </div>
+      )}
 
       {finding.corroborating_evidence.length > 0 && (
         <div className="note">
