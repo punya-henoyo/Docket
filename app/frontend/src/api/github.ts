@@ -14,7 +14,13 @@ export const getScan = (id: string) => req<ScanState>(`/api/scan/${id}`);
 export const getRun = (runName: string) =>
   req<ScanState>(`/api/run/${encodeURIComponent(runName)}`);
 
-export const startRepoScan = (repo: string, ref?: string) =>
-  postJson<{ id: string; status: string }>("/api/scan", ref ? { repo, ref } : { repo });
+export const startRepoScan = (repo: string, ref?: string, triageMax = 0) =>
+  postJson<{ id: string; status: string }>("/api/scan", {
+    repo,
+    ...(ref ? { ref } : {}),
+    // Omitted when 0 so the backend keeps its own default. Triage costs model spend,
+    // so it stays opt-in per scan.
+    ...(triageMax ? { triage_max: triageMax } : {}),
+  });
 
 export const AUTH_START = "/auth/start";

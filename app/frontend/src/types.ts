@@ -19,6 +19,16 @@ export interface PoC {
   notes: string | null;
 }
 
+export type Verdict = "exploitable" | "not_reachable" | "uncertain";
+
+/** An agent's judgement on whether a static finding is reachable. Weaker than a PoC
+ *  by design: it is reasoning over source, with nothing exploited. */
+export interface Triage {
+  verdict: Verdict;
+  reasoning: string;
+  evidence: string;
+}
+
 export interface Finding {
   id: string;
   /* Optional because a run with no report.json is projected from events.jsonl, where a
@@ -36,6 +46,8 @@ export interface Finding {
   discovered_at: string;
   status: string;
   corroborating_evidence: PoC[];
+  /** null means nobody looked, which differs from looked-and-unsure. */
+  triage: Triage | null;
 }
 
 export type StageState = "pending" | "running" | "done" | "skipped" | "error";
@@ -56,6 +68,22 @@ export interface ScanState {
   /** True when loaded from disk rather than observed live: the radar has no stages to
    *  light and the sweep must not animate. */
   historical?: boolean;
+  triage_max?: number;
+  coverage?: {
+    semgrep?: {
+      files_scanned?: number;
+      file_types?: Record<string, number>;
+      rules_fired?: string[];
+      error_count?: number;
+      errors?: string[];
+    };
+    trivy?: { manifests?: string[]; manifest_count?: number };
+    nuclei?: { ran?: boolean };
+  };
+  cost_usd?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  budget_usd?: number;
 }
 
 export interface Session {
@@ -89,7 +117,7 @@ export interface RunSummary {
   failed?: boolean;
 }
 
-export const SCANNERS = ["fetch", "trivy", "semgrep", "nuclei"] as const;
+export const SCANNERS = ["fetch", "trivy", "semgrep", "nuclei", "triage"] as const;
 export type Scanner = (typeof SCANNERS)[number];
 
 export const SCANNER_LABEL: Record<Scanner, string> = {
@@ -97,6 +125,7 @@ export const SCANNER_LABEL: Record<Scanner, string> = {
   trivy: "trivy · dependencies",
   semgrep: "semgrep · source",
   nuclei: "nuclei · live target",
+  triage: "triage · AI reachability",
 };
 
 

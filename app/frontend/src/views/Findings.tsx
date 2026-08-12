@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Finding, ScanState, Severity } from "../types";
+import type { Finding, ScanState, Severity, Verdict } from "../types";
 import { SEVERITIES } from "../types";
 import { FindingDetail, FindingsTable } from "../components/FindingsTable";
 import { Empty, Panel } from "../components/ui";
@@ -13,6 +13,8 @@ export function Findings({
   onGoRepos,
   cweFilter,
   onCweSelect,
+  verdictFilter,
+  onVerdictSelect,
 }: {
   findings: Finding[];
   selected: Finding | null;
@@ -21,6 +23,8 @@ export function Findings({
   onGoRepos: () => void;
   cweFilter: string | null;
   onCweSelect: (cwe: string | null) => void;
+  verdictFilter: Verdict | null;
+  onVerdictSelect: (v: Verdict | null) => void;
 }) {
   const [filter, setFilter] = useState<Severity | "all">("all");
 
@@ -34,9 +38,10 @@ export function Findings({
       findings
         .filter((f) => filter === "all" || f.severity === filter)
         .filter((f) => !cweFilter || f.cwe === cweFilter)
+        .filter((f) => !verdictFilter || f.triage?.verdict === verdictFilter)
         .slice()
         .sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)),
-    [findings, filter, cweFilter],
+    [findings, filter, cweFilter, verdictFilter],
   );
 
   const active = selected && shown.some((f) => f.id === selected.id) ? selected : shown[0] ?? null;
@@ -63,6 +68,18 @@ export function Findings({
           ))}
         </div>
       </div>
+
+      {verdictFilter && (
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <span className="chip">triage: {verdictFilter.replace("_", " ")}</span>
+          <span className="note">
+            showing {shown.length} of {findings.length}
+          </span>
+          <button className="btn sm" onClick={() => onVerdictSelect(null)}>
+            clear
+          </button>
+        </div>
+      )}
 
       {cweFilter && (
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>

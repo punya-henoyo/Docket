@@ -52,6 +52,28 @@ export function findingLocation(finding: Finding): string {
   return (where || "—") + (parameter ? ` (${parameter})` : "");
 }
 
+const VERDICT_STYLE: Record<string, { label: string; color: string }> = {
+  // Colours are deliberately NOT the severity palette: a verdict answers a different
+  // question ("can input get here?") and reusing severity colours would blur the two.
+  exploitable: { label: "REACHABLE", color: "var(--crit)" },
+  not_reachable: { label: "NOT REACHABLE", color: "var(--ok)" },
+  uncertain: { label: "UNCERTAIN", color: "var(--ink-3)" },
+};
+
+export function VerdictTag({ verdict }: { verdict: string }) {
+  const style = VERDICT_STYLE[verdict];
+  if (!style) return null;
+  return (
+    <span
+      className="chip"
+      title="Judged by reading the source. Not an exploit: nothing was run."
+      style={{ color: style.color, borderColor: style.color }}
+    >
+      {style.label}
+    </span>
+  );
+}
+
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="empty">{children}</div>;
 }

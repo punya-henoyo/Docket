@@ -19,6 +19,11 @@ export const sarifUrl = (name: string) => `/api/runs/${encodeURIComponent(name)}
 export const artifactUrl = (name: string, path: string) =>
   `/api/runs/${encodeURIComponent(name)}/artifacts/${path}`;
 
+/** Download URL for a finished run. The server sets Content-Disposition, so a plain
+ *  link saves the file rather than rendering it in a tab. */
+export const downloadUrl = (runName: string, fmt: "json" | "sarif" | "md") =>
+  `/api/download/${encodeURIComponent(runName)}.${fmt}`;
+
 /* startLocalScan / stopLocalScan removed with the Live run view. The console scans GitHub
    repositories: SAST plus agent triage. Launching a live agent run against a target URL is
    the DAST path, which stays available on the CLI (`docket scan --target ...`) and is

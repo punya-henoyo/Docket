@@ -31,7 +31,10 @@ check:
 	  docket.discovery.models docket.discovery.sources docket.discovery.discover \
 	  docket.static.models docket.static.engines docket.static.correlate \
 	  docket.static.triage docket.tools.source_read.tools \
-	  docket.agents.prompts.triage \
+	  docket.agents.prompts.triage_static \
+	  docket.core.triage docket.core.recon \
+	  docket.tools.triage.tool docket.tools.recon.tool docket.tools.source.tools \
+	  docket.report.markdown \
 	  docket.agents.prompts.root \
 	  docket.report.models docket.report.dedupe docket.report.sarif docket.report.writer \
 	  docket.report.state docket.report.usage \

@@ -7,11 +7,14 @@ AgentCoordinator; findings reach the caller via the on_finding callback.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from agents.models.interface import Model
+
+logger = logging.getLogger(__name__)
 
 from docket.agents.factory import build_agent
 from docket.agents.prompts.root import build_root_task
@@ -55,7 +58,18 @@ def _run_scanner_prescans(
         if on_stage is not None:
             on_stage(scanner, state)
 
-    def drain(scanner: str, findings: list[Finding]) -> None:
+    def drain(scanner: str, produce) -> None:
+        """Run one scanner. A scanner that could not run is marked `error`, never
+        `done` — "0 findings" and "never analysed" must not look identical, which is
+        exactly what a silently-failing semgrep did behind a green stage."""
+        from docket.tools.scanners.semgrep import ScannerError
+
+        try:
+            findings = produce()
+        except ScannerError as exc:
+            logger.warning("%s did not run: %s", scanner, exc)
+            stage(scanner, "error")
+            return
         for finding in findings:
             if on_finding is not None:
                 on_finding(finding)
@@ -63,15 +77,15 @@ def _run_scanner_prescans(
 
     if target_url is not None:
         stage("nuclei", "running")
-        drain("nuclei", run_nuclei(sandbox, target_url, run_dir_))
+        drain("nuclei", lambda: run_nuclei(sandbox, target_url, run_dir_))
     else:
         stage("nuclei", "skipped")
 
     if sandbox.source_dir is not None:
         stage("trivy", "running")
-        drain("trivy", run_trivy(sandbox, run_dir_))
+        drain("trivy", lambda: run_trivy(sandbox, run_dir_))
         stage("semgrep", "running")
-        drain("semgrep", run_semgrep(sandbox, run_dir_))
+        drain("semgrep", lambda: run_semgrep(sandbox, run_dir_))
     else:
         stage("trivy", "skipped")
         stage("semgrep", "skipped")
@@ -105,8 +119,10 @@ def run_scan(
     sarif_path: str | None = None,
     discovery: bool = True,
     static_only: bool = False,
-    triage: bool = True,
+    static_triage: bool = False,
     on_stage: Callable[[str, str], None] | None = None,
+    triage_max: int = 0,
+    on_progress: Callable[[], None] | None = None,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -122,7 +138,12 @@ def run_scan(
     becomes optional. For a CI gate that wants "check my dependencies/source" without
     spending LLM budget or needing a live app in the same job.
     """
-    cfg = config or (Config.static_only() if static_only else Config.from_env())
+    # static_only means "no agents attacking a live target". Triage IS agents, just
+    # pointed at source, so it still needs a real model — Config.static_only() has an
+    # empty llm and would build a LitellmModel(model="") that fails on every call.
+    cfg = config or (
+        Config.static_only() if static_only and not triage_max else Config.from_env()
+    )
     coordinator = AgentCoordinator(
         max_agents=cfg.max_agents,
         budget_usd=cfg.max_cost_usd,
@@ -164,6 +185,37 @@ def run_scan(
             # starved every scanner reader.
             _run_scanner_prescans(sandbox, agent_target, sandbox.run_dir, on_finding, on_stage)
 
+            # Triage runs INSIDE this sandbox, after the scanners: the source is
+            # already mounted at /work/source and tearing the container down just to
+            # start another one would re-fetch nothing and cost seconds.
+            if triage_max and store is not None and len(store):
+                from docket.core.triage import apply_verdicts, triage_findings
+
+                if on_stage:
+                    on_stage("triage", "running")
+                # Applied AS EACH VERDICT LANDS, not in one batch at the end. Batching
+                # meant a 17-minute triage run reported "0 judged" for its entire
+                # duration and then everything at once — the work was invisible for
+                # exactly as long as it took.
+                def _on_verdict(finding_id: str, verdict: dict) -> None:
+                    apply_verdicts(store, {finding_id: verdict})
+                    if on_progress is not None:
+                        on_progress()
+
+                verdicts = triage_findings(
+                    [f.model_dump(mode="json") for f in store.findings()],
+                    run_dir=directory, config=cfg, sandbox=sandbox,
+                    max_findings=triage_max, model_override=model_override,
+                    on_verdict=_on_verdict,
+                )
+                applied = len(verdicts)
+                if on_stage:
+                    # "done" with nothing applied is a lie the operator cannot debug;
+                    # an error state at least points at the phase that failed.
+                    on_stage("triage", "done" if applied else "error")
+            elif on_stage:
+                on_stage("triage", "skipped")
+
         # Discovery is deterministic and needs no model, so it runs for --static-only too:
         # surface.json is a useful artifact on its own, and correlation below needs it.
         surface = None
@@ -200,7 +252,12 @@ def run_scan(
             # the whole value over running Semgrep directly — a candidate with a verdict
             # and a quoted guard is actionable where a candidate alone is a queue item.
             # Needs the source, and a model, so it is skipped for --static-only.
-            if triage and whitebox_path and leads and not static_only:
+            # Kept, deliberately OFF by default: core/triage.py above is the wired
+            # triage. Two triage agents were built in parallel; running both would
+            # double the model spend and produce two verdicts per finding with no
+            # rule for which wins.
+            # ponytail: pick a winner after a real run and delete the loser.
+            if static_triage and whitebox_path and leads and not static_only:
                 triage_context = ScanContext(
                     target_url=agent_target or "", run_dir=directory,
                     on_finding=None, agent_id="triage", role="triage",

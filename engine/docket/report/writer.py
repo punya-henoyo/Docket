@@ -39,6 +39,7 @@ def build_report(
     success: bool = True,
     leads: list | None = None,
     triage: object | None = None,
+    coverage: dict | None = None,
 ) -> dict:
     """`leads` are static-analysis candidates (docket.static.correlate.Lead). They are
     reported in a SEPARATE list from `findings` and never merged into it.
@@ -104,6 +105,9 @@ def build_report(
         "cost_usd": cost_usd,
         "agents_spawned": agents_spawned,
         "finding_count": len(findings),
+        # What was actually analysed. Without it, "0 findings" and "nothing was
+        # scanned" are the same number.
+        "coverage": coverage or {},
         "severity_counts": severity_counts(findings),
         # Static candidates: leads, not results. Explicitly unproven, counted separately,
         # and deliberately NOT part of finding_count or the exit code.
@@ -132,12 +136,13 @@ def write_report(
     success: bool = True,
     leads: list | None = None,
     triage: object | None = None,
+    coverage: dict | None = None,
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     report = build_report(
         store, run_name=run_name, target=target, summary=summary,
         cost_usd=cost_usd, agents_spawned=agents_spawned, success=success, leads=leads,
-        triage=triage,
+        triage=triage, coverage=coverage,
     )
     json_path = out_dir / "report.json"
     # Same redaction boundary as SARIF — see write_sarif. This also catches the raw

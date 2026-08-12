@@ -49,7 +49,12 @@ from docket.interface.tui.backend.messages import get_emitter
 from docket.tools.finish.tool import agent_finish, finish_scan
 from docket.agents.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
 from docket.agents.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
-from docket.agents.prompts.triage import SYSTEM_PROMPT as TRIAGE_PROMPT
+from docket.agents.prompts.recon import SYSTEM_PROMPT as RECON_SYSTEM_PROMPT
+from docket.agents.prompts.triage import SYSTEM_PROMPT as TRIAGE_SYSTEM_PROMPT
+from docket.agents.prompts.triage_static import SYSTEM_PROMPT as TRIAGE_STATIC_PROMPT
+from docket.tools.recon.tool import record_surface
+from docket.tools.source.tools import list_source, read_source, search_source
+from docket.tools.triage.tool import triage_verdict
 from docket.tools.load_skill.tool import list_skills, load_skill
 from docket.tools.notes.tools import add_note, view_notes
 from docket.tools.reporting.tool import FindingType, register_finding
@@ -60,12 +65,20 @@ from docket.tools.web_search.tool import web_search
 from docket.tools.http_request.tools import do_http_request
 from docket.tools.source_read import tools as source_read
 
-# `triage` reads source and rules on a static candidate. It is the only role with file
-# tools and the only one with NO network access at all — see build_agent.
-Role = Literal["root", "sqli", "cmdi", "xss", "triage"]
-SpecialistRole = Literal["sqli", "cmdi", "xss", "triage"]
+# `recon`, `triage` and `triage_static` read source and get NO network tools at all —
+# see build_agent. Two triage roles exist because two triage agents were built in
+# parallel: `triage` (core/triage.py) judges reachability and is the wired one;
+# `triage_static` (static/triage.py) rules on a correlated Semgrep candidate and is kept
+# but not wired. They were BOTH spelled "triage" after the merge, which made the second
+# `elif` unreachable — static triage would have silently run the other agent's prompt
+# and finish tool.
+# ponytail: collapse to one triage role once a real run shows which prompt holds up.
+Role = Literal["root", "sqli", "cmdi", "xss", "triage", "triage_static", "recon"]
+# Root spawns attack specialists only. Triage and recon are driven by the runner, not
+# delegated by root, so they are deliberately absent here.
+SpecialistRole = Literal["sqli", "cmdi", "xss"]
 
-_FINISH_TOOL_NAMES = {"finish_scan", "agent_finish"}
+_FINISH_TOOL_NAMES = {"finish_scan", "agent_finish", "triage_verdict", "record_surface"}
 
 
 @function_tool(strict_mode=False)  # headers/params/data are open-ended dicts — strict
@@ -362,15 +375,15 @@ def build_agent(
         # Root delegates, so it gets no `finding`; it does get `respond`, being the
         # agent that speaks for the scan.
         base_tools: list[Tool] = [http_request, respond, *_COMMON_TOOLS]
-    elif role == "triage":
+    elif role == "triage_static":
         # NO http_request, NO shell, NO browser. Triage reads code and rules on a
         # candidate; giving it network access would let it wander into attacking a target
         # this product no longer points at, and would make a verdict impossible to audit
         # (was that FALSE_POSITIVE reasoning, or something it probed?).
-        instructions = TRIAGE_PROMPT
+        instructions = TRIAGE_STATIC_PROMPT
         base_tools = [*_SOURCE_TOOLS, *_COMMON_TOOLS]
         finish_tool = agent_finish
-        name = "triage-agent"
+        name = "triage-static-agent"
     elif role in ("sqli", "cmdi", "xss"):
         instructions = SPECIALIST_SYSTEM_PROMPT
         finish_tool = agent_finish
@@ -386,6 +399,21 @@ def build_agent(
         # requires a real DOM executing the payload.
         if role == "xss":
             base_tools.append(browser)
+    elif role == "recon":
+        # Same read-only posture as triage, plus list_source: an agent that cannot see
+        # the repository's shape reads files at random and burns its budget.
+        instructions = RECON_SYSTEM_PROMPT
+        finish_tool = record_surface
+        name = "docket-recon"
+        base_tools = [list_source, read_source, search_source, thinking, notes]
+    elif role == "triage":
+        # Reads source, never touches the target. No http_request, no shell, no
+        # browser: judging whether a line is reachable needs the repository, and a
+        # network tool here would only widen the blast radius for nothing.
+        instructions = TRIAGE_SYSTEM_PROMPT
+        finish_tool = triage_verdict
+        name = "docket-triage"
+        base_tools = [read_source, search_source, thinking, notes]
     else:
         raise ValueError(f"unknown role: {role!r}")
 

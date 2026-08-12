@@ -15,7 +15,7 @@ import asyncio
 from dataclasses import asdict, dataclass, field
 
 from docket.agents.factory import build_agent
-from docket.agents.prompts.triage import build_task
+from docket.agents.prompts.triage_static import build_task
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.static.correlate import Lead
 
@@ -119,7 +119,7 @@ async def triage_all(
                 source_root=context.source_root,
             )
             model = context.model_override("triage") if context.model_override else None
-            agent = build_agent("triage", context.config, model=model)
+            agent = build_agent("triage_static", context.config, model=model)
             # asdict, not __dict__: StaticFinding is slots=True and has no __dict__.
             task = build_task(asdict(lead.finding) | {
                 "endpoint": (f"{lead.endpoint.method} {lead.endpoint.path}"

@@ -18,10 +18,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from docket.core.paths import runs_root
+from docket.interface.connect import download_run
 from docket.interface.environment import check_environment
 from docket.interface.scan_setup import sanitize_run_name
 from docket.interface.tui.backend.protocol import read_events
@@ -170,6 +171,29 @@ def get_sarif(run_name: str) -> FileResponse:
     if not path.is_file():
         raise HTTPException(404, "no report.sarif for this run")
     return FileResponse(path, media_type="application/json", filename=f"{run_name}.sarif")
+
+
+@router.get("/api/download/{filename}")
+def download(filename: str) -> Response:
+    """`<run>.json` / `.sarif` / `.md`. Ported from connect.py's stdlib server, which was
+    the only place it existed: the Dashboard his commit brought in renders three download
+    links, and on the console every one of them 404'd. Same class of gap as the missing
+    /auth/callback — a route that lived in one of the two servers and was never carried
+    across when the console was consolidated.
+
+    Delegates to connect.download_run rather than reimplementing it, so json/sarif stay
+    served off disk (never regenerated, so a download cannot drift from the scan) and
+    there is one definition of what a download is.
+    """
+    run_name, _, fmt = filename.rpartition(".")
+    status, body, content_type, download_name = download_run(run_name, fmt)
+    headers = {"Cache-Control": "no-store"}
+    if status == 200 and download_name:
+        # attachment, not inline: a report the browser renders in-tab is a page you then
+        # have to save by hand.
+        headers["Content-Disposition"] = f'attachment; filename="{download_name}"'
+    return Response(content=body, status_code=status, media_type=content_type,
+                    headers=headers)
 
 
 @router.get("/api/runs/{run_name}/log")
