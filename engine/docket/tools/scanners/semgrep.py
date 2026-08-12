@@ -12,7 +12,9 @@ from an agent-confirmed finding in the report.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,72 @@ _CWE_RE = re.compile(r"CWE-\d+")
 # report says "app.py", not "/work/source/app.py" — the container's layout is an
 # implementation detail, and a repo-relative path is what a reader can act on.
 _MOUNT = "/work/source/"
+
+# Paths excluded from scanning. Tuned for NOISE, not coverage: every entry here is
+# either not the customer's code (vendored, installed dependencies) or not code at all
+# (docs, lockfiles). Measured on a real repo: 655 of its 1254 files were markdown, and
+# every top-severity finding the triage agent judged turned out to be semgrep matching
+# prose or JSON config — a `ws://` inside a detection-pattern string, a JWT inside a
+# fenced bash block. Excluding those is free; filtering them with an LLM afterwards
+# costs ~$0.04 each.
+#
+# Deliberately NOT excluded: test files. Test code is real code, runs in CI with real
+# credentials, and a hardcoded secret there is still a leaked secret. The triage agent
+# is the right place to judge whether a test finding matters.
+SEMGREP_EXCLUDES = (
+    "*.md", "*.rst", "*.txt", "docs", "site-packages", "node_modules",
+    "vendor", "third_party", "*.lock", "*.min.js", "dist", "build", ".git",
+)
+
+# NOT `auto`, for two reasons that turn out to be the same reason.
+#
+# 1. `auto` is incompatible with --metrics=off. Semgrep refuses outright:
+#      "Cannot create auto config when metrics are off."
+#    Docket's stated position is that nothing leaves your machine except calls to the
+#    target and your model provider, so metrics stay off and `auto` cannot be used.
+#    Shipping both silently produced NO output while the stage still read "done".
+# 2. `auto` is not reproducible — it resolves rules from the registry at scan time, so
+#    the same commit can yield different findings next month with nothing recording
+#    which rules ran.
+#
+# A named pack is pinned, defensible, and does not phone home. Override with
+# DOCKET_SEMGREP_CONFIG (e.g. "p/owasp-top-ten", "p/secrets").
+DEFAULT_CONFIG = "p/default"
+
+
+def semgrep_config() -> str:
+    return os.environ.get("DOCKET_SEMGREP_CONFIG", "").strip() or DEFAULT_CONFIG
+
+
+def parse_coverage(text: str) -> dict:
+    """What the scan actually looked at.
+
+    Reported because a finding count alone cannot distinguish "your code is clean"
+    from "we had no rules for your language" — and the second is the one that gets
+    someone owned. semgrep already emits all of this; nothing read it until now.
+    """
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    scanned = doc.get("paths", {}).get("scanned", []) or []
+    by_ext: dict[str, int] = {}
+    for path in scanned:
+        ext = str(path).rsplit(".", 1)[-1] if "." in str(path) else "(none)"
+        by_ext[ext] = by_ext.get(ext, 0) + 1
+    errors = doc.get("errors", []) or []
+    return {
+        "files_scanned": len(scanned),
+        "file_types": dict(sorted(by_ext.items(), key=lambda kv: -kv[1])[:8]),
+        "rules_fired": sorted({
+            str(r.get("check_id", "")).split(".")[0]
+            for r in doc.get("results", []) if r.get("check_id")
+        }),
+        # Surfaced, not swallowed: a parse error means a file was NOT analysed, which
+        # is a coverage hole the operator should see rather than a silent pass.
+        "error_count": len(errors),
+        "errors": [str(e.get("message", e))[:200] for e in errors[:5]],
+    }
 
 
 def _relative(path: str) -> str:
@@ -73,23 +141,36 @@ def parse_semgrep_json(text: str) -> list[Finding]:
     return findings
 
 
+class ScannerError(RuntimeError):
+    """A scanner did not run. Distinct from "ran and found nothing", which is a
+    result; this is the absence of one, and reporting it as a clean pass is how a
+    tool tells someone their code is fine when it was never analysed."""
+
+
 def run_semgrep(sandbox: Any, run_dir: Path, *, timeout_sec: int = 120) -> list[Finding]:
     """Requires the sandbox to have been started with a source_dir mounted at
-    /work/source — callers gate on that before invoking this. Never raises."""
+    /work/source — callers gate on that before invoking this.
+
+    Raises ScannerError when semgrep did not produce output. It used to return [] for
+    both "clean" and "crashed", which hid a broken --config/--metrics combination
+    behind a green stage and 0 findings."""
     out_path = run_dir / "artifacts" / "scanners" / "semgrep.json"
+    excludes = " ".join(f"--exclude={shlex.quote(e)}" for e in SEMGREP_EXCLUDES)
     command = (
         "mkdir -p /work/run/artifacts/scanners && "
-        "semgrep scan --config auto --json --quiet "
+        f"semgrep scan --config {shlex.quote(semgrep_config())} --json --quiet "
+        f"--metrics=off {excludes} "
         "--output /work/run/artifacts/scanners/semgrep.json /work/source"
     )
     try:
         result = sandbox.call("shell", command=command, timeout_sec=timeout_sec)
-    except Exception:
-        return []
+    except Exception as exc:
+        raise ScannerError(f"semgrep could not be started: {exc}") from exc
     if "error" in result:
-        return []
+        raise ScannerError(f"semgrep failed: {result['error']}")
     if not out_path.exists():
-        return []
+        stderr = (result.get("stderr") or result.get("stdout") or "").strip()
+        raise ScannerError(f"semgrep wrote no output: {stderr[:300] or 'no diagnostics'}")
     return parse_semgrep_json(out_path.read_text())
 
 
@@ -125,6 +206,25 @@ def demo() -> None:
     assert "not dynamically exploited" in f.description
     assert "cursor.execute" in f.poc.request
     assert parse_semgrep_json("not json") == []
+
+    # Coverage is reported so "0 findings" can be told apart from "nothing analysed".
+    cov = parse_coverage(json.dumps({
+        "paths": {"scanned": ["a.py", "b.py", "c.go"]},
+        "results": [{"check_id": "python.lang.x"}, {"check_id": "go.lang.y"}],
+        "errors": [{"message": "parse failure in c.go"}],
+    }))
+    assert cov["files_scanned"] == 3, cov
+    assert cov["file_types"] == {"py": 2, "go": 1}, cov
+    assert cov["rules_fired"] == ["go", "python"], cov
+    # An error means a file was NOT analysed. Silently dropping it would report a
+    # coverage hole as a clean pass.
+    assert cov["error_count"] == 1 and "parse failure" in cov["errors"][0], cov
+    assert parse_coverage("not json") == {}
+
+    # Excludes must not quietly drop real code: tests are code, and a secret in a
+    # test file is still a leaked secret.
+    assert not any(e.startswith("test") for e in SEMGREP_EXCLUDES), SEMGREP_EXCLUDES
+    assert "*.md" in SEMGREP_EXCLUDES and "node_modules" in SEMGREP_EXCLUDES
     print("scanners.semgrep: ok")
 
 

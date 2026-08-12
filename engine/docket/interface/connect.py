@@ -53,6 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from docket.tools.scanners import read_coverage
 from docket.utils.resource_paths import frontend_dir
 
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
@@ -83,6 +84,16 @@ def valid_ref(ref: str) -> bool:
 # GitHub caps a tarball at a few hundred MB; refuse anything absurd rather than filling
 # the disk of whoever runs this.
 MAX_TARBALL_BYTES = 512 * 1024 * 1024
+
+# No ceiling on triage count, deliberately. The operator chooses how many findings to
+# triage; capping by COUNT here would only be a proxy for the thing actually worth
+# bounding, which is money. DOCKET_MAX_COST_USD is the real stop, checked before every
+# model turn (core/hooks.py) — and it stops mid-run rather than pre-emptively refusing
+# a number that might have been affordable.
+#
+# That gate only became real once DOCKET_PRICE_*_PER_1M was set: LiteLLM cannot price
+# an Azure deployment name, so an unpriced model reports $0.00 and the budget silently
+# enforces nothing. Unpriced + unbounded count is genuinely unbounded spend.
 
 
 @dataclass
@@ -231,7 +242,8 @@ def fetch_source(full_name: str, token: str, dest: Path, ref: str | None = None)
     return entries[0] if len(entries) == 1 else extracted
 
 
-def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = None) -> None:
+def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = None,
+                  triage_max: int = 0) -> None:
     """Fetch + scan, updating SESSION.scans[scan_id] as it goes. Never raises: the
     status dict is how the browser learns something failed.
 
@@ -250,11 +262,34 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             SESSION.scans[scan_id]["stages"][scanner] = state
 
     store = FindingStore()
+    try:
+        from docket.config.settings import Config
+
+        cfg_budget = Config.from_env().max_cost_usd
+    except Exception:
+        # static-only scans need no DOCKET_LLM; a missing budget just means nothing to
+        # draw a meter against, not a failure.
+        cfg_budget = 0.0
+
+    def snapshot() -> None:
+        """Push the store's CURRENT state, including any triage verdicts already
+        attached. Called both as scanners produce findings and as triage judges them,
+        so the console reflects work while it happens rather than only after."""
+        from docket.report.state import get_global_report_state
+
+        current = [f.model_dump(mode="json") for f in store.findings()]
+        totals = get_global_report_state().usage.totals()
+        set_state(
+            findings=current, finding_count=len(current),
+            cost_usd=round(totals.get("cost_usd", 0.0), 4),
+            input_tokens=totals.get("input_tokens", 0),
+            output_tokens=totals.get("output_tokens", 0),
+            budget_usd=cfg_budget,
+        )
 
     def publish(finding: Any) -> None:
         store.add(finding)
-        current = [f.model_dump(mode="json") for f in store.findings()]
-        set_state(findings=current, finding_count=len(current))
+        snapshot()
 
     workdir = Path(tempfile.mkdtemp(prefix="docket-connect-"))
     started = time.time()
@@ -277,6 +312,8 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             store=store,
             static_only=True,
             on_stage=stage,
+            triage_max=triage_max,
+            on_progress=snapshot,
         )
         # Persist the same artifacts `docket scan` writes, so a console scan is
         # visible to `docket view`, to the run-history panel, and to anything reading
@@ -287,13 +324,38 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
         write_report(
             store, run_path(run_name), run_name=run_name,
             target=f"github:{full_name}" + (f"@{ref}" if ref else ""),
+            coverage=read_coverage(run_path(run_name) / "sandbox"),
             summary=result.summary, cost_usd=result.cost_usd,
             agents_spawned=result.agents_spawned, success=result.success,
         )
-        set_state(status="done", summary=result.summary,
-                  elapsed_sec=round(time.time() - started, 1))
+        from docket.report.state import get_global_report_state
+
+        totals = get_global_report_state().usage.totals()
+        # Re-dump: `publish` snapshots each finding as it arrives, but the triage pass
+        # mutates those same Finding objects AFTERWARDS. Without this the verdicts sit
+        # in the store and in report.json while the console shows the pre-triage
+        # snapshot — which is exactly how "triage ran, judged 0" looked.
+        snapshot()
+        # Coverage read from the scanners' own artifacts, which live under the
+        # sandbox's bind mount, not the run dir the report goes to.
+        set_state(coverage=read_coverage(run_path(run_name) / "sandbox"))
+        set_state(
+            status="done", summary=result.summary,
+            elapsed_sec=round(time.time() - started, 1),
+            cost_usd=round(totals.get("cost_usd", 0.0), 4),
+            input_tokens=totals.get("input_tokens", 0),
+            output_tokens=totals.get("output_tokens", 0),
+            budget_usd=cfg_budget,
+        )
     except Exception as exc:
-        stage("fetch", "error")
+        # Mark whichever stage was actually in flight. Blaming "fetch" unconditionally
+        # reported a post-scan crash as a download failure, next to two scanners that
+        # had plainly finished.
+        with SESSION.lock:
+            stages = SESSION.scans[scan_id]["stages"]
+            in_flight = next((k for k, v in stages.items() if v == "running"), None)
+            if in_flight:
+                stages[in_flight] = "error"
         set_state(status="error", error=f"{type(exc).__name__}: {exc}",
                   elapsed_sec=round(time.time() - started, 1))
     finally:
@@ -301,7 +363,8 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def new_scan_state(scan_id: str, full_name: str, ref: str | None = None) -> dict[str, Any]:
+def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
+                   triage_max: int = 0) -> dict[str, Any]:
     return {
         "id": scan_id,
         "repo": full_name,
@@ -309,10 +372,17 @@ def new_scan_state(scan_id: str, full_name: str, ref: str | None = None) -> dict
         # so a finished scan says which code it actually looked at.
         "ref": ref,
         "status": "queued",
+        "triage_max": triage_max,
+        "coverage": {},
+        "cost_usd": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "budget_usd": 0.0,
         # Radar rings, outermost last. "skipped" is a real outcome, not a failure:
-        # nuclei needs a live URL and a source-only scan has none.
-        "stages": {"fetch": "pending", "trivy": "pending",
-                   "semgrep": "pending", "nuclei": "pending"},
+        # nuclei needs a live URL and a source-only scan has none, and triage is off
+        # unless asked for because it costs LLM money per finding.
+        "stages": {"fetch": "pending", "trivy": "pending", "semgrep": "pending",
+                   "nuclei": "pending", "triage": "pending"},
         "findings": [],
         "finding_count": 0,
         "error": None,
@@ -370,6 +440,53 @@ def list_runs() -> list[dict[str, Any]]:
         })
     runs.sort(key=lambda r: r["mtime"], reverse=True)
     return runs
+
+
+DOWNLOAD_FORMATS = {
+    "json": ("report.json", "application/json"),
+    "sarif": ("report.sarif", "application/json"),
+    "md": (None, "text/markdown; charset=utf-8"),  # rendered, not stored
+}
+
+
+def download_run(run_name: str, fmt: str) -> tuple[int, bytes, str, str]:
+    """(status, body, content_type, filename) for one run in one format.
+
+    json and sarif are served straight off disk — they are already written by the
+    report writer, and re-generating them here would let the download drift from what
+    the scan actually produced. Markdown is rendered on demand because nothing needs
+    it until someone asks.
+    """
+    from docket.core.paths import runs_root
+    from docket.report.markdown import render_markdown
+
+    if fmt not in DOWNLOAD_FORMATS:
+        return 400, b'{"error":"format must be json, sarif or md"}', "application/json", ""
+    if not run_name or not _RUN_NAME.match(run_name):
+        return 400, b'{"error":"bad run name"}', "application/json", ""
+
+    root = runs_root().resolve()
+    directory = (root / run_name).resolve()
+    # Same containment check as load_run: the name comes from the browser and is
+    # joined onto a filesystem path.
+    if not str(directory).startswith(str(root)) or not directory.is_dir():
+        return 404, b'{"error":"no such run"}', "application/json", ""
+
+    filename, content_type = DOWNLOAD_FORMATS[fmt]
+    if filename:
+        path = directory / filename
+        if not path.is_file():
+            return 404, b'{"error":"not written for this run"}', "application/json", ""
+        return 200, path.read_bytes(), content_type, f"{run_name}-{filename}"
+
+    report = directory / "report.json"
+    if not report.is_file():
+        return 404, b'{"error":"no report.json"}', "application/json", ""
+    try:
+        rendered = render_markdown(json.loads(report.read_text()))
+    except (OSError, json.JSONDecodeError) as exc:
+        return 500, f'{{"error":"unreadable report: {exc}"}}'.encode(), "application/json", ""
+    return 200, rendered.encode(), content_type, f"{run_name}.md"
 
 
 def load_run(run_name: str) -> tuple[int, dict[str, Any]]:
@@ -440,6 +557,21 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self._static(path)
             elif path == "/api/runs":
                 self._json(200, {"runs": list_runs()})
+            elif path.startswith("/api/download/"):
+                rest = path[len("/api/download/"):]
+                name, _, fmt = rest.rpartition(".")
+                status, body, ctype, filename = download_run(name, fmt)
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                if status == 200 and filename:
+                    # attachment, not inline: a report the browser renders in-tab is a
+                    # page you then have to save by hand.
+                    self.send_header("Content-Disposition",
+                                     f'attachment; filename="{filename}"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
             elif path.startswith("/api/run/"):
                 # A finished run, rehydrated from disk. The console keeps its live scan
                 # in memory only, so without this a reload loses everything — even
@@ -493,12 +625,34 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             if ref is not None and not valid_ref(ref):
                 self._json(400, {"error": f"not a usable branch/tag/sha: {ref}"})
                 return
+            # Validated, not capped: a non-number or a negative would break the loop
+            # rather than cost money, so it is refused. How MANY is the operator's call.
+            try:
+                triage_max = int(body.get("triage_max") or 0)
+            except (TypeError, ValueError):
+                self._json(400, {"error": "triage_max must be a whole number"})
+                return
+            if triage_max < 0:
+                self._json(400, {"error": "triage_max cannot be negative"})
+                return
+            # Triage spawns real LLM agents, so refuse early with a clear reason
+            # rather than starting a scan that dies partway. Config.from_env() is what
+            # loads .env, so asking it beats reading os.environ directly — an earlier
+            # version did the latter and refused on a correctly-configured machine.
+            if triage_max:
+                try:
+                    from docket.config.settings import Config
+
+                    Config.from_env()
+                except Exception as exc:
+                    self._json(400, {"error": f"triage needs a model configured: {exc}"})
+                    return
 
             scan_id = secrets.token_hex(8)
             with SESSION.lock:
-                SESSION.scans[scan_id] = new_scan_state(scan_id, full_name, ref)
+                SESSION.scans[scan_id] = new_scan_state(scan_id, full_name, ref, triage_max)
             threading.Thread(
-                target=run_repo_scan, args=(full_name, SESSION.token, scan_id, ref),
+                target=run_repo_scan, args=(full_name, SESSION.token, scan_id, ref, triage_max),
                 name=f"docket-scan-{scan_id}", daemon=True,
             ).start()
             self._json(202, {"id": scan_id, "status": "queued"})
@@ -627,8 +781,10 @@ def demo() -> None:
     state = new_scan_state("abc", "o/r")
     assert state["status"] == "queued" and state["finding_count"] == 0
     assert state["ref"] is None  # None means "whatever GitHub calls the default"
-    assert set(state["stages"]) == {"fetch", "trivy", "semgrep", "nuclei"}
+    assert set(state["stages"]) == {"fetch", "trivy", "semgrep", "nuclei", "triage"}
+    assert state["triage_max"] == 0, "triage costs money, so it must be opt-in"
     assert new_scan_state("abc", "o/r", "feat/x")["ref"] == "feat/x"
+    assert new_scan_state("abc", "o/r", None, 5)["triage_max"] == 5
 
     # Refs are interpolated into the same API path as the repo name, so they get the
     # same scrutiny. Slashes ARE legal here, which is why this is a separate check.

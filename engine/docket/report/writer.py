@@ -37,6 +37,7 @@ def build_report(
     cost_usd: float = 0.0,
     agents_spawned: int = 0,
     success: bool = True,
+    coverage: dict | None = None,
 ) -> dict:
     findings = sort_findings(store.findings())
     return {
@@ -49,6 +50,9 @@ def build_report(
         "cost_usd": cost_usd,
         "agents_spawned": agents_spawned,
         "finding_count": len(findings),
+        # What was actually analysed. Without it, "0 findings" and "nothing was
+        # scanned" are the same number.
+        "coverage": coverage or {},
         "severity_counts": severity_counts(findings),
         # Per-agent token accounting: explains where the run's cost actually went.
         "usage": get_global_report_state().usage.to_dict(),
@@ -66,11 +70,13 @@ def write_report(
     cost_usd: float = 0.0,
     agents_spawned: int = 0,
     success: bool = True,
+    coverage: dict | None = None,
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     report = build_report(
         store, run_name=run_name, target=target, summary=summary,
         cost_usd=cost_usd, agents_spawned=agents_spawned, success=success,
+        coverage=coverage,
     )
     json_path = out_dir / "report.json"
     # Same redaction boundary as SARIF — see write_sarif. This also catches the raw

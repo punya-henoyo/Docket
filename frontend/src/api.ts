@@ -51,11 +51,16 @@ export const getScan = (id: string) => req<ScanState>(`/api/scan/${id}`);
 export const getRun = (runName: string) =>
   req<ScanState>(`/api/run/${encodeURIComponent(runName)}`);
 
-export const startScan = (repo: string, ref?: string) =>
+export const startScan = (repo: string, ref?: string, triageMax = 0) =>
   req<{ id: string; status: string }>("/api/scan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(ref ? { repo, ref } : { repo }),
+    body: JSON.stringify({ repo, ...(ref ? { ref } : {}), ...(triageMax ? { triage_max: triageMax } : {}) }),
   });
 
 export const AUTH_START = "/auth/start";
+
+/** Download URL for a finished run. The server sets Content-Disposition, so a plain
+ *  link saves the file rather than rendering it in a tab. */
+export const downloadUrl = (runName: string, fmt: "json" | "sarif" | "md") =>
+  `/api/download/${encodeURIComponent(runName)}.${fmt}`;

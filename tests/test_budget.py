@@ -41,11 +41,25 @@ def _config(max_cost: float, per_child: float) -> Config:
 
 
 def test_estimate_cost_prices_real_model_and_survives_unknown() -> None:
+    import os
+
     priced = estimate_cost(PRICED_MODEL, _FakeUsage(1000, 500))
     assert priced > 0, priced
-    # An unpriced model must degrade to 0.0 with a warning, not crash a scan.
-    assert estimate_cost("totally-made-up-model-xyz", _FakeUsage(1000, 500)) == 0.0
     assert estimate_cost(PRICED_MODEL, None) == 0.0
+
+    # Hermetic: settings.py calls load_dotenv() at import, so a real .env carrying
+    # DOCKET_PRICE_* would otherwise price this model and make the assertion below
+    # fail on a configured machine while passing in CI. The manual-rate path is
+    # covered by docket.core.hooks' own demo().
+    saved = {k: os.environ.pop(k, None)
+             for k in ("DOCKET_PRICE_INPUT_PER_1M", "DOCKET_PRICE_OUTPUT_PER_1M")}
+    try:
+        # Unpriced AND no manual rates: degrade to 0.0 with a warning, never crash.
+        assert estimate_cost("totally-made-up-model-xyz", _FakeUsage(1000, 500)) == 0.0
+    finally:
+        for key, value in saved.items():
+            if value is not None:
+                os.environ[key] = value
 
 
 class _FakeUsage:

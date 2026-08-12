@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
 import { ApiError } from "./api";
-import type { Finding, Repo, RunSummary, ScanState, Session, Severity } from "./types";
+import type { Finding, Repo, RunSummary, ScanState, Session, Severity, Verdict } from "./types";
 import { Dashboard } from "./views/Dashboard";
 import { Findings } from "./views/Findings";
 import { Repositories } from "./views/Repositories";
@@ -32,7 +32,12 @@ export default function App() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Finding | null>(null);
   const [newestId, setNewestId] = useState<string | undefined>();
+  // Bumped to re-arm polling after a failed tick. Without it a dropped request
+  // ends polling for good: the catch never calls setScan, so the effect below
+  // never re-runs, and the UI freezes while the scan carries on server-side.
+  const [pollTick, setPollTick] = useState(0);
   const [cweFilter, setCweFilter] = useState<string | null>(null);
+  const [verdictFilter, setVerdictFilter] = useState<Verdict | null>(null);
   const prevIds = useRef<Set<string>>(new Set());
 
   const go = useCallback((next: View) => {
@@ -51,14 +56,25 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      try {
-        const s = await api.getSession();
-        if (!alive) return;
-        setSession(s);
-        setBootError(null);
-        if (s.connected) loadRepos();
-      } catch (err) {
-        if (alive) setBootError(err instanceof ApiError ? err.message : String(err));
+      // Retried: a single failed request at page load used to condemn the whole
+      // session to the "cannot reach docket" screen with no way back but a refresh,
+      // even though the server was up a second later.
+      for (let attempt = 0; attempt < 3 && alive; attempt++) {
+        try {
+          const s = await api.getSession();
+          if (!alive) return;
+          setSession(s);
+          setBootError(null);
+          if (s.connected) loadRepos();
+          break;
+        } catch (err) {
+          if (!alive) return;
+          if (attempt === 2) {
+            setBootError(err instanceof ApiError ? err.message : String(err));
+          } else {
+            await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+          }
+        }
       }
       try {
         const r = await api.getRuns();
@@ -113,29 +129,37 @@ export default function App() {
         if (fresh) setNewestId(fresh.id);
         prevIds.current = new Set(next.findings.map((f) => f.id));
         setScan(next);
+        // Recovered: polling is a repeated action, so a stale failure banner from an
+        // earlier tick is now a lie about the current state.
+        setScanError(null);
         if (next.status === "done") api.getRuns().then(setRuns).catch(() => {});
       } catch (err) {
         setScanError(err instanceof ApiError ? err.message : String(err));
+        setPollTick((t) => t + 1);  // keep polling; the run is still going
       }
     }, 1500);
     return () => clearTimeout(timer);
-  }, [scan]);
+  }, [scan, pollTick]);
 
   const runScan = useCallback(
-    async (repo: string, ref?: string) => {
+    async (repo: string, ref?: string, triageMax = 0) => {
       setScanError(null);
       setSelected(null);
       setCweFilter(null);
+      setVerdictFilter(null);
       prevIds.current = new Set();
       setNewestId(undefined);
       try {
-        const { id } = await api.startScan(repo, ref);
+        const { id } = await api.startScan(repo, ref, triageMax);
         setScan({
           id,
           repo,
           ref: ref ?? null,
           status: "queued",
-          stages: { fetch: "pending", trivy: "pending", semgrep: "pending", nuclei: "pending" },
+          stages: {
+            fetch: "pending", trivy: "pending", semgrep: "pending",
+            nuclei: "pending", triage: "pending",
+          },
           findings: [],
           finding_count: 0,
           error: null,
@@ -161,6 +185,7 @@ export default function App() {
       setScanError(null);
       setSelected(null);
       setCweFilter(null);
+      setVerdictFilter(null);
       try {
         setScan(await api.getRun(runName));
       } catch (err) {
@@ -240,6 +265,8 @@ export default function App() {
             cweFilter={cweFilter}
             onCweSelect={setCweFilter}
             onOpenRun={openRun}
+            verdictFilter={verdictFilter}
+            onVerdictSelect={setVerdictFilter}
           />
         ) : view === "findings" ? (
           <Findings
@@ -250,6 +277,8 @@ export default function App() {
             onGoRepos={() => go("repos")}
             cweFilter={cweFilter}
             onCweSelect={setCweFilter}
+            verdictFilter={verdictFilter}
+            onVerdictSelect={setVerdictFilter}
           />
         ) : view === "repos" ? (
           <Repositories

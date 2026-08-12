@@ -24,6 +24,11 @@ from docket.interface.tui.backend.messages import get_emitter
 from docket.tools.finish.tool import agent_finish, finish_scan
 from docket.agents.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
 from docket.agents.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
+from docket.agents.prompts.recon import SYSTEM_PROMPT as RECON_SYSTEM_PROMPT
+from docket.agents.prompts.triage import SYSTEM_PROMPT as TRIAGE_SYSTEM_PROMPT
+from docket.tools.recon.tool import record_surface
+from docket.tools.source.tools import list_source, read_source, search_source
+from docket.tools.triage.tool import triage_verdict
 from docket.tools.load_skill.tool import list_skills, load_skill
 from docket.tools.notes.tools import add_note, view_notes
 from docket.tools.reporting.tool import FindingType, register_finding
@@ -33,10 +38,10 @@ from docket.tools.todo.tools import set_todos, view_todos
 from docket.tools.web_search.tool import web_search
 from docket.tools.http_request.tools import do_http_request
 
-Role = Literal["root", "sqli", "cmdi", "xss"]
+Role = Literal["root", "sqli", "cmdi", "xss", "triage", "recon"]
 SpecialistRole = Literal["sqli", "cmdi", "xss"]
 
-_FINISH_TOOL_NAMES = {"finish_scan", "agent_finish"}
+_FINISH_TOOL_NAMES = {"finish_scan", "agent_finish", "triage_verdict", "record_surface"}
 
 
 @function_tool(strict_mode=False)  # headers/params/data are open-ended dicts — strict
@@ -305,6 +310,21 @@ def build_agent(
         # requires a real DOM executing the payload.
         if role == "xss":
             base_tools.append(browser)
+    elif role == "recon":
+        # Same read-only posture as triage, plus list_source: an agent that cannot see
+        # the repository's shape reads files at random and burns its budget.
+        instructions = RECON_SYSTEM_PROMPT
+        finish_tool = record_surface
+        name = "docket-recon"
+        base_tools = [list_source, read_source, search_source, thinking, notes]
+    elif role == "triage":
+        # Reads source, never touches the target. No http_request, no shell, no
+        # browser: judging whether a line is reachable needs the repository, and a
+        # network tool here would only widen the blast radius for nothing.
+        instructions = TRIAGE_SYSTEM_PROMPT
+        finish_tool = triage_verdict
+        name = "docket-triage"
+        base_tools = [read_source, search_source, thinking, notes]
     else:
         raise ValueError(f"unknown role: {role!r}")
 
