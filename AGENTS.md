@@ -40,7 +40,10 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
 4. **Agents should stop via a finish tool** — `tool_use_behavior` enforces it for the
    tool path, but it is **not** the only exit. A non-`str` `output_type` lets the SDK end a
    run on any plain assistant message matching that schema, checked before the tool-use
-   gate. Do not rely on this invariant for correctness; see README "Known limits".
+   gate. This is not theoretical: on the first live run a model took that exit on turn one
+   with zero tool calls and invented findings. `run_agent_loop` now discards such output,
+   re-prompts with `_NO_TOOL_CORRECTION`, and refuses on the third attempt. **Keep that
+   path** — without it a fabricated summary reaches the report, which defeats rule 1.
 5. **A dead child still reports.** Two halves. `coordinator.register()` is the *caller's*
    job in `create_agent`, before `spawn_child_agent` — that makes the child visible to a
    same-turn `wait_for_agents` and puts a `max_agents` refusal somewhere the model can see
@@ -51,7 +54,13 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
    `engine/docket/__init__.py` sets `LITELLM_LOCAL_MODEL_COST_MAP=true`, because importing
    litellm otherwise fetches a price map from GitHub before any of our code runs. Keep that
    line, and keep `__init__.py` stdlib-only. See `engine/docket/telemetry/README.md`.
-7. **Shared artifacts are redacted at the write boundary.** `report/writer.py`,
+7. **The SDK's sandbox capabilities stay opt-in.** `Filesystem`/`Shell` from
+   `agents.sandbox.capabilities` are *hosted* tools: only OpenAI's Responses API accepts
+   them, and over Chat Completions (every LiteLLM-routed provider, every OpenAI-compatible
+   gateway) the run dies before turn one. `DOCKET_SDK_SANDBOX_TOOLS=1` re-enables them.
+   Don't flip the default: our own container-backed `shell`/`browser` already do the work,
+   and no scripted test can catch this because a scripted model never serializes tools.
+8. **Shared artifacts are redacted at the write boundary.** `report/writer.py`,
    `report/sarif.py` and `runtime/proxy_addon.py` pass serialized output through
    `redact()`. Redact whole documents, not hand-picked fields, so a new field is covered by
    default. `redact()` must stay stdlib-only — `proxy_addon` imports it in-container.

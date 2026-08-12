@@ -20,6 +20,7 @@ A docket is a register where nothing is entered without evidence. That is the wh
 - [The guarantee](#the-guarantee)
 - [How a scan runs](#how-a-scan-runs)
 - [Proof, per vulnerability class](#proof-per-vulnerability-class)
+  - [Verified live](#verified-live)
 - [Agent capabilities](#agent-capabilities)
 - [Skills](#skills)
 - [The sandbox](#the-sandbox)
@@ -104,6 +105,26 @@ Structural guarantees in the agent graph:
 | **Blind command injection** | A timing side-channel. Stdout never reaches the response, so an injected `sleep` plus a measured latency delta is the only honest oracle |
 | **Reflected XSS** | Real Chromium raises `alert()` and the dialog is captured. Proves the script *executed*, rather than that your payload appeared in the HTML |
 
+### Verified live
+
+Not a claim about the harness this time. One run, four agents, a real model reasoning
+unaided, against the bundled fixture through a real container:
+
+```
+success: True   findings: 3   agents: 4   cost: $0.108
+
+cmdi:  ?file=test.csv; sleep 5              -> "Response time: ~5016ms"
+sqli:  username=admin' --&password=[REDACTED] -> "Welcome"
+xss:   browser dialog_message='host.docker.internal'
+```
+
+Every payload was the model's own choice. The sqli specialist did not reach for sqlmap at
+all: it found `admin' --` comments out the password check, and proved the bypass with a
+request and a `Welcome`. The `[REDACTED]` is redaction firing at the write boundary.
+
+Reproduce it with `DOCKET_LLM=openai/gpt-4.1` against `tests/serve_target.py`. Read
+"Current limits" first for which models can drive this and which silently cannot.
+
 Findings carry a `Severity` (`critical`/`high`/`medium`/`low`/`info`), a CWE tag where the
 class has one, and a stable dedupe key: `sha256(rule_id|method|path|parameter)` truncated to
 16 hex chars. The same key becomes the SARIF `partialFingerprints` value, so a finding keeps
@@ -171,6 +192,13 @@ thread.
 fallback, by design: an LLM-authored command belongs in the container or nowhere. The only
 subprocesses docket starts on your machine are `docker` invocations. `--no-sandbox` runs
 without Docker and drops both tools rather than quietly relocating them.
+
+The SDK's own `Filesystem`/`Shell` capabilities are **off by default** (`DOCKET_SDK_SANDBOX_TOOLS=1`
+to enable). They are *hosted* tools, which only OpenAI's Responses API accepts; over the Chat
+Completions API that LiteLLM uses for everything else, a run dies before its first turn with
+`Hosted tools are not supported with the ChatCompletions API`. docket's own container-backed
+`shell` and `browser` are unaffected and do the actual work; only `apply_patch` and
+`view_image` go away, and no vulnerability class uses them.
 
 ## Cost control
 
@@ -264,6 +292,7 @@ server serving it. No account, no upload, nothing hosted by us.
 |---|---|
 | `DOCKET_LLM` | Any LiteLLM `provider/model`, e.g. `anthropic/claude-sonnet-5` |
 | `LLM_API_KEY` | Or a provider-specific variable |
+| `DOCKET_LLM_BASE_URL` | Point at a self-hosted or proxied deployment. For an OpenAI-compatible gateway, use `openai/<gateway-model-name>` as `DOCKET_LLM` |
 | `DOCKET_MAX_COST_USD` | Scan-wide budget ceiling. Default `2.00` |
 | `DOCKET_MAX_CHILD_COST_USD` | Per-specialist ceiling. Default `0.75` |
 | `DOCKET_MAX_AGENTS` | Concurrent agent cap. Default `6` |
@@ -306,6 +335,7 @@ name) are flags rather than environment variables, because they change every run
 | `engine/docket/report/` | Finding model, dedupe, SARIF, writer, usage ledger |
 | `engine/docket/interface/` | CLI, Textual TUI, local web viewer |
 | `engine/docket/skills/` | Markdown playbooks |
+| `app/` | Optional demo web app (FastAPI + React). Not part of the tool, not in the wheel |
 
 Built on the OpenAI Agents SDK with LiteLLM for provider routing, pydantic for the finding
 model — the trust boundary where model free-text becomes a structured report — and stdlib
@@ -346,20 +376,27 @@ gaps is worse than one that has none.
   edge to mean anything
 - **Three vulnerability classes.** Specialists exist for SQL injection, command injection
   and reflected XSS. Anything else goes untested
-- **Not yet verified with a live model.** The harness is exercised end to end, but through a
-  scripted model: every tool call genuinely executes while the "which tool next" decision is
-  scripted. That proves the plumbing, not that a real model reasons its way there
-- **Blast radius is wider than the per-role tool lists suggest.** With the sandbox on, every
-  role is a `SandboxAgent` with filesystem and shell capabilities, so all roles have an
-  in-container shell even though only `sqli` is handed the `shell` tool. Still contained, but
-  not least-privilege
-- **Agents can stop without a finish tool.** The structured-output path lets the SDK end a
-  run on a plain message matching the schema, before the finish-tool gate is consulted
+- **The model must do tool calls and structured output *together*.** docket sets both
+  `tools` and a response schema on every turn. Some models satisfy the schema immediately and
+  never touch a tool, which ends the run before any work happens. Verified working:
+  `gpt-4.1`, `gpt-4o`. Verified *not* working this way: `DeepSeek-V3.2`, `Kimi-K2.5`,
+  `Llama-3.3-70B` — each does tool calls fine alone, and skips them when a schema is also
+  present. Check a new model against the fixture before trusting a run
+- **A run can still end without the finish tool, it just cannot lie about it now.** The SDK
+  ends a run on any plain assistant message matching `output_type`, and it checks that
+  *before* the tool-use gate. Observed live: a model emitted a schema-shaped message on turn
+  one with zero tool calls, inventing finding IDs and a verdict for routes it never
+  requested. docket now discards that, re-prompts, and refuses on the third attempt rather
+  than printing it. But the escape itself is the SDK's, and it is still there
+- **Budget enforcement is inert for models LiteLLM cannot price.** Cost is computed from
+  LiteLLM's price map, so a self-hosted or gateway model it does not recognise is charged
+  \$0.00 per turn and the ceilings never fire. Seen live: 8,562 tokens billed as nothing.
+  Token counts stay correct; only the money does not
 - **Compaction is reactive and can decline.** It runs only after the provider rejects an
   oversized request, then second-guesses that with a token estimate, and gives up if the
   estimate disagrees
 - **Budgets can overshoot.** The gate is pre-turn but the charge is post-turn, so concurrent
-  agents can each slip one turn past the cap
+  agents can each slip one turn past the cap. Separately, see the pricing gap above
 - **No scope controls or rate limiting.** Out-of-scope routes are avoided only by asking in
   `--instruction`
 - **`--out-dir` splits a run across two directories**, so `docket view` cannot find it.
@@ -395,10 +432,11 @@ the lane markings go in first.
    scanning, so it pays for itself three times
 4. **Authenticated scanning** — a real login flow and session reuse, instead of pasting
    credentials into `--instruction`
-5. **A scheduled live-model eval** — the fixture scan run against a real model on a timer,
-   asserting all three classes are still found, with cost and turns recorded. Off the
-   per-push path, since it costs money and is nondeterministic. Nothing currently fails when
-   a prompt edit makes the agents worse
+5. **A scheduled live-model eval** — one live run now passes by hand, which is what shook out
+   the hosted-tools incompatibility, the fabricated-summary escape and a missing base URL.
+   Make it a timed job against the fixture asserting all three classes still land, recording
+   cost and turns. Off the per-push path, since it costs money and is nondeterministic.
+   Nothing automated currently fails when a prompt edit makes the agents worse
 6. **More classes** — IDOR/BOLA, SSRF, path traversal, auth bypass, SSTI, open redirect.
    Adding one is a role literal, a prompt and a tool grant. Worth little until a scan can
    find the routes to point them at
@@ -410,6 +448,10 @@ the lane markings go in first.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev loop and for adding tools, skills and
 vulnerability classes, and [`AGENTS.md`](AGENTS.md) for the invariants you must not break.
+
+[`app/`](app/README.md) is an optional browser front end for demoing a scan: start one, watch
+agents prove things live, page through past runs. It installs separately
+(`uv sync --extra app`) and the tool does not depend on it.
 
 ## License
 
