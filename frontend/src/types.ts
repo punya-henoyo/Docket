@@ -86,7 +86,11 @@ export interface Surface {
 }
 
 export type StageState = "pending" | "running" | "done" | "skipped" | "error";
-export type ScanStatus = "queued" | "fetching" | "scanning" | "done" | "error";
+/** "cancelled" is deliberately distinct from "error": the operator stopped it, the
+ *  findings already produced are real and were saved, and the rest was never looked
+ *  at. Calling a deliberate stop a failure trains people to ignore failures. */
+export type ScanStatus =
+  | "queued" | "fetching" | "scanning" | "done" | "error" | "cancelled";
 
 export interface ScanState {
   id: string;

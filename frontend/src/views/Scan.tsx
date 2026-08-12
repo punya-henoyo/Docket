@@ -4,11 +4,12 @@ import { Radar } from "../components/Radar";
 import { TriagePanel } from "../components/TriagePanel";
 import { CweBreakdown } from "../components/CweBreakdown";
 import { Panel } from "../components/ui";
-import { downloadUrl } from "../api";
+import { useState } from "react";
+import { cancelScan, downloadUrl } from "../api";
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "queued", fetching: "downloading source", scanning: "scanning",
-  done: "complete", error: "failed",
+  done: "complete", error: "failed", cancelled: "stopped",
 };
 
 const SKIP_REASON: Record<string, string> = {
@@ -42,7 +43,23 @@ export function Scan({
 }) {
   const running = !scan?.historical &&
     (scan?.status === "queued" || scan?.status === "fetching" || scan?.status === "scanning");
-  const finished = scan && (scan.historical || scan.status === "done");
+  const finished = scan &&
+    (scan.historical || scan.status === "done" || scan.status === "cancelled");
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
+
+  async function stop() {
+    setStopping(true);
+    setStopError(null);
+    try {
+      await cancelScan(scan?.id);
+    } catch (err) {
+      // The button stays enabled on failure. A stop that silently did not happen is
+      // worse than one that visibly failed.
+      setStopping(false);
+      setStopError(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   return (
     <>
@@ -51,16 +68,41 @@ export function Scan({
         <div className="head-actions">
           {finished && (
             <>
+              <a className="btn primary" href={downloadUrl(scan!.id, "brief")}
+                 target="_blank" rel="noopener"
+                 title="An executive brief written by the model from this scan's output. Costs one model call the first time; cached after that.">
+                Executive brief
+              </a>
               <a className="btn" href={downloadUrl(scan!.id, "md")} download>report .md</a>
               <a className="btn" href={downloadUrl(scan!.id, "json")} download>.json</a>
               <a className="btn" href={downloadUrl(scan!.id, "sarif")} download>.sarif</a>
             </>
+          )}
+          {running && (
+            <button className="btn" onClick={stop} disabled={stopping}
+              title="Stops at the next checkpoint: between scanners, or before the next triage agent. Findings already produced are kept."
+              style={{ color: "var(--crit)", borderColor: "var(--crit)" }}>
+              {stopping ? "stopping…" : "Stop scan"}
+            </button>
           )}
           <button className="btn primary" onClick={onGoRepos}>+ New scan</button>
         </div>
       </div>
 
       {scanError && <div className="note bad">{scanError}</div>}
+      {stopError && <div className="note bad">Could not stop the scan: {stopError}</div>}
+      {stopping && running && (
+        <div className="note">
+          Stopping. The scan halts at its next checkpoint, so a scanner already running
+          will finish first. Nothing new starts.
+        </div>
+      )}
+      {scan?.status === "cancelled" && (
+        <div className="note bad">
+          Stopped by you. The {scan.finding_count} finding(s) below were measured and
+          saved; anything marked skipped was never looked at.
+        </div>
+      )}
 
       <div className="split">
         <Panel

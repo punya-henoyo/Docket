@@ -9,7 +9,9 @@ out of pyproject.toml and makes every operation copy-pasteable when debugging.
 """
 from __future__ import annotations
 
+import atexit
 import json
+import signal
 import subprocess
 import time
 import urllib.error
@@ -60,6 +62,56 @@ class SandboxError(RuntimeError):
     pass
 
 
+# Every container this process started and has not yet stopped.
+#
+# stop() runs from __exit__, which a SIGTERM or SIGINT never reaches — so before this
+# existed, killing the console left the sandbox running. There was one idling for
+# three hours from exactly that. The handler below is the backstop for every exit
+# path that is not a clean return.
+_LIVE: set[str] = set()
+_CLEANUP_INSTALLED = False
+
+
+def _reap(*_signal_args: object) -> None:
+    """Force-remove any container this process still owns. Safe to call twice."""
+    for name in list(_LIVE):
+        subprocess.run(["docker", "rm", "-f", name],
+                       capture_output=True, timeout=60, check=False)
+        _LIVE.discard(name)
+
+
+def install_cleanup() -> None:
+    """Tear down containers on exit, Ctrl-C and SIGTERM.
+
+    Signal handlers can only be installed from the main thread, so this is called by
+    the console at startup rather than lazily from a scan thread. atexit alone is not
+    enough: it does not run on an unhandled signal, which is how a console gets killed
+    in practice.
+    """
+    global _CLEANUP_INSTALLED
+    if _CLEANUP_INSTALLED:
+        return
+    _CLEANUP_INSTALLED = True
+    atexit.register(_reap)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        previous = signal.getsignal(sig)
+
+        def handler(signum: int, frame: object, _previous=previous) -> None:
+            _reap()
+            # Chain rather than swallow: the console still needs its own shutdown, and
+            # replacing the default SIGINT behaviour would break Ctrl-C entirely.
+            if callable(_previous):
+                _previous(signum, frame)
+            else:
+                raise SystemExit(128 + signum)
+
+        try:
+            signal.signal(sig, handler)
+        except ValueError:
+            # Not the main thread. The atexit hook above still applies.
+            pass
+
+
 def _docker(*args: str, timeout: int = 600) -> str:
     proc = subprocess.run(
         ["docker", *args], capture_output=True, text=True, timeout=timeout,
@@ -107,6 +159,9 @@ class Sandbox:
     # -- lifecycle ---------------------------------------------------------------
 
     def start(self, *, health_timeout: float = 30.0) -> "Sandbox":
+        # Registered BEFORE the container exists: registering after `docker run`
+        # would leave a window where a Ctrl-C loses the name and orphans it.
+        _LIVE.add(self.name)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         build_image(self.image)
         mounts = ["-v", f"{self.run_dir}:/work/run"]
@@ -166,6 +221,7 @@ class Sandbox:
                 _docker(*args, timeout=60)
             except SandboxError:
                 pass
+        _LIVE.discard(self.name)
         self.port = None
 
     def __enter__(self) -> "Sandbox":

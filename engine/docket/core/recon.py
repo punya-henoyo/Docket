@@ -19,6 +19,7 @@ from typing import Any
 from docket.agents.factory import build_agent
 from docket.agents.prompts.recon import build_recon_task
 from docket.config.settings import Config
+from docket.core.cancel import NEVER, CancelToken, ScanCancelled
 from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, run_agent_loop
 
@@ -59,10 +60,13 @@ def run_recon(
     findings: list[dict[str, Any]] | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
     model_override: Any = None,
+    cancel: CancelToken = NEVER,
 ) -> dict[str, Any] | None:
     """The attack surface, or None. Never raises: recon is enrichment, and a scan that
     already produced findings must not be lost because the mapper failed."""
     if sandbox is None:
+        return None
+    if cancel.cancelled:
         return None
 
     coordinator = AgentCoordinator(
@@ -91,6 +95,8 @@ def run_recon(
             build_recon_task(repo, hint_files(findings or [])),
             max_turns=max_turns,
         ))
+    except ScanCancelled:
+        raise  # a stop is not a failed map; it must reach run_repo_scan
     except Exception:
         return None
     return _surface_from(output)

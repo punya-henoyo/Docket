@@ -22,6 +22,8 @@ from docket.config.settings import Config, run_dir
 from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.core.inputs import DEFAULT_MAX_TURNS
+from docket.core.cancel import NEVER, CancelToken
+from docket.report.dedupe import merge_static
 from docket.report.models import Finding
 from docket.interface.tui.backend.messages import set_emitter
 from docket.report.state import init_report_state, reset_report_state
@@ -36,6 +38,7 @@ def _run_scanner_prescans(
     sandbox: Sandbox, target_url: str | None, run_dir_: Path,
     on_finding: Callable[[Finding], None] | None,
     on_stage: Callable[[str, str], None] | None = None,
+    cancel: CancelToken = NEVER,
 ) -> None:
     """Deterministic scanner pass, BEFORE any agent turn runs. nuclei needs a real
     target (skipped when None — e.g. a --static-only, --source-only run with nothing
@@ -54,13 +57,21 @@ def _run_scanner_prescans(
             on_stage(scanner, state)
 
     def drain(scanner: str, produce) -> None:
+        # Checked before the scanner starts, not during: semgrep is a subprocess and
+        # the only safe place to stop is between runs.
         """Run one scanner. A scanner that could not run is marked `error`, never
         `done` — "0 findings" and "never analysed" must not look identical, which is
         exactly what a silently-failing semgrep did behind a green stage."""
         from docket.tools.scanners.semgrep import ScannerError
 
+        cancel.check()
         try:
-            findings = produce()
+            # Merge before emitting, not after: semgrep returns the same line under
+            # several framework namespaces, and every consumer downstream (the live
+            # feed, the store, triage, the cost of triage) should see one finding
+            # rather than three. Merging here means triage never pays to judge the
+            # same line three times.
+            findings = merge_static(produce())
         except ScannerError as exc:
             logger.warning("%s did not run: %s", scanner, exc)
             stage(scanner, "error")
@@ -113,6 +124,7 @@ def run_scan(
     on_progress: Callable[[], None] | None = None,
     recon: bool = False,
     on_surface: Callable[[dict], None] | None = None,
+    cancel: CancelToken = NEVER,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -179,7 +191,8 @@ def run_scan(
             # scanner reader: the container wrote real output, the host looked one
             # level up and found nothing — confirmed by an end-to-end CLI run before
             # this fix, not assumed.
-            _run_scanner_prescans(sandbox, agent_target, sandbox.run_dir, on_finding, on_stage)
+            _run_scanner_prescans(sandbox, agent_target, sandbox.run_dir, on_finding,
+                              on_stage, cancel=cancel)
 
             # Recon BEFORE triage, deliberately. It maps the application once and
             # cheaply (~$0.06 regardless of finding count), and the candidates it
@@ -196,7 +209,7 @@ def run_scan(
                     run_dir=directory, config=cfg, sandbox=sandbox,
                     findings=[f.model_dump(mode="json") for f in store.findings()]
                     if store is not None else [],
-                    model_override=model_override,
+                    model_override=model_override, cancel=cancel,
                 )
                 if surface and on_surface is not None:
                     on_surface(surface)
@@ -230,6 +243,7 @@ def run_scan(
                     [f.model_dump(mode="json") for f in store.findings()],
                     run_dir=directory, config=cfg, sandbox=sandbox,
                     max_findings=triage_max, model_override=model_override,
+                    cancel=cancel,
                     on_verdict=_on_verdict,
                 )
                 applied = len(verdicts)

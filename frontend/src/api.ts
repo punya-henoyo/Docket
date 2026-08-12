@@ -51,6 +51,15 @@ export const getScan = (id: string) => req<ScanState>(`/api/scan/${id}`);
 export const getRun = (runName: string) =>
   req<ScanState>(`/api/run/${encodeURIComponent(runName)}`);
 
+/** Ask the running scan to stop. 202 means "asked", not "stopped": the scan halts at
+ *  its next checkpoint, which is between scanners or between triage agents. */
+export const cancelScan = (id?: string) =>
+  req<{ id: string; status: string }>("/api/scan/cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(id ? { id } : {}),
+  });
+
 export const startScan = (repo: string, ref?: string, triageMax = 0, recon = false) =>
   req<{ id: string; status: string }>("/api/scan", {
     method: "POST",
@@ -67,5 +76,5 @@ export const AUTH_START = "/auth/start";
 
 /** Download URL for a finished run. The server sets Content-Disposition, so a plain
  *  link saves the file rather than rendering it in a tab. */
-export const downloadUrl = (runName: string, fmt: "json" | "sarif" | "md") =>
+export const downloadUrl = (runName: string, fmt: "json" | "sarif" | "md" | "brief") =>
   `/api/download/${encodeURIComponent(runName)}.${fmt}`;

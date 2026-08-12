@@ -20,6 +20,7 @@ from typing import Any
 from docket.agents.factory import build_agent
 from docket.agents.prompts.triage import build_triage_task
 from docket.config.settings import Config
+from docket.core.cancel import NEVER, CancelToken, ScanCancelled
 from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.report.models import Severity
@@ -85,6 +86,7 @@ def triage_findings(
     max_turns: int = DEFAULT_MAX_TURNS,
     on_verdict: Callable[[str, dict[str, Any]], None] | None = None,
     model_override: Callable[[str], Any] | None = None,
+    cancel: CancelToken = NEVER,
 ) -> dict[str, dict[str, Any]]:
     """{finding_id: verdict} for the findings triaged. Never raises: a triage pass is
     an enrichment, and losing the whole scan because one agent failed would be a bad
@@ -100,6 +102,10 @@ def triage_findings(
     verdicts: dict[str, dict[str, Any]] = {}
 
     for index, finding in enumerate(order_for_triage(findings)[:max_findings]):
+        # Before each agent, because each one costs real money. A stop requested at
+        # finding 12 of 50 must not pay for the other 38.
+        if cancel.cancelled:
+            break
         finding_id = str(finding.get("id") or index)
         context = ScanContext(
             target_url="",  # triage never touches the target; it reads the repository
@@ -120,6 +126,11 @@ def triage_findings(
             output = asyncio.run(run_agent_loop(
                 agent, context, build_triage_task(finding), max_turns=max_turns,
             ))
+        except ScanCancelled:
+            # Must escape the broad handler below. Caught there it would read as
+            # "triage failed" and the loop would continue to the next finding, still
+            # spending money on a scan the operator already stopped.
+            break
         except Exception as exc:  # noqa: BLE001 — enrichment must not sink the scan
             output = {"summary": f"triage failed: {exc}", "success": False}
 

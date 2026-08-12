@@ -127,7 +127,10 @@ export default function App() {
   // Poll an in-flight scan. Stops as soon as it reaches a terminal state, so a
   // finished scan is not still being polled in the background.
   useEffect(() => {
-    if (!scan || scan.status === "done" || scan.status === "error") return;
+    // "cancelled" is terminal too. Without it the console polls a stopped scan
+    // forever, and the tab keeps showing "live" over a run that ended.
+    if (!scan || scan.status === "done" || scan.status === "error" ||
+        scan.status === "cancelled") return;
     const timer = setTimeout(async () => {
       try {
         const next = await api.getScan(scan.id);
@@ -138,7 +141,11 @@ export default function App() {
         // Recovered: polling is a repeated action, so a stale failure banner from an
         // earlier tick is now a lie about the current state.
         setScanError(null);
-        if (next.status === "done") api.getRuns().then(setRuns).catch(() => {});
+        // A cancelled scan writes a partial report too, so the run list needs
+        // refreshing either way.
+        if (next.status === "done" || next.status === "cancelled") {
+          api.getRuns().then(setRuns).catch(() => {});
+        }
       } catch (err) {
         setScanError(err instanceof ApiError ? err.message : String(err));
         setPollTick((t) => t + 1);  // keep polling; the run is still going

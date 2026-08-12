@@ -122,6 +122,13 @@ class Finding(BaseModel):
     # Published by a scoring body, not computed here. None for semgrep matches,
     # which have no CVSS and must not be given an invented one.
     cvss: Cvss | None = None
+    # Set by merge_static() when several rules matched one line and were folded into
+    # this finding. Empty on an unmerged finding.
+    merged_rules: list[str] = Field(default_factory=list)
+    # Only populated when the merged rules DISAGREED about the weakness. Semgrep's
+    # CWE metadata is wrong often enough that a single confident CWE on a folded
+    # finding would be a claim docket cannot support.
+    merged_cwes: list[str] = Field(default_factory=list)
 
     @property
     def dedupe_key(self) -> str:

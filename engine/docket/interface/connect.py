@@ -37,6 +37,7 @@ at real customers as-is.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
@@ -55,6 +56,8 @@ from typing import Any
 
 from docket.tools.scanners import read_coverage
 from docket.utils.resource_paths import frontend_dir
+
+logger = logging.getLogger(__name__)
 
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN = "https://github.com/login/oauth/access_token"
@@ -103,6 +106,9 @@ class Session:
     login: str | None = None
     oauth_state: str | None = None
     scans: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Kept out of `scans` deliberately: that dict is serialised straight to the
+    # browser and a threading.Event is not JSON.
+    cancels: dict[str, Any] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -243,7 +249,7 @@ def fetch_source(full_name: str, token: str, dest: Path, ref: str | None = None)
 
 
 def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = None,
-                  triage_max: int = 0, recon: bool = False) -> None:
+                  triage_max: int = 0, recon: bool = False, cancel: Any = None) -> None:
     """Fetch + scan, updating SESSION.scans[scan_id] as it goes. Never raises: the
     status dict is how the browser learns something failed.
 
@@ -251,7 +257,10 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
     end, so the console's radar fills in during the run instead of staying empty and
     then jumping. Sequential scanners make that ordering exact.
     """
+    from docket.core.cancel import NEVER, ScanCancelled
     from docket.report.dedupe import FindingStore
+
+    cancel = cancel if cancel is not None else NEVER
 
     def set_state(**fields: Any) -> None:
         with SESSION.lock:
@@ -299,6 +308,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
         stage("fetch", "running")
         source = fetch_source(full_name, token, workdir, ref)
         stage("fetch", "done")
+        cancel.check()
 
         set_state(status="scanning")
         from docket.core.runner import run_scan
@@ -316,6 +326,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             on_progress=snapshot,
             recon=recon,
             on_surface=lambda surface: set_state(surface=surface),
+            cancel=cancel,
         )
         # Persist the same artifacts `docket scan` writes, so a console scan is
         # visible to `docket view`, to the run-history panel, and to anything reading
@@ -350,6 +361,35 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             output_tokens=totals.get("output_tokens", 0),
             budget_usd=cfg_budget,
         )
+    except ScanCancelled as exc:
+        # A deliberate stop is not a failure, and the findings already produced are
+        # real. Write them out and mark the stage that was interrupted "skipped"
+        # rather than "error" — calling an operator's own stop an error trains people
+        # to ignore errors.
+        with SESSION.lock:
+            stages = SESSION.scans[scan_id]["stages"]
+            for name, value in stages.items():
+                if value in ("running", "pending", ""):
+                    stages[name] = "skipped"
+        try:
+            from docket.core.paths import run_path
+            from docket.report.writer import write_report
+
+            write_report(
+                store, run_path(run_name), run_name=run_name,
+                target=f"github:{full_name}" + (f"@{ref}" if ref else ""),
+                coverage=read_coverage(run_path(run_name) / "sandbox"),
+                surface=SESSION.scans[scan_id].get("surface"),
+                summary=f"Stopped by the operator after {len(store)} finding(s). "
+                        "This run is incomplete: what is here was measured, what is "
+                        "missing was never looked at.",
+                cost_usd=0.0, agents_spawned=0, success=False,
+            )
+        except Exception:  # noqa: BLE001 — a failed save must not mask the cancel
+            logger.warning("could not write the partial report for %s", run_name)
+        snapshot()
+        set_state(status="cancelled", error=str(exc),
+                  elapsed_sec=round(time.time() - started, 1))
     except Exception as exc:
         # Mark whichever stage was actually in flight. Blaming "fetch" unconditionally
         # reported a post-scan crash as a download failure, next to two scanners that
@@ -364,6 +404,8 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
     finally:
         # The customer's source never outlives the scan.
         shutil.rmtree(workdir, ignore_errors=True)
+        with SESSION.lock:
+            SESSION.cancels.pop(scan_id, None)
 
 
 def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
@@ -459,7 +501,59 @@ DOWNLOAD_FORMATS = {
     "json": ("report.json", "application/json"),
     "sarif": ("report.sarif", "application/json"),
     "md": (None, "text/markdown; charset=utf-8"),  # rendered, not stored
+    # Written by a model, so CACHED on disk after the first request: a download button
+    # must not bill the operator every time someone clicks it.
+    "brief": ("brief.html", "text/html; charset=utf-8"),
 }
+
+
+def _download_brief(run_name: str) -> tuple[int, bytes, str, str]:
+    """The LLM-written executive brief. Generated once, then served from disk.
+
+    A failure here returns the reason as plain text rather than a broken download: the
+    brief is a convenience over report.json, and the deterministic report.md is always
+    available and always correct. Never silently substitute one for the other — a
+    reader who asked for the brief must know they did not get it.
+    """
+    from docket.core.paths import runs_root
+
+    if not _RUN_NAME.match(run_name):
+        return 400, b"bad run name", "text/plain; charset=utf-8", "error.txt"
+    root = runs_root().resolve()
+    run_dir = (root / run_name).resolve()
+    if not str(run_dir).startswith(str(root)) or not (run_dir / "report.json").is_file():
+        return 404, b"no such run", "text/plain; charset=utf-8", "error.txt"
+
+    cached = run_dir / "brief.html"
+    if cached.is_file():
+        return 200, cached.read_bytes(), "text/html; charset=utf-8", f"{run_name}-brief.html"
+
+    try:
+        report = json.loads((run_dir / "report.json").read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return 500, f"unreadable report: {exc}".encode(), "text/plain; charset=utf-8", "error.txt"
+
+    try:
+        from docket.config.settings import Config
+
+        config = Config.from_env()
+    except Exception as exc:  # noqa: BLE001
+        return 400, (f"An executive brief needs a model configured: {exc}\n"
+                     "The .md and .json reports need no model and are ready now."
+                     ).encode(), "text/plain; charset=utf-8", "error.txt"
+
+    from docket.report.narrative import generate
+
+    html, note = generate(report, config)
+    if html is None:
+        return 502, (f"No brief was produced: {note}\n"
+                     "Nothing was written rather than something unverified."
+                     ).encode(), "text/plain; charset=utf-8", "error.txt"
+    try:
+        cached.write_text(html)
+    except OSError:
+        logger.warning("could not cache the brief for %s", run_name)
+    return 200, html.encode(), "text/html; charset=utf-8", f"{run_name}-brief.html"
 
 
 def download_run(run_name: str, fmt: str) -> tuple[int, bytes, str, str]:
@@ -473,6 +567,8 @@ def download_run(run_name: str, fmt: str) -> tuple[int, bytes, str, str]:
     from docket.core.paths import runs_root
     from docket.report.markdown import render_markdown
 
+    if fmt == "brief":
+        return _download_brief(run_name)
     if fmt not in DOWNLOAD_FORMATS:
         return 400, b'{"error":"format must be json, sarif or md"}', "application/json", ""
     if not run_name or not _RUN_NAME.match(run_name):
@@ -589,10 +685,13 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 if status == 200 and filename:
-                    # attachment, not inline: a report the browser renders in-tab is a
-                    # page you then have to save by hand.
+                    # Machine formats download; the brief opens in the tab. It is a
+                    # document meant to be READ, and print-to-PDF from the browser is
+                    # how it becomes something you send on — forcing a save first just
+                    # adds a step before every one of those.
+                    disposition = "inline" if fmt == "brief" else "attachment"
                     self.send_header("Content-Disposition",
-                                     f'attachment; filename="{filename}"')
+                                     f'{disposition}; filename="{filename}"')
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
@@ -629,7 +728,11 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self._static("/index.html")
 
         def do_POST(self) -> None:  # noqa: N802 — stdlib naming
-            if urllib.parse.urlparse(self.path).path != "/api/scan":
+            post_path = urllib.parse.urlparse(self.path).path
+            if post_path == "/api/scan/cancel":
+                self._cancel_scan()
+                return
+            if post_path != "/api/scan":
                 self._send(404, b"not found", "text/plain")
                 return
             if SESSION.token is None:
@@ -673,14 +776,52 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                     self._json(400, {"error": f"AI agents need a model configured: {exc}"})
                     return
 
+            from docket.core.cancel import CancelToken
+
             scan_id = secrets.token_hex(8)
+            token = CancelToken()
             with SESSION.lock:
                 SESSION.scans[scan_id] = new_scan_state(scan_id, full_name, ref, triage_max, recon)
+                SESSION.cancels[scan_id] = token
             threading.Thread(
-                target=run_repo_scan, args=(full_name, SESSION.token, scan_id, ref, triage_max, recon),
+                target=run_repo_scan,
+                args=(full_name, SESSION.token, scan_id, ref, triage_max, recon, token),
                 name=f"docket-scan-{scan_id}", daemon=True,
             ).start()
             self._json(202, {"id": scan_id, "status": "queued"})
+
+        def _cancel_scan(self) -> None:
+            """Ask the running scan to stop at its next checkpoint.
+
+            202, not 200: the scan has not stopped when this returns, it has been
+            asked to. Reporting a stop that has not happened yet is how a UI ends up
+            showing "stopped" over a scanner that is still burning CPU.
+            """
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                body = {}
+            scan_id = str(body.get("id", "")).strip()
+            with SESSION.lock:
+                # No id means "whatever is running", which is what the Stop button
+                # sends: the console only ever shows one live scan.
+                if not scan_id:
+                    scan_id = next(
+                        (k for k, v in SESSION.scans.items()
+                         if v.get("status") in ("queued", "fetching", "scanning")),
+                        "",
+                    )
+                token = SESSION.cancels.get(scan_id)
+                state = SESSION.scans.get(scan_id)
+            if token is None or state is None:
+                self._json(404, {"error": "no scan is running"})
+                return
+            if state.get("status") in ("done", "error", "cancelled"):
+                self._json(409, {"error": f"scan already {state['status']}"})
+                return
+            token.cancel("stopped by the operator")
+            self._json(202, {"id": scan_id, "status": "cancelling"})
 
         # -- handlers --------------------------------------------------------------
 
@@ -768,6 +909,14 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
 
 
 def start_server(port: int = 8765) -> ThreadingHTTPServer:
+    # Must happen on the main thread: signal.signal() refuses anywhere else, and a
+    # console killed mid-scan is exactly when the sandbox needs reaping.
+    try:
+        from docket.runtime.sandbox import install_cleanup
+
+        install_cleanup()
+    except Exception:  # noqa: BLE001 — no docker is not a reason to refuse to serve
+        logger.debug("sandbox cleanup hook not installed", exc_info=True)
     """Loopback only. The OAuth client secret lives in this process; binding it to a
     public interface would expose an unauthenticated scan trigger to the network."""
     return ThreadingHTTPServer(("127.0.0.1", port), make_handler())
@@ -884,6 +1033,42 @@ def demo() -> None:
             raise AssertionError("unknown API path must 404")
         except urllib.error.HTTPError as exc:
             assert exc.code == 404, exc.code
+
+        # ── cancel ────────────────────────────────────────────────────────────
+        def post(path: str, payload: dict) -> tuple[int, dict]:
+            request = urllib.request.Request(
+                base + path, data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return response.status, json.loads(response.read() or b"{}")
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read() or b"{}")
+
+        # Nothing running: a 404, never a cheerful 202 for a stop that stopped nothing.
+        code, payload = post("/api/scan/cancel", {})
+        assert code == 404, (code, payload)
+
+        from docket.core.cancel import CancelToken
+
+        SESSION.scans["fake"] = new_scan_state("fake", "o/r")
+        SESSION.scans["fake"]["status"] = "scanning"
+        SESSION.cancels["fake"] = CancelToken()
+        try:
+            # No id means "whatever is running", which is what the Stop button sends.
+            code, payload = post("/api/scan/cancel", {})
+            assert code == 202 and payload["id"] == "fake", (code, payload)
+            assert SESSION.cancels["fake"].cancelled
+            # 202 is "asked to stop", not "stopped" — the status must NOT have been
+            # flipped by the handler, only by the scan thread reaching a checkpoint.
+            assert SESSION.scans["fake"]["status"] == "scanning", "handler must not lie"
+
+            SESSION.scans["fake"]["status"] = "done"
+            code, _ = post("/api/scan/cancel", {"id": "fake"})
+            assert code == 409, code  # cannot stop what already finished
+        finally:
+            SESSION.scans.pop("fake", None)
+            SESSION.cancels.pop("fake", None)
 
         runs = json.loads(urllib.request.urlopen(base + "/api/runs", timeout=5).read())
         assert isinstance(runs.get("runs"), list), runs
