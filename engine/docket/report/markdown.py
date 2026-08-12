@@ -78,6 +78,15 @@ def _finding_block(finding: dict[str, Any], index: int) -> list[str]:
     ]
     if finding.get("cwe"):
         lines.append(f"| Weakness | {finding['cwe']} |")
+    cvss = finding.get("cvss")
+    if cvss:
+        # Source and vector travel with the number. Scoring bodies disagree, and a bare
+        # "8.8" in a report that outlives this conversation is not checkable.
+        vector = cvss.get("vector") or "no vector published"
+        lines.append(
+            f"| CVSS | **{cvss.get('score')}** (v{cvss.get('version','?')}, "
+            f"{str(cvss.get('source','?')).upper()}) — `{vector}` |"
+        )
     lines += [
         f"| Location | `{_location(finding)}` |",
         f"| Found by | {finding.get('discovered_by', '?')} |",
@@ -142,6 +151,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         "- Findings marked `semgrep` or `trivy` are **pattern and advisory matches**, "
         "not exploited vulnerabilities. They say a line looks dangerous or a dependency "
         "has a published CVE.",
+        "- A **CVSS** score is published by a scoring body (NVD, GHSA, a distro vendor) "
+        "or by a nuclei template, and rates the vulnerability CLASS. It does not know "
+        "whether this codebase reaches the vulnerable code. Findings with no CVSS were "
+        "not scored by anyone — that is not a score of zero.",
         "- An agent **triage** verdict is reasoning over source about whether untrusted "
         "input can reach the line. Nothing was executed.",
         "- Nothing here was proven by exploitation unless a finding explicitly carries a "
@@ -193,6 +206,8 @@ def demo() -> None:
              "cwe": "CWE-89", "discovered_by": "semgrep",
              "location": {"source_file": "/work/source/app.py:42"},
              "description": "raw query", "poc": {"request": "db.execute(q)"},
+             "cvss": {"score": 8.8, "version": "3.1", "source": "nvd",
+                      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"},
              "triage": {"verdict": "exploitable", "reasoning": "reached from /login",
                         "evidence": "app.py:30"}},
             {"title": "debug on", "severity": "medium", "rule_id": "semgrep/debug",
@@ -215,6 +230,12 @@ def demo() -> None:
     # The mount prefix is an implementation detail, never a location a reader sees.
     assert "/work/source/" not in out
     assert "$0.0100" in out
+    # A CVSS number must never appear without its source and vector.
+    assert "**8.8** (v3.1, NVD)" in out, out[out.index("| CVSS"):][:120]
+    assert "CVSS:3.1/AV:N/AC:L" in out
+    assert "rates the vulnerability CLASS" in out
+    # The unscored finding gets no CVSS row at all, rather than a zero.
+    assert out.count("| CVSS |") == 1, "only the scored finding may show a CVSS row"
 
     # No coverage recorded is stated, not silently omitted.
     bare = render_markdown({"findings": [], "finding_count": 0})

@@ -29,6 +29,18 @@ export interface Triage {
   evidence: string;
 }
 
+/** A CVSS score docket RECEIVED, never one it computed.
+ *
+ *  Present only for trivy (CVE advisories) and nuclei (template classification).
+ *  semgrep matches carry none, and are shown with no score rather than an invented
+ *  one — on screen a guessed 9.8 is indistinguishable from a measured one. */
+export interface Cvss {
+  score: number;
+  vector: string | null;
+  version: string;
+  source: string;
+}
+
 export interface Finding {
   id: string;
   rule_id: string;
@@ -44,6 +56,8 @@ export interface Finding {
   corroborating_evidence: PoC[];
   /** null means nobody looked, which differs from looked-and-unsure. */
   triage: Triage | null;
+  /** null means no scoring body published one, NOT a score of zero. */
+  cvss?: Cvss | null;
 }
 
 export interface EntryPoint {

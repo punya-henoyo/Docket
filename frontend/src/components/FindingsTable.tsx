@@ -1,5 +1,5 @@
 import type { Finding } from "../types";
-import { findingLocation, ruleLeaf, SevTag, VerdictTag } from "./ui";
+import { CvssBadge, findingLocation, ruleLeaf, SevTag, VerdictTag } from "./ui";
 
 export function FindingsTable({
   findings,
@@ -17,6 +17,7 @@ export function FindingsTable({
           <tr>
             <th>Rule</th>
             <th>Sev</th>
+            <th>CVSS</th>
             <th>Location</th>
             <th>Found by</th>
             <th>Triage</th>
@@ -40,6 +41,7 @@ export function FindingsTable({
               <td>
                 <SevTag severity={finding.severity} />
               </td>
+              <td><CvssBadge cvss={finding.cvss} size="sm" /></td>
               <td className="path">{findingLocation(finding)}</td>
               <td>
                 <span className="chip">{finding.discovered_by}</span>
@@ -58,8 +60,26 @@ export function FindingDetail({ finding }: { finding: Finding }) {
     <>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "baseline" }}>
         <h2 style={{ font: "600 15px var(--sans)" }}>{finding.title}</h2>
-        <SevTag severity={finding.severity} />
+        <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <CvssBadge cvss={finding.cvss} />
+          <SevTag severity={finding.severity} />
+        </span>
       </div>
+
+      {/* The vector, spelled out. A score with no vector is a number to take on faith;
+          with it, anyone can check how it was reached — and see that it rates the
+          vulnerability class, not this repository's exposure to it. */}
+      {finding.cvss && (
+        <div className="note" style={{ fontSize: 12 }}>
+          CVSS v{finding.cvss.version} <b style={{ color: "var(--ink-2)" }}>
+          {finding.cvss.score.toFixed(1)}</b> per {finding.cvss.source.toUpperCase()}
+          {finding.cvss.vector
+            ? <> · <span className="mono" style={{ fontSize: 11 }}>{finding.cvss.vector}</span></>
+            : " · no vector published"}
+          <div>Rates the vulnerability class. Whether this codebase reaches it is the
+            triage question below.</div>
+        </div>
+      )}
       <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)", wordBreak: "break-all" }}>
         {finding.rule_id}
         {finding.cwe ? ` · ${finding.cwe}` : ""} · found by {finding.discovered_by}

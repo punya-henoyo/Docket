@@ -3,7 +3,7 @@ import type { Finding, RunSummary, ScanState, Severity } from "../types";
 import { SEVERITIES } from "../types";
 import { cweLabel } from "../cwe";
 import { AreaChart, SeverityDonut, StackedRuns } from "../components/charts";
-import { Empty, findingLocation, Panel, ruleLeaf, SevTag } from "../components/ui";
+import { CvssBadge, Empty, findingLocation, Panel, ruleLeaf, SevTag } from "../components/ui";
 
 const SEV_COLOR: Record<Severity, string> = {
   critical: "var(--crit)",
@@ -145,6 +145,7 @@ export function Overview({
                       {findingLocation(f)}{f.cwe ? ` · ${cweLabel(f.cwe)}` : ""}
                     </span>
                   </span>
+                  <CvssBadge cvss={f.cvss} size="sm" />
                   <SevTag severity={f.severity} />
                 </button>
               ))}

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from docket.report.models import Finding, Location, PoC, Severity
+from docket.report.models import Cvss, Finding, Location, PoC, Severity
 
 _METHOD_RE = re.compile(r"^([A-Z]+)\s+\S+\s+HTTP/")
 _EVIDENCE_CHARS = 4000  # generous single-response cap; the verdict is what matters
@@ -45,6 +45,24 @@ def _severity(raw: str | None) -> Severity:
 def _cwe(info: dict[str, Any]) -> str | None:
     ids = (info.get("classification") or {}).get("cwe-id") or []
     return ids[0].upper() if ids else None
+
+
+def _cvss(info: dict[str, Any]) -> Cvss | None:
+    """The template author's own CVSS classification, when the template carries one.
+
+    Attributed to the template rather than to a scoring body, because that is what it
+    is: a community template's assessment, not an NVD record. Templates commonly ship
+    a score with no vector, so the vector stays None rather than being reconstructed."""
+    classification = (info.get("classification") or {})
+    raw = classification.get("cvss-score")
+    if not isinstance(raw, (int, float)) or not 0.0 <= float(raw) <= 10.0:
+        return None
+    vector = classification.get("cvss-metrics")
+    version = "3.1"
+    if isinstance(vector, str) and vector.startswith("CVSS:"):
+        version = vector.split("/")[0].removeprefix("CVSS:") or version
+    return Cvss(score=float(raw), vector=vector if isinstance(vector, str) else None,
+                version=version, source="nuclei-template")
 
 
 def parse_nuclei_jsonl(text: str) -> list[Finding]:
@@ -87,6 +105,7 @@ def parse_nuclei_jsonl(text: str) -> list[Finding]:
                 response=raw_response[:_EVIDENCE_CHARS],
             ),
             discovered_by="nuclei",
+            cvss=_cvss(info),
         ))
     return findings
 
@@ -153,6 +172,26 @@ def demo() -> None:
     assert f.location.method == "GET" and f.location.path == "/.git/config"
     assert f.discovered_by == "nuclei"
     assert "core" in f.poc.response
+    # ── CVSS from the template's own classification ────────────────────────
+    scored = json.dumps({
+        "template-id": "CVE-2021-44228", "matched-at": "http://t/api",
+        "request": "GET /api HTTP/1.1", "response": "HTTP/1.1 200 OK",
+        "info": {"name": "Log4Shell", "severity": "critical", "classification": {
+            "cwe-id": ["CWE-502"], "cvss-score": 10.0,
+            "cvss-metrics": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"}},
+    })
+    f = parse_nuclei_jsonl(scored)[0]
+    assert f.cvss.score == 10.0 and f.cvss.source == "nuclei-template"
+    assert f.cvss.rating == "critical" and f.cvss.version == "3.1"
+
+    # A template with no cvss-score gets no score. Severity alone is not a CVSS.
+    plain = json.dumps({
+        "template-id": "tech-detect", "matched-at": "http://t/",
+        "request": "GET / HTTP/1.1", "response": "HTTP/1.1 200 OK",
+        "info": {"name": "Tech", "severity": "high"},
+    })
+    assert parse_nuclei_jsonl(plain)[0].cvss is None
+
     print("scanners.nuclei: ok")
 
 

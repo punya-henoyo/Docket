@@ -66,6 +66,19 @@ def _location(finding: Finding) -> dict:
     return {"physicalLocation": {"artifactLocation": {"uri": route}}}
 
 
+def _security_severity(finding: Finding) -> str:
+    """The number GitHub's code-scanning badge ranks by.
+
+    A published CVSS wins over our bucketed approximation whenever one exists: the
+    bucket is derived from a scanner's severity LABEL, and those labels disagree with
+    CVSS often. Real example from trivy output: CVE-2024-56201 is labelled MEDIUM by
+    the distro advisory but scores 8.8 (high) at NVD. Ranking by the label buries it.
+    """
+    if finding.cvss:
+        return f"{finding.cvss.score:.1f}"
+    return _SECURITY_SEVERITY[finding.severity]
+
+
 def _rule(finding: Finding) -> dict:
     tags = ["security"]
     tag = _cwe_tag(finding.cwe)
@@ -78,7 +91,7 @@ def _rule(finding: Finding) -> dict:
         "fullDescription": {"text": finding.description},
         "properties": {
             "tags": tags,
-            "security-severity": _SECURITY_SEVERITY[finding.severity],
+            "security-severity": _security_severity(finding),
         },
     }
 
@@ -113,8 +126,14 @@ def to_sarif(findings: list[Finding], *, target: str | None = None) -> dict:
             # a fingerprint present in run A and absent in run B is a closed finding.
             "partialFingerprints": {"docketDedupeKey/v1": finding.dedupe_key},
             "properties": {
-                "security-severity": _SECURITY_SEVERITY[finding.severity],
+                "security-severity": _security_severity(finding),
                 "docket-severity": finding.severity.value,
+                # Attribution travels with the number. Consumers that show a score
+                # without saying who published it cannot be checked.
+                **({"cvss-score": finding.cvss.score,
+                    "cvss-vector": finding.cvss.vector or "",
+                    "cvss-version": finding.cvss.version,
+                    "cvss-source": finding.cvss.source} if finding.cvss else {}),
                 "discovered-by": finding.discovered_by,
                 "http-method": finding.location.method,
                 "route": finding.location.path,

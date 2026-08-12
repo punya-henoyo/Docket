@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Finding, Severity } from "../types";
+import type { Cvss, Finding, Severity } from "../types";
 
 export function Panel({
   title,
@@ -63,6 +63,46 @@ export function VerdictTag({ verdict }: { verdict: string }) {
       style={{ color: style.color, borderColor: style.color }}
     >
       {style.label}
+    </span>
+  );
+}
+
+/** CVSS band colours, from the v3.1 spec's qualitative severity ratings (section 5).
+ *  Deliberately the same palette as scanner severity: two scales that disagree about
+ *  the same finding should look comparable, so the disagreement is visible. */
+function cvssTone(score: number): string {
+  if (score >= 9) return "var(--crit)";
+  if (score >= 7) return "var(--high)";
+  if (score >= 4) return "var(--med)";
+  return "var(--low)";
+}
+
+/** The published CVSS, attributed. Renders nothing when there is no score.
+ *
+ *  An absent score is left blank rather than shown as 0.0: in CVSS, 0.0 is an
+ *  affirmative claim that a vulnerability has no impact, which is the opposite of
+ *  "nobody scored this". */
+export function CvssBadge({ cvss, size = "md" }: { cvss?: Cvss | null; size?: "sm" | "md" }) {
+  if (!cvss) return null;
+  const tone = cvssTone(cvss.score);
+  return (
+    <span
+      title={`CVSS v${cvss.version} ${cvss.score.toFixed(1)} per ${cvss.source.toUpperCase()}`
+             + (cvss.vector ? `\n${cvss.vector}` : "\nNo vector published.")
+             + "\nRates the vulnerability class, not this codebase's exposure to it."}
+      className="num"
+      style={{
+        font: `600 ${size === "sm" ? 11.5 : 12.5}px var(--sans)`,
+        color: tone,
+        background: "color-mix(in srgb, currentColor 12%, transparent)",
+        border: "1px solid color-mix(in srgb, currentColor 28%, transparent)",
+        borderRadius: 6,
+        padding: size === "sm" ? "1px 6px" : "2px 7px",
+        whiteSpace: "nowrap",
+        flex: "none",
+      }}
+    >
+      {cvss.score.toFixed(1)}
     </span>
   );
 }

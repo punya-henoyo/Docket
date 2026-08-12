@@ -65,6 +65,44 @@ class Triage(BaseModel):
     evidence: str  # file:line references the agent actually read
 
 
+class Cvss(BaseModel):
+    """A CVSS score docket RECEIVED. Never one docket computed.
+
+    Scores here come from a scoring body (NVD, GHSA, a distro vendor) via trivy, or
+    from a nuclei template's own classification. Docket does not derive CVSS for
+    semgrep matches and must not: a CVSS vector encodes attack vector, privileges
+    required, user interaction and CIA impact, none of which a pattern match knows.
+    A guessed 9.8 is indistinguishable on screen from a measured one, so the guess is
+    simply not made and the field stays None.
+
+    `source` and `vector` are carried alongside the number on purpose. Scoring bodies
+    disagree — CVE-2024-56201 is 8.8 from NVD and 7.3 from Red Hat, with different
+    vectors — so a bare number with no attribution is not auditable.
+
+    IMPORTANT: this rates the vulnerability CLASS, not this codebase's exposure to it.
+    A 9.8 in a dependency the application never calls is still published as 9.8.
+    Finding.triage is the counterweight; the two answer different questions.
+    """
+
+    score: float = Field(ge=0.0, le=10.0)
+    vector: str | None = None  # "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:N/A:N"
+    version: str = "3.1"  # "3.1" | "3.0" | "4.0"
+    source: str  # "nvd" | "ghsa" | "redhat" | "nuclei-template"
+
+    @property
+    def rating(self) -> str:
+        """CVSS v3.1 qualitative severity bands (spec section 5)."""
+        if self.score == 0:
+            return "none"
+        if self.score < 4.0:
+            return "low"
+        if self.score < 7.0:
+            return "medium"
+        if self.score < 9.0:
+            return "high"
+        return "critical"
+
+
 class Finding(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)  # internal only, not report-facing
     rule_id: str  # "sql-injection" | "command-injection" | "reflected-xss"
@@ -81,6 +119,9 @@ class Finding(BaseModel):
     # Set by the triage pass (core/triage.py) for static findings. None means
     # nobody looked, which is different from "looked and was unsure" (uncertain).
     triage: Triage | None = None
+    # Published by a scoring body, not computed here. None for semgrep matches,
+    # which have no CVSS and must not be given an invented one.
+    cvss: Cvss | None = None
 
     @property
     def dedupe_key(self) -> str:
