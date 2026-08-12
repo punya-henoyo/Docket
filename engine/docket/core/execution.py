@@ -56,6 +56,37 @@ class ScanContext:
 _TERMINAL_EXCEPTIONS = (BudgetExceeded, MaxTurnsExceeded, UserError)
 
 
+SALVAGE_INSTRUCTION = (
+    "You have run out of turns. Do not read, search or think any further — every "
+    "additional tool call is refused from here.\n\n"
+    "Call your finish tool NOW, using only what is already in this conversation. "
+    "Report exactly what you established and nothing you did not: an incomplete "
+    "result that says what it covered is useful, an invented one is worse than "
+    "silence. State what you did not get to in the notes."
+)
+
+
+async def _salvage(agent: Any, context: "ScanContext", session: Any,
+                   run_config: Any) -> dict | None:
+    """One last turn whose only job is to call the finish tool. None if that fails.
+
+    Deliberately max_turns=2, not 1: the SDK counts the finish tool call itself as a
+    turn, so a ceiling of 1 raises MaxTurnsExceeded again before the result lands.
+    """
+    try:
+        result = await Runner.run(
+            agent, SALVAGE_INSTRUCTION, context=context, max_turns=2,
+            hooks=BudgetHooks(max_turns=2), session=session, run_config=run_config,
+        )
+    except Exception:  # noqa: BLE001 — a failed rescue must not mask the original stop
+        logger.debug("salvage turn failed", exc_info=True)
+        return None
+    output = context.final_result
+    if not isinstance(output, dict):
+        output = getattr(result, "final_output", None)
+    return output if isinstance(output, dict) else None
+
+
 def _is_context_overflow(exc: BaseException) -> bool:
     try:
         from litellm.exceptions import ContextWindowExceededError
@@ -119,6 +150,20 @@ async def run_agent_loop(
                 # ended some other way as failed rather than silently "successful".
                 output = {"summary": str(output), "findings": [], "success": False}
             return output
+        except MaxTurnsExceeded as exc:
+            # Hitting the ceiling used to discard everything. Measured on a real
+            # codebase: recon spent all 24 turns reading 29 files and recorded NO
+            # map at all — the full budget spent for nothing, which is strictly worse
+            # than a shallow map produced cheaply.
+            #
+            # The session still holds every file it read, so one more tightly-scoped
+            # turn can usually convert that reading into a result. Costs one turn to
+            # avoid losing all of them.
+            salvaged = await _salvage(agent, context, session, run_config)
+            if salvaged is not None:
+                logger.info("recovered a result on the salvage turn after %s", type(exc).__name__)
+                return salvaged
+            return {"summary": f"stopped: {type(exc).__name__}: {exc}", "findings": [], "success": False}
         except _TERMINAL_EXCEPTIONS as exc:
             # Report it as a failed-but-clean result rather than raising: findings
             # already registered by this agent are on disk and in the FindingStore,

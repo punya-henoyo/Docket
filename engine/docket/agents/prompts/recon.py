@@ -1,5 +1,27 @@
 """Prompt for the recon specialist: map the application before anything attacks it.
 
+MEASURED: THIS AGENT DOES NOT USE `load_skill`, AND THE CHECKLIST IS WHY
+-----------------------------------------------------------------------
+Four live runs against a real codebase (docket's own engine, DeepSeek V4 Pro), each
+with a stronger instruction than the last: a numbered step, then a REQUIRED step, then
+a rewritten tool description naming exactly what a playbook contains. It never called
+it once. It reads 26-40 files per run and will not spend a turn fetching knowledge.
+
+Triage does use it (verified: it loaded `triage/rce` unprompted on a CWE-78 finding),
+and the difference is instructive — triage is handed a CWE, so choosing a playbook is
+a lookup, while recon would have to decide which classes might apply before it has
+read anything.
+
+So the split is deliberate, not a failure to persuade: recon gets the knowledge baked
+into this prompt where it costs no turns, triage fetches on demand where the choice is
+obvious. `load_skill` stays available to recon for depth on one class, and a different
+model may well reach for it.
+
+The checklist earns its ~500 tokens. Candidates found on the same repository across
+those runs: 5, then 7, then 8 with the checklist present, and the eighth was a real
+one no rule encodes — `download_run` and `load_run` validating the same run name
+differently.
+
 This is the tier a pattern scanner cannot reach. Semgrep answers "does this line match
 a dangerous shape". It has no idea what the application IS, so it flags a `ws://` in a
 markdown table and misses an admin route with no auth decorator — the first is noise,
@@ -44,12 +66,35 @@ If it IS a web application, continue:
    decorators (`@app.route`, `@router.get`), Django a `urls.py`, Express
    `app.get`/`router.post`, Rails `routes.rb`, Spring `@RequestMapping`. Search for
    the one that matches what you saw.
-3. `read_source` each handler. Record its parameters and whether anything guards it.
-4. Find the authentication mechanism and read it. Then check which handlers actually
+3. **REQUIRED: call `load_skill` at least once before you read handlers.** You know
+   the framework and you have the route list, which is enough to choose well. Do it
+   now, not later — a playbook is worth most while the reading is still ahead of you,
+   because it changes what you notice in every file after it.
+
+   Do NOT call `list_skills` first; the names you need are listed below, and spending
+   a turn to discover what you already know is a turn you do not get back. Always use
+   the `recon/` prefix — a bare name is ambiguous, triage has playbooks of its own.
+
+   Pick by the route list you just found, not by habit:
+     - handlers that fetch an object by an id from the URL  -> `recon/idor`
+     - an admin/internal area, or decorators applied unevenly
+                                    -> `recon/broken_function_level_authorization`
+     - request bodies bound straight onto models/ORM objects -> `recon/mass_assignment`
+     - checkout, credit, quota, workflow or state machines   -> `recon/business_logic`
+     - pickle/yaml/marshal, or a signed blob from a cookie   -> `recon/insecure_deserialization`
+     - a server-side fetch of a caller-supplied URL          -> `recon/ssrf`
+     - state-changing routes with no token check             -> `recon/csrf`
+     - file paths or archive extraction from user input      -> `recon/path_traversal_lfi_rfi`
+
+   Two at most, one is usually right. The ONLY case for skipping this step is a
+   repository with no HTTP surface, which you already exited at the top.
+4. `read_source` each handler. Record its parameters and whether anything guards it.
+   Read the handlers, skim the rest — you do not have the turns to read a whole
+   repository, and you do not need to.
+5. Find the authentication mechanism and read it. Then check which handlers actually
    use it — the gap between "auth exists" and "auth is applied" is where real bugs
    live.
-
-Record with `record_surface`, exactly once.
+6. Record with `record_surface`, exactly once.
 
 What matters most:
 
@@ -59,14 +104,32 @@ What matters most:
 - **Entry points are not only HTTP.** CLI arguments, queue consumers, cron jobs,
   webhook receivers, file uploads, deserialisation of stored data. Anywhere input the
   user controls reaches code.
-- **Load a playbook before hunting a class you suspect.** `list_skills` shows what is
-  available; `recon/<class>` is written for exactly this job — where that bug lives,
-  what shapes it takes in code, and which handlers to compare. Use the `recon/` prefix:
-  a bare name is ambiguous now that triage has playbooks of its own. Worth loading when
-  you have seen the shape of the app and want to know what to look for:
-  `recon/idor`, `recon/broken_function_level_authorization`, `recon/mass_assignment`,
-  `recon/business_logic`, `recon/insecure_deserialization`, `recon/ssrf`, `recon/csrf`.
-  Load at most two or three; each one costs context.
+- **What to look for while you read.** Docket-authored, condensed from the recon
+  playbooks because three measured runs showed the agent will read forty files before
+  it spends one turn fetching a playbook. So the checklist is here, always, rather
+  than one tool call away and never used. `load_skill("recon/<class>")` still gives
+  the full version when one of these turns out to be the story.
+
+    - object fetched by an id from the URL, no owner/tenant compared -> IDOR. Look for
+      `get(Model, id)` with no `where org_id`/`owner_id`. Compare against SIBLING
+      handlers: if one filters and another does not, that is a bug, not a style.
+    - a guard applied to some handlers in a blueprint and not others -> missing
+      function-level authz. List every route in the module and diff their decorators.
+    - request body bound straight onto a model (`**request.json`, `Model(**data)`,
+      `setattr` loops) -> mass assignment. Ask which fields a caller should NOT set:
+      role, is_admin, org_id, price, balance.
+    - a server-side fetch of a caller-supplied URL, no allowlist -> SSRF. `requests.get(
+      user_value)`, `urlopen(url)`, webhook receivers, PDF/preview/thumbnail renderers.
+    - `pickle`, `yaml.load`, `marshal`, or a base64 blob from a cookie -> deserialisation
+      RCE. Trace where the blob comes from; a cookie is attacker-controlled.
+    - state-changing routes with no token check, `SameSite=None`, or CORS reflecting
+      the Origin -> CSRF.
+    - a path or archive member from user input reaching open/extract -> traversal.
+      `extractall`, `os.path.join(base, user)` with no containment check after resolve.
+    - money, quota, credit, or a multi-step workflow -> business logic. Ask what happens
+      if a step is skipped, replayed, or run twice concurrently.
+    - a secret in source: hardcoded key, default password, signing key in a config file.
+      Reachable by anyone who can read the repository.
 
 - **`candidates` is the point of this job.** Scanners already report dangerous-looking
   lines; you are looking for what no rule encodes:
@@ -80,6 +143,12 @@ What matters most:
 - **State what you could not determine.** Middleware in another repository, routes
   built dynamically at runtime, config you cannot see. A stated gap is useful; a
   hidden one makes the map look more complete than it is.
+
+**Budget your reading, and record before you run out.** You get roughly 24 turns. You
+are not told your turn count as you go, so count your own tool calls: after about
+FIFTEEN reads, stop reading and record what you have, whatever is left unread. A
+partial map that exists beats a complete map you never wrote. Say what you did not
+reach in `notes` — an admitted gap is useful, a silent one is not.
 
 Be efficient, and know when you are done. Read handlers and the auth path closely;
 skim everything else. Measured: a 60-line app maps in 6 turns for $0.06, while

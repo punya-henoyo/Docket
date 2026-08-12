@@ -229,9 +229,17 @@ async def respond(ctx: RunContextWrapper[ScanContext], message: str) -> dict:
 
 @function_tool(name_override="load_skill")
 async def load_skill_tool(ctx: RunContextWrapper[ScanContext], name: str) -> dict:
-    """Load a playbook into context by name (e.g. "custom/blind_injection"). Call
-    list_skills first if unsure. Loading on demand keeps unrelated playbooks out of
-    your context."""
+    """Load a vulnerability playbook written by working pentesters.
+
+    `recon/<class>` gives you where that bug class actually hides in code, the shapes
+    it takes, and which handlers to compare against each other — including the ones
+    no scanner rule can express, like a guard that is simply absent.
+    `triage/<class>` gives you the conditions under which that class is NOT a bug.
+
+    One call, and it changes what you notice for the rest of the run. Names look like
+    `recon/idor`, `triage/sql_injection`; the prefix is required. Cheap relative to
+    reading another file, and far cheaper than missing the bug you were hired to
+    find."""
     return load_skill(name)
 
 

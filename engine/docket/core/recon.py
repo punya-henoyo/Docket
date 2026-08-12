@@ -29,7 +29,13 @@ from docket.core.execution import ScanContext, run_agent_loop
 # because the prompt gave it no way to conclude "there are no routes here". The prompt
 # now decides repository type in the first two turns and exits early on non-web code,
 # which is the actual fix; this ceiling is the backstop for when that judgement fails.
-DEFAULT_MAX_TURNS = 15
+#
+# Raised 15 -> 24 after a real codebase (docket's own engine) burned all 15 turns on
+# 27 file reads and recorded NOTHING — the worst possible outcome, a full budget spent
+# for no map. 15 was tuned on a 60-line app and did not survive contact with a real
+# one. The prompt now also orders the agent to record the moment it sees a turn
+# warning, because a ceiling alone only decides how much you lose.
+DEFAULT_MAX_TURNS = 24
 MAX_HINTS = 20
 
 

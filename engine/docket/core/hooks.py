@@ -6,9 +6,12 @@ is out of budget. Implemented as SDK hooks rather than inside the model wrapper 
 they apply to ANY Model implementation — including the tests' ScriptedModel, which is
 what makes budget enforcement testable with no live provider.
 
-Also emits staged budget/turn warnings INTO the agent's own context. That is the
-point: an agent that knows it is at 85% of budget can wrap up and report what it has,
-whereas one that is simply cut off mid-thought loses that turn's work.
+Also emits staged budget/turn warnings — but to the LOGGER, not into the agent's
+context. That distinction matters and used to be stated backwards here: the agent
+never sees these lines, so a prompt telling it to "wrap up when you see [TIGHT]" is
+telling it to react to something that never arrives. The operator sees them; the
+model does not. What actually protects a run from being cut off mid-thought is the
+salvage turn in core/execution.py.
 """
 from __future__ import annotations
 
