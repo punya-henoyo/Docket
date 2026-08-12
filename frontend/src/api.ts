@@ -46,11 +46,16 @@ export const getRuns = () => req<{ runs: RunSummary[] }>("/api/runs").then((r) =
 
 export const getScan = (id: string) => req<ScanState>(`/api/scan/${id}`);
 
-export const startScan = (repo: string) =>
+/** Rehydrate a finished run from disk. The live scan lives in memory only, so this is
+ *  what survives a reload. */
+export const getRun = (runName: string) =>
+  req<ScanState>(`/api/run/${encodeURIComponent(runName)}`);
+
+export const startScan = (repo: string, ref?: string) =>
   req<{ id: string; status: string }>("/api/scan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo }),
+    body: JSON.stringify(ref ? { repo, ref } : { repo }),
   });
 
 export const AUTH_START = "/auth/start";
