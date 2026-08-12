@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from docket.agents.factory import build_agent
@@ -61,6 +62,7 @@ def run_recon(
     max_turns: int = DEFAULT_MAX_TURNS,
     model_override: Any = None,
     cancel: CancelToken = NEVER,
+    on_agent: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any] | None:
     """The attack surface, or None. Never raises: recon is enrichment, and a scan that
     already produced findings must not be lost because the mapper failed."""
@@ -84,6 +86,9 @@ def run_recon(
         model_override=model_override,
         sandbox=sandbox,
     )
+    if on_agent is not None:
+        on_agent({"id": "recon", "role": "recon", "status": "running",
+                  "label": repo, "detail": "mapping the attack surface"})
     agent = build_agent(
         "recon", config,
         model=model_override("recon") if model_override else None,
@@ -98,8 +103,16 @@ def run_recon(
     except ScanCancelled:
         raise  # a stop is not a failed map; it must reach run_repo_scan
     except Exception:
+        if on_agent is not None:
+            on_agent({"id": "recon", "role": "recon", "status": "error"})
         return None
-    return _surface_from(output)
+    surface = _surface_from(output)
+    if on_agent is not None:
+        on_agent({"id": "recon", "role": "recon",
+                  "status": "done" if surface else "error",
+                  "outcome": (f"{len(surface['entry_points'])} entry points"
+                              if surface else None)})
+    return surface
 
 
 def _surface_from(output: Any) -> dict[str, Any] | None:

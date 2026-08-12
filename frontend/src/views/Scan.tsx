@@ -2,6 +2,7 @@ import type { Finding, ScanState, Severity, Verdict } from "../types";
 import { SCANNER_LABEL, SCANNERS } from "../types";
 import { Radar } from "../components/Radar";
 import { TriagePanel } from "../components/TriagePanel";
+import { AgentActivity } from "../components/AgentActivity";
 import { CweBreakdown } from "../components/CweBreakdown";
 import { Panel } from "../components/ui";
 import { useState } from "react";
@@ -200,6 +201,14 @@ export function Scan({
         </Panel>
 
         <div className="stack">
+          <AgentActivity
+            scan={scan}
+            queued={Math.max(
+              0,
+              Math.min(scan?.triage_max ?? 0, scan?.finding_count ?? 0) -
+                (scan?.agents ?? []).filter((a) => a.role === "triage").length,
+            )}
+          />
           <TriagePanel scan={scan} findings={scan?.findings ?? []}
                        selectedVerdict={verdictFilter} onSelectVerdict={onVerdictSelect} />
           <Panel title="Weakness classes"

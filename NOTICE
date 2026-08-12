@@ -1,0 +1,29 @@
+docket
+Copyright 2026 the docket authors
+
+This product includes software and documentation developed by third parties.
+
+--------------------------------------------------------------------------------
+strix  (https://github.com/usestrix/strix)
+Licensed under the Apache License, Version 2.0.
+
+The playbooks under engine/docket/skills/recon/ and engine/docket/skills/triage/
+are DERIVED from strix's vulnerability skills (strix/skills/vulnerabilities/*.md).
+
+Changes made:
+  - Each source file was split into two, by consumer rather than by vulnerability:
+    a "recon" playbook (Attack Surface, Key Vulnerabilities, High-Value Targets,
+    Special Contexts) and a "triage" playbook (False Positives, Impact).
+  - Sections describing procedure against a live target were REMOVED: Testing
+    Methodology, Validation, Bypass Techniques, active Reconnaissance, Advanced
+    Techniques, Chaining Attacks, Pro Tips, Summary. docket's recon and triage
+    agents read source and execute nothing, so those instructions do not apply to
+    them.
+  - Section headings were renamed to the question the agent is answering
+    ("False Positives" -> "Not a bug when").
+  - A docket-authored header was prepended to each file, framing the content for
+    an agent that reads source rather than one that sends requests.
+  - The retained text is otherwise unmodified.
+
+The derivation is performed by scripts/build_skills.py and can be re-run or
+verified with `python scripts/build_skills.py --check`.

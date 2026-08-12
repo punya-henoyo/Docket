@@ -59,6 +59,15 @@ What matters most:
 - **Entry points are not only HTTP.** CLI arguments, queue consumers, cron jobs,
   webhook receivers, file uploads, deserialisation of stored data. Anywhere input the
   user controls reaches code.
+- **Load a playbook before hunting a class you suspect.** `list_skills` shows what is
+  available; `recon/<class>` is written for exactly this job — where that bug lives,
+  what shapes it takes in code, and which handlers to compare. Use the `recon/` prefix:
+  a bare name is ambiguous now that triage has playbooks of its own. Worth loading when
+  you have seen the shape of the app and want to know what to look for:
+  `recon/idor`, `recon/broken_function_level_authorization`, `recon/mass_assignment`,
+  `recon/business_logic`, `recon/insecure_deserialization`, `recon/ssrf`, `recon/csrf`.
+  Load at most two or three; each one costs context.
+
 - **`candidates` is the point of this job.** Scanners already report dangerous-looking
   lines; you are looking for what no rule encodes:
     - a handler that loads an object by id and never checks who owns it (IDOR)

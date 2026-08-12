@@ -68,6 +68,46 @@ def demo() -> None:
     missing = load_skill("does-not-exist")
     assert missing["ok"] is False and missing["available"], missing
 
+    # ── the recon/triage playbooks ──────────────────────────────────────────
+    # These exist so recon and triage have reference material at all. Before they
+    # were added, load_skill was reachable only by agents that need a live target,
+    # so on every scan docket had actually run, nothing could open a playbook.
+    recon = [s for s in listed if s.startswith("recon/")]
+    triage = [s for s in listed if s.startswith("triage/")]
+    assert len(recon) >= 20, f"recon playbooks missing: {len(recon)}"
+    assert len(triage) >= 20, f"triage playbooks missing: {len(triage)}"
+
+    # The classes recon demonstrably finds by reading source must all be covered.
+    for cls in ("idor", "broken_function_level_authorization", "mass_assignment",
+                "business_logic", "insecure_deserialization", "ssrf", "csrf"):
+        assert f"recon/{cls}" in listed, cls
+    # ...and the classes semgrep floods triage with.
+    for cls in ("sql_injection", "xss", "idor", "path_traversal_lfi_rfi", "rce"):
+        assert f"triage/{cls}" in listed, cls
+
+    # A triage playbook's whole reason to exist is the rule-it-out list.
+    for name in triage:
+        body = load_skill(name)["content"]
+        assert "## Not a bug when" in body, name
+
+    # A recon playbook must frame itself for source reading. An agent handed
+    # "replay the request" with no HTTP tool narrates attacks it never ran.
+    for name in recon:
+        body = load_skill(name)["content"]
+        assert "READING SOURCE, not sending requests" in body, name
+        for banned in ("## Testing Methodology", "## Bypass Techniques",
+                       "## Validation"):
+            assert banned not in body, f"{name} kept a live-target section: {banned}"
+
+    # Apache-2.0 requires the notice to travel with the derived work.
+    for name in recon + triage:
+        assert "Apache-2.0" in load_skill(name)["content"], name
+
+    # A bare name is now ambiguous — idor exists under both — and the loader must
+    # refuse rather than silently pick one.
+    ambiguous = load_skill("idor")
+    assert ambiguous["ok"] is False, "a bare ambiguous name must not resolve"
+
     # A skills tree with no files degrades cleanly rather than raising.
     import tempfile
     assert list_skills(Path(tempfile.mkdtemp()))["skills"] == []

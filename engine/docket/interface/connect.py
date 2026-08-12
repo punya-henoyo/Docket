@@ -287,7 +287,18 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
         from docket.report.state import get_global_report_state
 
         current = [f.model_dump(mode="json") for f in store.findings()]
-        totals = get_global_report_state().usage.totals()
+        ledger = get_global_report_state().usage
+        totals = ledger.totals()
+        # Turns and cost per agent come from the usage ledger, which the budget hook
+        # already writes on every model turn. Joining here rather than tracking them
+        # a second time keeps one source of truth for what a turn cost.
+        spend_by_agent = {row["agent_id"]: row for row in ledger.per_agent()}
+        with SESSION.lock:
+            for agent in SESSION.scans[scan_id].get("agents", []):
+                row = spend_by_agent.get(agent["id"])
+                if row:
+                    agent["turns"] = row["requests"]
+                    agent["cost_usd"] = round(row["cost_usd"], 4)
         set_state(
             findings=current, finding_count=len(current),
             cost_usd=round(totals.get("cost_usd", 0.0), 4),
@@ -295,6 +306,23 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             output_tokens=totals.get("output_tokens", 0),
             budget_usd=cfg_budget,
         )
+
+    def note_agent(record: dict[str, Any]) -> None:
+        """Merge one agent's lifecycle update into the scan state.
+
+        Merged rather than appended: an agent reports twice, once on start and once
+        on finish, and the second must update the row the browser is already showing
+        rather than adding a duplicate beneath it.
+        """
+        with SESSION.lock:
+            agents = SESSION.scans[scan_id].setdefault("agents", [])
+            for existing in agents:
+                if existing["id"] == record["id"]:
+                    existing.update({k: v for k, v in record.items() if v is not None})
+                    break
+            else:
+                agents.append(dict(record))
+        snapshot()
 
     def publish(finding: Any) -> None:
         store.add(finding)
@@ -327,6 +355,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             recon=recon,
             on_surface=lambda surface: set_state(surface=surface),
             cancel=cancel,
+            on_agent=note_agent,
         )
         # Persist the same artifacts `docket scan` writes, so a console scan is
         # visible to `docket view`, to the run-history panel, and to anything reading
@@ -339,6 +368,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             target=f"github:{full_name}" + (f"@{ref}" if ref else ""),
             coverage=read_coverage(run_path(run_name) / "sandbox"),
             surface=SESSION.scans[scan_id].get("surface"),
+            agents=SESSION.scans[scan_id].get("agents"),
             summary=result.summary, cost_usd=result.cost_usd,
             agents_spawned=result.agents_spawned, success=result.success,
         )
@@ -423,6 +453,7 @@ def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
         # no scanner rule encodes. None until recon runs, which is off by default.
         "surface": None,
         "coverage": {},
+        "agents": [],
         "cost_usd": 0.0,
         "input_tokens": 0,
         "output_tokens": 0,
@@ -638,6 +669,7 @@ def load_run(run_name: str) -> tuple[int, dict[str, Any]]:
         # which reads as "nothing was analysed and nothing was spent" — the two claims
         # a security report can least afford to get wrong.
         "coverage": data.get("coverage") or None,
+        "agents": data.get("agents") or [],
         "cost_usd": round(totals.get("cost_usd", 0.0), 4),
         "input_tokens": totals.get("input_tokens", 0),
         "output_tokens": totals.get("output_tokens", 0),

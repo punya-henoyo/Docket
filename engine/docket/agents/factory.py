@@ -316,7 +316,12 @@ def build_agent(
         instructions = RECON_SYSTEM_PROMPT
         finish_tool = record_surface
         name = "docket-recon"
-        base_tools = [list_source, read_source, search_source, thinking, notes]
+        # load_skill/list_skills belong here, not only in _COMMON_TOOLS. They used to
+        # be reachable ONLY by root and the specialists, which require a live target —
+        # so on every scan docket has actually run, no agent could open a playbook and
+        # the whole skills directory was dead weight.
+        base_tools = [list_source, read_source, search_source, thinking, notes,
+                      load_skill_tool, list_skills_tool]
     elif role == "triage":
         # Reads source, never touches the target. No http_request, no shell, no
         # browser: judging whether a line is reachable needs the repository, and a
@@ -324,7 +329,8 @@ def build_agent(
         instructions = TRIAGE_SYSTEM_PROMPT
         finish_tool = triage_verdict
         name = "docket-triage"
-        base_tools = [read_source, search_source, thinking, notes]
+        base_tools = [read_source, search_source, thinking, notes,
+                      load_skill_tool, list_skills_tool]
     else:
         raise ValueError(f"unknown role: {role!r}")
 

@@ -92,6 +92,21 @@ export type StageState = "pending" | "running" | "done" | "skipped" | "error";
 export type ScanStatus =
   | "queued" | "fetching" | "scanning" | "done" | "error" | "cancelled";
 
+/** One agent's lifecycle within a scan.
+ *
+ *  `turns` and `cost_usd` are joined server-side from the usage ledger the budget hook
+ *  writes on every model turn, so they are the provider's numbers, not an estimate. */
+export interface AgentRecord {
+  id: string;
+  role: string;
+  status: "running" | "done" | "error";
+  label?: string;
+  detail?: string;
+  outcome?: string;
+  turns?: number;
+  cost_usd?: number;
+}
+
 export interface ScanState {
   id: string;
   repo: string;
@@ -99,6 +114,7 @@ export interface ScanState {
   ref: string | null;
   status: ScanStatus;
   stages: Record<string, StageState>;
+  agents?: AgentRecord[];
   findings: Finding[];
   finding_count: number;
   error: string | null;

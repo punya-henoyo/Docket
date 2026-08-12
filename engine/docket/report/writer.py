@@ -39,6 +39,7 @@ def build_report(
     success: bool = True,
     coverage: dict | None = None,
     surface: dict | None = None,
+    agents: list[dict] | None = None,
 ) -> dict:
     findings = sort_findings(store.findings())
     return {
@@ -57,6 +58,11 @@ def build_report(
         # The agent-mapped attack surface, when recon ran. Persisted so a reloaded run
         # keeps the entry points a dynamic scan would need.
         "surface": surface or {},
+        # The per-agent roster: which agent read what, how many turns it took, what it
+        # concluded and what it cost. Persisted so a finished run can answer "what did
+        # the agents actually do" — otherwise that only ever exists in memory during
+        # the run and is gone the moment the console reloads.
+        "agents": agents or [],
         "severity_counts": severity_counts(findings),
         # Per-agent token accounting: explains where the run's cost actually went.
         "usage": get_global_report_state().usage.to_dict(),
@@ -76,12 +82,13 @@ def write_report(
     success: bool = True,
     coverage: dict | None = None,
     surface: dict | None = None,
+    agents: list[dict] | None = None,
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     report = build_report(
         store, run_name=run_name, target=target, summary=summary,
         cost_usd=cost_usd, agents_spawned=agents_spawned, success=success,
-        coverage=coverage, surface=surface,
+        coverage=coverage, surface=surface, agents=agents,
     )
     json_path = out_dir / "report.json"
     # Same redaction boundary as SARIF — see write_sarif. This also catches the raw

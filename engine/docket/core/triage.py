@@ -85,6 +85,7 @@ def triage_findings(
     max_findings: int = DEFAULT_MAX_FINDINGS,
     max_turns: int = DEFAULT_MAX_TURNS,
     on_verdict: Callable[[str, dict[str, Any]], None] | None = None,
+    on_agent: Callable[[dict[str, Any]], None] | None = None,
     model_override: Callable[[str], Any] | None = None,
     cancel: CancelToken = NEVER,
 ) -> dict[str, dict[str, Any]]:
@@ -107,10 +108,22 @@ def triage_findings(
         if cancel.cancelled:
             break
         finding_id = str(finding.get("id") or index)
+        agent_id = f"triage-{index}"
+        # Announced BEFORE the agent runs, not after. A roster that only shows
+        # finished agents is a receipt; the point of showing it live is that you can
+        # see which finding is being read right now.
+        location = (finding.get("location") or {})
+        label = (location.get("source_file")
+                 or f"{location.get('method','')} {location.get('path','')}".strip()
+                 or finding.get("rule_id", "?"))
+        if on_agent is not None:
+            on_agent({"id": agent_id, "role": "triage", "status": "running",
+                      "label": str(label).replace("/work/source/", ""),
+                      "detail": str(finding.get("rule_id", "")).rsplit(".", 1)[-1]})
         context = ScanContext(
             target_url="",  # triage never touches the target; it reads the repository
             run_dir=run_dir,
-            agent_id=f"triage-{index}",
+            agent_id=agent_id,
             role="triage",
             coordinator=coordinator,
             config=config,
@@ -139,6 +152,10 @@ def triage_findings(
             verdicts[finding_id] = verdict
             if on_verdict is not None:
                 on_verdict(finding_id, verdict)
+        if on_agent is not None:
+            on_agent({"id": agent_id, "role": "triage",
+                      "status": "done" if verdict else "error",
+                      "outcome": (verdict or {}).get("verdict")})
 
     return verdicts
 

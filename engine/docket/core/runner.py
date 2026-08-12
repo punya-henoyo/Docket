@@ -125,6 +125,7 @@ def run_scan(
     recon: bool = False,
     on_surface: Callable[[dict], None] | None = None,
     cancel: CancelToken = NEVER,
+    on_agent: Callable[[dict], None] | None = None,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -210,6 +211,7 @@ def run_scan(
                     findings=[f.model_dump(mode="json") for f in store.findings()]
                     if store is not None else [],
                     model_override=model_override, cancel=cancel,
+                    on_agent=on_agent,
                 )
                 if surface and on_surface is not None:
                     on_surface(surface)
@@ -243,7 +245,7 @@ def run_scan(
                     [f.model_dump(mode="json") for f in store.findings()],
                     run_dir=directory, config=cfg, sandbox=sandbox,
                     max_findings=triage_max, model_override=model_override,
-                    cancel=cancel,
+                    cancel=cancel, on_agent=on_agent,
                     on_verdict=_on_verdict,
                 )
                 applied = len(verdicts)
