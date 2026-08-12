@@ -20,14 +20,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from dotenv import load_dotenv
+
 from docket.core.paths import runs_root
 from docket.interface.scan_setup import default_run_name, normalize_target, sanitize_run_name
 
-# A browser button that fires real exploit payloads is a foot-gun on a stage. Default
-# to loopback only, so a typo in the target field in front of an audience cannot reach
-# anything real. Deliberately opt-out rather than opt-in.
-ALLOW_ANY_TARGET = os.environ.get("DOCKET_APP_ALLOW_ANY_TARGET") == "1"
 _LOOPBACK = {"127.0.0.1", "localhost", "::1", "0.0.0.0", "host.docker.internal"}
+_ALLOW_ANY_ENV = "DOCKET_APP_ALLOW_ANY_TARGET"
+
+
+def allow_any_target() -> bool:
+    """Read the override per call, never once at import.
+
+    A browser button that fires real exploit payloads is a foot-gun on a stage, so the
+    default is loopback-only and this is opt-out. But reading it at import meant a
+    long-lived server could not be told about it without a restart, and it reported the
+    stale value in /api/health too — so the UI insisted the guard was on after you had
+    turned it off, with no way to tell which was true.
+    """
+    load_dotenv(override=True)
+    return os.environ.get(_ALLOW_ANY_ENV) == "1"
 
 
 class TargetRefused(ValueError):
@@ -38,7 +50,7 @@ def check_target(target: str) -> str:
     """Normalise and gate a target. Returns the normalised URL or raises."""
     url = normalize_target(target)
     host = (urlparse(url).hostname or "").lower()
-    if not ALLOW_ANY_TARGET and host not in _LOOPBACK:
+    if not allow_any_target() and host not in _LOOPBACK:
         raise TargetRefused(
             f"refusing to scan {host!r}: the demo server is limited to loopback targets. "
             "docket sends real exploit payloads. Set DOCKET_APP_ALLOW_ANY_TARGET=1 only "

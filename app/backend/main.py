@@ -17,6 +17,7 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +29,7 @@ from docket.interface.scan_setup import sanitize_run_name
 from docket.interface.tui.backend.protocol import read_events
 from docket.interface.viewer.transcript import build_payload
 
-from app.backend.scans import ALLOW_ANY_TARGET, ScanManager, TargetRefused
+from app.backend.scans import ScanManager, TargetRefused, allow_any_target
 
 POLL_SECONDS = 0.5
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -126,6 +127,13 @@ class ScanRequest(BaseModel):
 
 @api.get("/api/health")
 def health() -> dict:
+    # Re-read .env on every call. docket loads it once, at import of
+    # docket.config.settings, so a long-lived server started before the file was
+    # filled in reports "no LLM key" forever while scans launched from it work fine —
+    # they are subprocesses that load .env themselves. A health check that reports the
+    # state at boot rather than the state now is worse than none: it made a working
+    # setup look broken and real findings look fabricated.
+    load_dotenv(override=True)
     report = check_environment(require_sandbox=False)
     scan = manager.current()
     return {
@@ -135,7 +143,7 @@ def health() -> dict:
         "docker_error": report.docker_error,
         "search": report.search_provider,
         "warnings": list(report.warnings),
-        "loopback_only": not ALLOW_ANY_TARGET,
+        "loopback_only": not allow_any_target(),
         "active_scan": scan.run_name if scan else None,
     }
 

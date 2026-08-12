@@ -17,6 +17,8 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
 | `engine/docket/agents/` | agent factory + prompts (root / specialist) |
 | `engine/docket/tools/` | 15 tool packages (several expose more than one tool) + `output_store` |
 | `engine/docket/runtime/` | Docker sandbox, in-container RPC shim, SDK sandbox session |
+| `engine/docket/discovery/` | attack-surface discovery: spec/HAR, well-known probes, bounded crawl |
+| `engine/docket/static/` | SAST ingest, Semgrep runner, sink-to-endpoint correlation |
 | `engine/docket/llm/` | context budget + conversation compaction |
 | `engine/docket/report/` | finding model, dedupe, SARIF, writer, usage |
 | `engine/docket/interface/` | CLI, TUI (Textual), local web viewer |
@@ -64,14 +66,33 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
    gateway) the run dies before turn one. `DOCKET_SDK_SANDBOX_TOOLS=1` re-enables them.
    Don't flip the default: our own container-backed `shell`/`browser` already do the work,
    and no scripted test can catch this because a scripted model never serializes tools.
-8. **Shared artifacts are redacted at the write boundary.** `report/writer.py`,
-   `report/sarif.py` and `runtime/proxy_addon.py` pass serialized output through
-   `redact()`. Redact whole documents, not hand-picked fields, so a new field is covered by
-   default. `redact()` must stay stdlib-only — `proxy_addon` imports it in-container.
+8. **Shared artifacts are redacted at the write boundary, with `redact_document()`.**
+   `report/writer.py`, `report/sarif.py` and `runtime/proxy_addon.py` redact the parsed
+   structure and serialize afterwards. Do NOT go back to `redact(json.dumps(...))`: the
+   patterns run on raw text, so on escaped JSON one can consume a backslash and leave a
+   bare quote — that shipped an **invalid `report.json`** the first time a static-analysis
+   snippet containing `form["password"]` reached it, and would equally hit any captured
+   body with an escaped quote. Redacting values first keeps whole-document coverage (a new
+   field is covered the moment it exists) while making encoding corruption impossible.
+   Stays stdlib-only — `proxy_addon` imports it in-container.
+
+9. **Discovery is deterministic code, and root is never handed a route it did not observe.**
+   `docket/discovery/` derives the surface; `build_root_task` renders it. When the surface
+   is empty, root is told so explicitly. The old behaviour hardcoded the fixture's three
+   routes into every run regardless of `--target`, and its failure mode was worse than an
+   empty list: root confidently tested paths that did not exist and reported nothing without
+   signalling it was misinformed. Do not reintroduce a default route list. The crawl's
+   fences (same-origin dropped at parse time, request/depth/page caps, caps always reported)
+   are load-bearing — a discovery pass that can wander is how this becomes an incident.
+10. **A static candidate is not a finding.** `docket/static/` produces leads. They go in
+   `flagged_not_proven`, never in `findings`, and never into `finding_count` or the exit
+   code. A `Finding` requires validated request/response evidence (rule 1); a candidate has
+   none and never will. Two lists, so the structure enforces the distinction rather than a
+   naming convention.
 
 ## Conventions
 - Every module has a runnable `demo()` self-check. Run them all with `make check`
-  (43 of them, no Docker or API key needed). Add one for anything non-trivial.
+  (50 of them, no Docker or API key needed). Add one for anything non-trivial.
 - Run modules as `python -m docket.x.y`, never `python engine/docket/x/y.py` — the latter puts
   the package dir on `sys.path` and shadows the third-party `agents` SDK.
 - Tests are plain-assert scripts, no pytest. `make test` needs Docker.
@@ -80,6 +101,6 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
 
 ## Before you commit
 ```bash
-make check      # 43 module self-checks, fast
+make check      # 50 module self-checks, fast
 make test       # 12 test scripts (Docker)
 ```

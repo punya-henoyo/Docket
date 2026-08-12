@@ -19,6 +19,8 @@ A docket is a register where nothing is entered without evidence. That is the wh
 - [Why docket](#why-docket)
 - [The guarantee](#the-guarantee)
 - [How a scan runs](#how-a-scan-runs)
+- [Finding the surface](#finding-the-surface)
+- [Static analysis, used as a lead generator](#static-analysis-used-as-a-lead-generator)
 - [Proof, per vulnerability class](#proof-per-vulnerability-class)
   - [Verified live](#verified-live)
 - [Agent capabilities](#agent-capabilities)
@@ -96,6 +98,63 @@ Structural guarantees in the agent graph:
 - **A dead child still reports.** A `finally:` block guarantees a terminal status, so a
   waiting parent cannot hang on a task that crashed
 - **Root gets 20 turns by default** (`--max-steps`); each specialist gets 12
+
+## Finding the surface
+
+docket does not assume it knows your routes. Discovery runs before the agents, as
+deterministic code rather than an agent task: the model exploits, it does not enumerate.
+An LLM crawling is slow, unreproducible, and produces prose nobody can diff.
+
+Sources are tried cheapest and most authoritative first, stopping at the first that yields:
+
+| Rung | Source | Requests |
+|---|---|---|
+| 1 | `--openapi` / `--har` you supply | **0** |
+| 2 | `/openapi.json`, `/swagger.json`, `/graphql` introspection, `robots.txt`, `sitemap.xml` | ~10 |
+| 3 | this run's captured proxy traffic | **0** |
+| 4 | bounded same-origin crawl | capped |
+
+The result is a typed, persisted `surface.json`: methods, paths, parameter names, and each
+parameter's *location* (query, form, json, path, header), which is what decides how a
+specialist injects. It is reviewable before you spend anything, diffable between runs so a
+new endpoint on the target is visible, and testable without a model.
+
+The crawl is last and fenced, because a discovery pass that can wander is how a lab tool
+becomes an incident. Off-origin links are dropped before they are ever queued, origin
+comparison is on parsed scheme/host/port rather than a string prefix, there are hard
+request/depth/page ceilings, and only `text/html` is parsed. **A cap is always reported** —
+a truncated sweep must never read as a complete one.
+
+If nothing is found, root is told so explicitly and instructed not to invent a route list.
+An honest "the surface could not be determined" beats a confident scan of three paths that
+do not exist.
+
+## Static analysis, used as a lead generator
+
+Point `--source` at a code tree, or `--sarif` at a report your CI already produces, and
+docket correlates each static candidate to the endpoint that reaches it, then sends a
+specialist to prove or disprove it.
+
+```
+semgrep -> 12 candidates
+correlate against surface.json -> 12 mapped to an endpoint
+agents exploit -> 3 PROVEN, 12 still flagged
+                  10 of those 12 are CWEs proven exploitable on this target
+```
+
+This is the part a pattern matcher cannot do. Semgrep tells you line 34 concatenates input
+into SQL; it cannot tell you which request reaches line 34 or whether that request works.
+That triage is the expensive half, and it is what the report now arrives pre-sorted by.
+
+**Static candidates are never findings.** They live in a separate `flagged_not_proven`
+list, marked unproven, and they do not touch `finding_count` or the exit code — a wall of
+candidates can never turn a clean scan red. A `Finding` is a reproduction with validated
+request and response evidence; a candidate has neither and never will. Two lists, so
+nothing downstream can present one as the other.
+
+`--sarif` accepts any SAST tool's SARIF 2.x (Semgrep, CodeQL, Bandit, gosec), which is
+usually cheaper than running an engine: no install, and it is what the team already
+standardised on.
 
 ## Proof, per vulnerability class
 
@@ -242,8 +301,21 @@ docket scan --target https://staging.internal \
 # CI mode: no progress output, named run, exit code as the gate
 docket scan --target https://staging.internal -n --run-name nightly
 
-# raise the turn ceiling for a larger target
-docket scan --target https://staging.internal --max-steps 40
+# hand it the target's own spec: the most authoritative source, and zero requests
+docket scan --target https://staging.internal --openapi ./openapi.json
+
+# use static analysis as a lead generator, correlated to discovered routes
+docket scan --target http://127.0.0.1:8000 --source ../my-app
+
+# or reuse the SARIF your CI already produces, from any SAST tool
+docket scan --target https://staging.internal --sarif ./semgrep.sarif
+
+# raise the turn ceiling. Children scale with it, which matters: model verbosity
+# varies ~6x for the same result
+docket scan --target https://staging.internal --max-steps 45
+
+# skip discovery and let root probe for itself
+docket scan --target https://staging.internal --no-discovery
 
 # no Docker available — costs you shell and browser
 docket scan --target http://127.0.0.1:5000 --no-sandbox
@@ -274,6 +346,8 @@ Every run writes to `docket_runs/<name>/`:
 | `artifacts/output/` | Full untruncated tool output, addressable by ref |
 | `artifacts/screenshots/` | Browser captures |
 | `artifacts/proxy_flows.jsonl` | Captured request/response pairs |
+| `surface.json` | The discovered attack surface: endpoints, params, and which source found each |
+| `static.json` | Raw static-analysis candidates, before correlation |
 | `.state/sessions.db` | Per-agent conversation history |
 
 ## Watching a scan
@@ -338,6 +412,8 @@ name) are flags rather than environment variables, because they change every run
 | `engine/docket/llm/` | Context budget and conversation compaction |
 | `engine/docket/report/` | Finding model, dedupe, SARIF, writer, usage ledger |
 | `engine/docket/interface/` | CLI, Textual TUI, local web viewer |
+| `engine/docket/discovery/` | Attack-surface discovery: spec/HAR parsing, well-known probes, bounded crawl |
+| `engine/docket/static/` | SAST ingest (SARIF), Semgrep runner, sink-to-endpoint correlation |
 | `engine/docket/skills/` | Markdown playbooks |
 | `app/` | Optional demo web app (FastAPI + React). Not part of the tool, not in the wheel |
 
@@ -368,12 +444,16 @@ so fewer specialists run at once.
 Findings from an audit of this codebase, listed because a security tool that hides its own
 gaps is worse than one that has none.
 
-- **Routes are hardcoded to the test fixture.** `build_root_task()` writes the same three
-  routes into every run's root task regardless of `--target`, and no crawl, spec-parsing or
-  discovery capability exists anywhere in the tool. Aimed at anything but the fixture, root
-  starts from three route hints that probably do not exist there, with no way to find the
-  real ones. Pass them through `--instruction` until discovery lands. This is the blocker
-  for real use, ahead of everything else on this list
+- **Static-to-route correlation is a heuristic, not dataflow.** A flagged line is paired
+  with the nearest discovered route literal *above* it. That works across Flask, FastAPI,
+  Express, Django and Rails without a per-framework plugin, and it is wrong in one known
+  way: a helper function sitting below a route decorator gets attributed to that route,
+  because nothing here follows a call graph. Every pairing carries a confidence and its
+  reason, and the agent is told to verify rather than trust it
+- **Semgrep is not bundled.** `--source` detects it (binary or `uvx`) and refuses loudly
+  when it is missing, because a silent zero would read as "your code is clean". Rules come
+  from `p/default`, not `--config=auto`, which cannot run with Semgrep's metrics disabled —
+  and they stay disabled
 - **Scope is not enforced, only requested.** The one guard point that would cover docket's
   own HTTP calls does not cover sqlmap, `curl` or Chromium, all of which open their own
   sockets from inside the container. An allowlist has to live at the container's network
@@ -431,16 +511,10 @@ the lane markings go in first.
    egress and deny by default there, so sqlmap, `curl` and Chromium are covered by the same
    guard as docket's own requests. A rule enforced anywhere above the socket is bypassed by
    the first tool that opens its own
-2. **Target discovery** — replace the hardcoded route list with a typed, persisted attack
-   surface (`method`, `path`, params and their location, content type, auth), written to the
-   run directory so it is reviewable before spend, diffable between runs, and testable
-   without a model. Deterministic code, not an agent task: the model exploits, it does not
-   enumerate. Cheapest authoritative source first, stopping at the first that yields
-   endpoints — an OpenAPI/GraphQL/HAR file passed in, then well-known paths
-   (`/openapi.json`, `/graphql` introspection, `robots.txt`, `sitemap.xml`), then flows
-   captured through the proxy, and only then a bounded same-origin crawl with `html.parser`,
-   depth 2 and a hard request cap. When the surface comes back empty root must be *told* it
-   is empty, rather than handed fiction as fact
+2. **Dataflow-backed correlation** — discovery and static analysis both landed, but the
+   static-sink-to-route pairing is nearest-literal-above with no call graph, so a sink in a
+   helper is attributed to whatever route sits above it. Worth upgrading once findings in
+   shared helpers matter more than the endpoints themselves
 3. **Expose the proxy** — capture, modify and replay is already built and tested, just not
    registered as a tool. It is also rung 3 of discovery and the route to authenticated
    scanning, so it pays for itself three times
@@ -454,8 +528,9 @@ the lane markings go in first.
 6. **More classes** — IDOR/BOLA, SSRF, path traversal, auth bypass, SSTI, open redirect.
    Adding one is a role literal, a prompt and a tool grant. Worth little until a scan can
    find the routes to point them at
-7. **Source-aware scanning** — the plumbing accepts a source path but nothing mounts or
-   reads it
+7. **Deeper source use** — `--source` feeds Semgrep and correlation today. The agents still
+   never read the code themselves, so they cannot reason about a sink's guards or spot logic
+   flaws no rule encodes
 8. **A packaged CI action** — SARIF and exit codes already exist, so this is thin
 
 ## Development
