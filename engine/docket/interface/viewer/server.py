@@ -45,7 +45,11 @@ def make_handler(run_dir: Path) -> type[BaseHTTPRequestHandler]:
                 # this serves a directory the user chose, so a traversal here would
                 # expose arbitrary files on their machine.
                 target = (run_dir / path.lstrip("/")).resolve()
-                if not str(target).startswith(str(run_dir.resolve())) or not target.is_file():
+                # `in .parents`, NOT a string prefix. Proven exploitable: a viewer bound
+                # to <run> served <run>-secrets/creds.txt, because
+                # "/tmp/myrun-secrets/creds.txt".startswith("/tmp/myrun") is True.
+                root = run_dir.resolve()
+                if root not in target.parents or not target.is_file():
                     self._send(404, b"not found", "text/plain")
                     return
                 kind = "image/png" if target.suffix == ".png" else "text/plain; charset=utf-8"
@@ -65,6 +69,22 @@ def start_server(run_dir: Path, port: int = 0) -> ThreadingHTTPServer:
 
 
 def demo() -> None:
+
+    # Sibling-directory traversal. This WAS exploitable: a viewer bound to <run> served
+    # <run>-secrets/creds.txt, because str.startswith on the resolved path is true for any
+    # sibling sharing a name prefix. Verified escaping before the fix and refused after.
+    import shutil as _sh, tempfile as _tf
+
+    _base = Path(_tf.mkdtemp())
+    try:
+        _run = _base / "myrun"; (_run / "artifacts").mkdir(parents=True)
+        _sib = _base / "myrun-secrets"; _sib.mkdir()
+        (_sib / "creds.txt").write_text("SIBLING SECRET")
+        _escape = (_run / "artifacts/../../myrun-secrets/creds.txt").resolve()
+        assert str(_escape).startswith(str(_run.resolve())), "prefix check should be foolable"
+        assert _run.resolve() not in _escape.parents, "parents check must refuse it"
+    finally:
+        _sh.rmtree(_base, ignore_errors=True)
     import shutil
     import tempfile
     import threading
