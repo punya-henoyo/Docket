@@ -13,7 +13,7 @@ import urllib.parse
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from docket.interface import connect
@@ -77,6 +77,37 @@ def auth_start() -> RedirectResponse:
     return RedirectResponse(
         f"{connect.GITHUB_AUTHORIZE}?{urllib.parse.urlencode(params)}", status_code=302,
     )
+
+
+# response_model=None: FastAPI reads a return annotation as a response model, and a
+# Response union is not a valid Pydantic field — it refuses to even start the app.
+@router.get("/auth/callback", response_model=None)
+def auth_callback(code: str = "", state: str = ""):
+    """Mirrors connect.py's _auth_callback exactly. Ported because the consolidation moved
+    /auth/start here and left the callback behind: GitHub redirected back, the static mount
+    served index.html, the code was never exchanged, and the page looked fine while being
+    unauthenticated. A half-connected console is worse than an error.
+    """
+    # Single-use, and cleared BEFORE any comparison so a replayed callback cannot re-use it.
+    expected, connect.SESSION.oauth_state = connect.SESSION.oauth_state, None
+    if not expected or not secrets.compare_digest(state, expected):
+        # compare_digest, not ==, so the check is not timing-distinguishable. Without this
+        # an attacker who can make the browser hit this URL with their own code binds THEIR
+        # GitHub account to this session.
+        return JSONResponse({"error": "state mismatch — restart the connection"}, 400)
+    if not code:
+        return JSONResponse({"error": "no code in callback"}, 400)
+
+    token, error = connect.exchange_code(code)
+    if error:
+        return JSONResponse({"error": error}, 502)
+    connect.SESSION.token = token
+    try:
+        connect.SESSION.login = (connect._api("/user", token) or {}).get("login")
+    except Exception:
+        connect.SESSION.login = None       # a name is cosmetic; the token is what matters
+    # App.tsx watches for ?connected= and jumps to the repo picker.
+    return RedirectResponse("/?connected=1", status_code=302)
 
 
 @router.get("/api/scan/{scan_id}")

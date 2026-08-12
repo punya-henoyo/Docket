@@ -65,6 +65,24 @@ def demo() -> None:
         assert client.get("/api/repos").status_code == 401
         assert client.get("/auth/start", follow_redirects=False).status_code in (302, 503)
 
+        # The OAuth callback. Tested in BOTH directions, because a route that 400s on
+        # everything would pass a rejects-bad-state check while being completely broken —
+        # and this route was missing entirely after the console consolidation, so GitHub
+        # redirected back, the static mount served index.html, and the page looked fine
+        # while never exchanging the code.
+        from docket.interface import connect
+
+        assert client.get("/auth/callback?code=x&state=wrong",
+                          follow_redirects=False).status_code == 400
+        connect.SESSION.oauth_state = "planted-state"
+        passed = client.get("/auth/callback?code=c&state=planted-state",
+                            follow_redirects=False)
+        assert passed.status_code != 400, "a genuine state must reach the token exchange"
+        # Single-use: the state was cleared on first use, so a replay must fail.
+        assert client.get("/auth/callback?code=c&state=planted-state",
+                          follow_redirects=False).status_code == 400
+        connect.SESSION.oauth_state = None
+
         # The loopback guard, tested through check_target with the override forced OFF
         # rather than by POSTing a real hostname. POSTing was the original test and it was
         # dangerous: on a machine where the operator has legitimately set

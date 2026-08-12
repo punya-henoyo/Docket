@@ -10,15 +10,23 @@ follows for `python -m docket.x.y`.
 """
 from __future__ import annotations
 
+import os
 import sys
 
 import uvicorn
 
 from app.backend.main import FRONTEND_DIST
 
-# Not 5000 or 7000: macOS binds both to the AirPlay Receiver (ControlCenter) out of
-# the box, so they look free right up until the bind fails.
-PORT = 7717
+# 8765 because that is the callback URL a GitHub App gets registered with — see
+# interface/connect.py's module docstring, which documents
+# http://127.0.0.1:8765/auth/callback. Serving the console anywhere else means the
+# OAuth redirect lands on a port nothing is listening on, or worse on the old
+# standalone `docket connect` server, which then holds the authorized session while
+# the console keeps reporting connected:false.
+#
+# Not 5000 or 7000: macOS binds both to the AirPlay Receiver out of the box, so they
+# look free right up until the bind fails.
+PORT = int(os.environ.get("DOCKET_CONSOLE_PORT", "8765"))
 
 if __name__ == "__main__":
     if not FRONTEND_DIST.is_dir():

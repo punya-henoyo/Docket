@@ -20,7 +20,7 @@ not going to watch a terminal.
 ```bash
 uv sync --extra app                          # fastapi + uvicorn
 cd app/frontend && npm install && npm run build && cd ../..
-uv run python -m app.run                     # http://127.0.0.1:7717
+uv run python -m app.run                     # http://127.0.0.1:8765
 ```
 
 Frontend work instead of a demo:
@@ -110,3 +110,17 @@ a string. A run with no `report.json` is projected from `events.jsonl`, where a 
 carries `rule_type` but not `rule_id` — and that one missing optional field took the
 console down. The `Finding` type now marks what is optional, which immediately surfaced
 the same latent crash in `FindingsTable` and `Radar`.
+
+
+## The GitHub App callback URL must match the console's port
+
+Register the callback as **`http://127.0.0.1:8765/auth/callback`**, and serve the console on
+8765 (the default). `DOCKET_CONSOLE_PORT` overrides it, but then the App registration has to
+change to match.
+
+Getting this wrong fails quietly rather than loudly: GitHub redirects back, the static mount
+serves `index.html`, the page renders normally, and you are simply not connected. If a
+`docket connect` standalone server is also running on 8765 it is worse — that process
+receives the callback and holds the authorized session while the console keeps reporting
+`connected: false`. Check with `lsof -nP -iTCP:8765 -sTCP:LISTEN` if a fresh authorization
+appears to do nothing.
