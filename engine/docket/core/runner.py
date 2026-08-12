@@ -22,6 +22,7 @@ from docket.core.inputs import DEFAULT_MAX_TURNS
 from docket.discovery.discover import discover
 from docket.static.correlate import correlate, summarise
 from docket.static.engines import collect as collect_static
+from docket.static.triage import triage_all
 from docket.report.models import Finding
 from docket.interface.tui.backend.messages import set_emitter
 from docket.report.state import init_report_state, reset_report_state
@@ -84,6 +85,7 @@ class ScanResult:
     cost_usd: float = 0.0
     agents_spawned: int = 1
     leads: list = field(default_factory=list)
+    triage: object | None = None
 
 
 def run_scan(
@@ -103,6 +105,7 @@ def run_scan(
     sarif_path: str | None = None,
     discovery: bool = True,
     static_only: bool = False,
+    triage: bool = True,
     on_stage: Callable[[str, str], None] | None = None,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
@@ -184,6 +187,7 @@ def run_scan(
         # Static analysis AFTER discovery, because correlation needs the endpoint list:
         # a sink is only actionable once we know which request reaches it.
         leads = []
+        triage_report = None
         if sarif_path or whitebox_path:
             static = collect_static(sarif_path=sarif_path, source_root=whitebox_path)
             static.save(directory)
@@ -191,6 +195,24 @@ def run_scan(
             for note in static.notes:
                 emitter.log_static(note)
             emitter.log_static(summarise(leads))
+
+            # Agent triage: read the code around each candidate and rule on it. This is
+            # the whole value over running Semgrep directly — a candidate with a verdict
+            # and a quoted guard is actionable where a candidate alone is a queue item.
+            # Needs the source, and a model, so it is skipped for --static-only.
+            if triage and whitebox_path and leads and not static_only:
+                triage_context = ScanContext(
+                    target_url=agent_target or "", run_dir=directory,
+                    on_finding=None, agent_id="triage", role="triage",
+                    coordinator=coordinator, config=cfg,
+                    model_override=model_override, sandbox=sandbox,
+                    source_root=whitebox_path,
+                )
+                verdicts = asyncio.run(triage_all(leads, triage_context))
+                triage_report = verdicts
+                for note in verdicts.notes:
+                    emitter.log_static(note)
+                emitter.log_static(verdicts.summary())
 
         if static_only:
             output = {
@@ -237,4 +259,5 @@ def run_scan(
         cost_usd=round(coordinator.spent_usd, 6),
         agents_spawned=0 if static_only else len(coordinator.agents) + 1,  # +1 for root
         leads=leads,
+        triage=triage_report,
     )

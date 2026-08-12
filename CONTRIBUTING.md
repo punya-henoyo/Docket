@@ -5,7 +5,7 @@
 uv sync
 cp .env.example .env      # then add your model + key
 make image                # build the sandbox container (~1 min first time)
-make check                # 50 self-checks, no Docker or key needed
+make check                # 57 self-checks, no Docker or key needed
 ```
 
 ## The loop

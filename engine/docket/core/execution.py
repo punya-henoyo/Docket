@@ -54,6 +54,9 @@ class ScanContext:
     # response_format=json_schema, and some providers (confirmed: DeepSeek V4 Pro on Azure
     # AI Foundry) then stop emitting tool calls entirely.
     final_result: dict | None = None
+    # Repository root the triage role reads from. None for every other role — they have no
+    # file tools at all, so there is nothing for them to point at.
+    source_root: str | None = None
 
 
 # Errors that mean "this run is over", not "the network hiccuped". Retrying any of

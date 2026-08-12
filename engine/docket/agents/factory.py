@@ -49,6 +49,7 @@ from docket.interface.tui.backend.messages import get_emitter
 from docket.tools.finish.tool import agent_finish, finish_scan
 from docket.agents.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
 from docket.agents.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
+from docket.agents.prompts.triage import SYSTEM_PROMPT as TRIAGE_PROMPT
 from docket.tools.load_skill.tool import list_skills, load_skill
 from docket.tools.notes.tools import add_note, view_notes
 from docket.tools.reporting.tool import FindingType, register_finding
@@ -57,9 +58,12 @@ from docket.tools.thinking.tool import think
 from docket.tools.todo.tools import set_todos, view_todos
 from docket.tools.web_search.tool import web_search
 from docket.tools.http_request.tools import do_http_request
+from docket.tools.source_read import tools as source_read
 
-Role = Literal["root", "sqli", "cmdi", "xss"]
-SpecialistRole = Literal["sqli", "cmdi", "xss"]
+# `triage` reads source and rules on a static candidate. It is the only role with file
+# tools and the only one with NO network access at all — see build_agent.
+Role = Literal["root", "sqli", "cmdi", "xss", "triage"]
+SpecialistRole = Literal["sqli", "cmdi", "xss", "triage"]
 
 _FINISH_TOOL_NAMES = {"finish_scan", "agent_finish"}
 
@@ -275,6 +279,48 @@ async def web_search_tool(
 # Agent utilities every role gets: reasoning, shared memory, task tracking, and the
 # ability to pull in a playbook. None of them touch the target, so there's no reason
 # to withhold any of them from a specialist.
+@function_tool
+async def read_around(
+    ctx: RunContextWrapper[ScanContext], path: str, line: int, context: int = 12,
+) -> dict:
+    """Read the lines surrounding `line` in `path`. Start here when triaging: a guard three
+    lines above a sink is invisible to a rule engine and obvious in this window."""
+    return await asyncio.to_thread(
+        source_read.read_around, ctx.context.source_root or "", path, line, context=context,
+    )
+
+
+@function_tool
+async def read_source(
+    ctx: RunContextWrapper[ScanContext], path: str,
+    start_line: int | None = None, end_line: int | None = None,
+) -> dict:
+    """Read a source file, or a 1-indexed inclusive line range of it."""
+    return await asyncio.to_thread(
+        source_read.read_source, ctx.context.source_root or "", path,
+        start_line=start_line, end_line=end_line,
+    )
+
+
+@function_tool
+async def list_source(ctx: RunContextWrapper[ScanContext], path: str = ".") -> dict:
+    """List a directory in the repository."""
+    return await asyncio.to_thread(source_read.list_source, ctx.context.source_root or "", path)
+
+
+@function_tool
+async def grep_source(
+    ctx: RunContextWrapper[ScanContext], pattern: str, path: str = ".",
+) -> dict:
+    """Literal substring search across the repository. Not a regex — use it to find where a
+    helper is defined or called."""
+    return await asyncio.to_thread(
+        source_read.grep_source, ctx.context.source_root or "", pattern, path=path,
+    )
+
+
+_SOURCE_TOOLS: list[Tool] = [read_around, read_source, list_source, grep_source]
+
 _COMMON_TOOLS: list[Tool] = [thinking, notes, todo, load_skill_tool, list_skills_tool, web_search_tool]
 
 
@@ -316,6 +362,15 @@ def build_agent(
         # Root delegates, so it gets no `finding`; it does get `respond`, being the
         # agent that speaks for the scan.
         base_tools: list[Tool] = [http_request, respond, *_COMMON_TOOLS]
+    elif role == "triage":
+        # NO http_request, NO shell, NO browser. Triage reads code and rules on a
+        # candidate; giving it network access would let it wander into attacking a target
+        # this product no longer points at, and would make a verdict impossible to audit
+        # (was that FALSE_POSITIVE reasoning, or something it probed?).
+        instructions = TRIAGE_PROMPT
+        base_tools = [*_SOURCE_TOOLS, *_COMMON_TOOLS]
+        finish_tool = agent_finish
+        name = "triage-agent"
     elif role in ("sqli", "cmdi", "xss"):
         instructions = SPECIALIST_SYSTEM_PROMPT
         finish_tool = agent_finish

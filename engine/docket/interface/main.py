@@ -107,7 +107,7 @@ def cmd_scan(args) -> int:
 
     kwargs |= dict(summary=result.summary, cost_usd=result.cost_usd,
                    agents_spawned=result.agents_spawned, success=result.success,
-                   leads=result.leads)
+                   leads=result.leads, triage=result.triage)
     paths = write_report(store, setup.run_dir, **kwargs)
     print(format_summary(build_report(store, **kwargs), paths=paths))
     return exit_code(store, result.success)

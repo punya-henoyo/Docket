@@ -20,6 +20,7 @@ A docket is a register where nothing is entered without evidence. That is the wh
 - [The guarantee](#the-guarantee)
 - [How a scan runs](#how-a-scan-runs)
 - [Finding the surface](#finding-the-surface)
+- [Static analysis, triaged by an agent](#static-analysis-triaged-by-an-agent-that-reads-the-code)
 - [Static analysis, used as a lead generator](#static-analysis-used-as-a-lead-generator)
 - [Proof, per vulnerability class](#proof-per-vulnerability-class)
   - [Verified live](#verified-live)
@@ -128,6 +129,44 @@ a truncated sweep must never read as a complete one.
 If nothing is found, root is told so explicitly and instructed not to invent a route list.
 An honest "the surface could not be determined" beats a confident scan of three paths that
 do not exist.
+
+## Static analysis, triaged by an agent that reads the code
+
+This is the primary path. Point `--source` at a code tree (or `--sarif` at a report your CI
+already produces) and docket runs Semgrep, correlates each candidate to an endpoint, then
+**spawns one agent per candidate to read the surrounding source and rule on it.**
+
+```
+semgrep -> 15 candidates
+agent triage -> 10 CONFIRMED · 3 FALSE_POSITIVE · 2 UNCERTAIN
+```
+
+Measured on a tree where one file was genuinely vulnerable and one had the same pattern
+with an `escape()` on it: every candidate in the vulnerable file came back CONFIRMED, and
+all three in the safe file came back FALSE_POSITIVE, quoting the guard:
+
+> FALSE_POSITIVE: The user input ('q') is escaped before it is incorporated into the
+> returned HTML string. At `safe.py:6`, `q = escape(request.args.get("q", ""))` shows that
+> all potentially unsafe user-supplied data goes through `markupsafe.escape`...
+
+That is the job a rule engine cannot do and a person has to. Semgrep sees line 7; it cannot
+see the escape on line 6.
+
+**The verdict vocabulary is three-valued on purpose.** A binary confirmed/false-positive
+forces a guess, and a guessed FALSE_POSITIVE is the one outcome that gets somebody breached.
+So UNCERTAIN is a first-class answer, the prompt says to prefer it, and anything the parser
+cannot read becomes UNCERTAIN rather than either confident verdict. An agent that runs out
+of turns says UNCERTAIN, not "looks fine".
+
+**Triage has no network access.** It is the only role with file tools and the only one with
+no HTTP, shell or browser at all. A verdict must be auditable as a read of the code, not
+possibly the residue of something it probed. Reads are contained three ways: parent-traversal
+containment (not a string prefix), symlinks out of the tree refused, and bounded sizes.
+
+**A verdict is still not a finding.** Triaged rows live in `triaged`, findings in `findings`.
+The evidence for a verdict is a read of the code; the evidence for a finding is a
+reproduction. Both are useful and they are not the same thing, so the report keeps them
+apart and only `findings` drives the exit code.
 
 ## Static analysis, used as a lead generator
 
@@ -413,7 +452,8 @@ name) are flags rather than environment variables, because they change every run
 | `engine/docket/report/` | Finding model, dedupe, SARIF, writer, usage ledger |
 | `engine/docket/interface/` | CLI, Textual TUI, local web viewer |
 | `engine/docket/discovery/` | Attack-surface discovery: spec/HAR parsing, well-known probes, bounded crawl |
-| `engine/docket/static/` | SAST ingest (SARIF), Semgrep runner, sink-to-endpoint correlation |
+| `engine/docket/static/` | SAST ingest (SARIF), Semgrep runner, correlation, agent triage |
+| `engine/docket/tools/source_read/` | Read-only, containment-checked source access for triage |
 | `engine/docket/skills/` | Markdown playbooks |
 | `app/` | Optional demo web app (FastAPI + React). Not part of the tool, not in the wheel |
 

@@ -99,7 +99,7 @@ class ScanManager:
 
     def start(
         self, target: str, *, run_name: str | None = None, instruction: str | None = None,
-        max_steps: int = 20, use_sandbox: bool = True,
+        max_steps: int = 20, use_sandbox: bool = True, source: str | None = None,
     ) -> ScanProcess:
         if (busy := self.current()) is not None:
             raise RuntimeError(f"a scan is already running ({busy.run_name}); stop it first")
@@ -116,6 +116,11 @@ class ScanManager:
         ]
         if instruction:
             argv += ["--instruction", instruction]
+        if source:
+            # Without this the console's "Source tree" field was accepted and silently
+            # dropped: no Semgrep ran, no candidates were correlated, and the UI gave no
+            # hint that the value it collected went nowhere.
+            argv += ["--source", source]
         if not use_sandbox:
             argv.append("--no-sandbox")
 
@@ -170,6 +175,13 @@ def demo() -> None:
         raise AssertionError("path-only 'localhost' must not pass the guard")
     except TargetRefused:
         pass
+
+    # Every field the console's form collects must reach the argv. A field that is
+    # accepted and dropped is worse than one that does not exist.
+    import inspect
+
+    params = set(inspect.signature(ScanManager.start).parameters)
+    assert {"target", "run_name", "instruction", "max_steps", "source"} <= params, params
 
     mgr = ScanManager()
     assert mgr.current() is None

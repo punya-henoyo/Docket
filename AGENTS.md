@@ -90,9 +90,21 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
    none and never will. Two lists, so the structure enforces the distinction rather than a
    naming convention.
 
+11. **Triage reads; it never probes.** The `triage` role is the only one with file tools
+   and the only one with no `http_request`, `shell` or `browser`. Don't give it network
+   access: a verdict has to be auditable as a read of the source, not possibly the residue
+   of something it requested. Its reads go through `tools/source_read`, whose containment
+   uses parent traversal (not a string prefix), refuses symlinks out of the tree, and bounds
+   sizes — all three are tested, including the sibling-prefix trap.
+12. **UNCERTAIN beats a guess.** Verdicts are three-valued. `parse_verdict` maps anything
+   unrecognised to UNCERTAIN, never CONFIRMED (which would inflate the confirmed count) and
+   never FALSE_POSITIVE (the only verdict that gets somebody breached). An agent that
+   exhausts its turns lands on UNCERTAIN by the same route. Don't "improve" this into a
+   binary.
+
 ## Conventions
 - Every module has a runnable `demo()` self-check. Run them all with `make check`
-  (50 of them, no Docker or API key needed). Add one for anything non-trivial.
+  (57 of them, no Docker or API key needed). Add one for anything non-trivial.
 - Run modules as `python -m docket.x.y`, never `python engine/docket/x/y.py` — the latter puts
   the package dir on `sys.path` and shadows the third-party `agents` SDK.
 - Tests are plain-assert scripts, no pytest. `make test` needs Docker.
@@ -101,6 +113,6 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
 
 ## Before you commit
 ```bash
-make check      # 50 module self-checks, fast
+make check      # 57 module self-checks, fast
 make test       # 12 test scripts (Docker)
 ```

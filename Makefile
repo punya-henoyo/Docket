@@ -30,6 +30,8 @@ check:
 	  docket.llm.context_budget docket.llm.compaction \
 	  docket.discovery.models docket.discovery.sources docket.discovery.discover \
 	  docket.static.models docket.static.engines docket.static.correlate \
+	  docket.static.triage docket.tools.source_read.tools \
+	  docket.agents.prompts.triage \
 	  docket.agents.prompts.root \
 	  docket.report.models docket.report.dedupe docket.report.sarif docket.report.writer \
 	  docket.report.state docket.report.usage \

@@ -118,6 +118,9 @@ class ScanRequest(BaseModel):
     target: str
     run_name: str | None = None
     instruction: str | None = None
+    # Path to the target's source tree. Runs Semgrep over it and correlates each candidate
+    # to a discovered endpoint, so agents get named sinks instead of blind probes.
+    source: str | None = None
     max_steps: int = Field(default=20, ge=1, le=200)
     use_sandbox: bool = True
 
@@ -193,6 +196,7 @@ def start_scan(request: ScanRequest) -> dict:
         scan = manager.start(
             request.target, run_name=request.run_name, instruction=request.instruction,
             max_steps=request.max_steps, use_sandbox=request.use_sandbox,
+            source=request.source,
         )
     except TargetRefused as exc:
         raise HTTPException(403, str(exc)) from exc

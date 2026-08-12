@@ -38,6 +38,7 @@ def build_report(
     agents_spawned: int = 0,
     success: bool = True,
     leads: list | None = None,
+    triage: object | None = None,
 ) -> dict:
     """`leads` are static-analysis candidates (docket.static.correlate.Lead). They are
     reported in a SEPARATE list from `findings` and never merged into it.
@@ -83,6 +84,16 @@ def build_report(
             # CWE-89 says "the pattern matcher was right about this class here".
             "cwe_proven_dynamically": bool(finding.cwe and finding.cwe in proven_cwes),
         })
+    # When triage ran, a candidate carries a verdict from an agent that READ the code.
+    # That row supersedes the bare candidate: "flagged, and here is why an engineer thinks
+    # it is real" is a different artifact from "flagged".
+    triage_rows = [v.to_dict() for v in getattr(triage, "verdicts", []) or []]
+    triage_counts = triage.counts() if hasattr(triage, "counts") else {}
+    triaged_keys = {(r["file"], r["line"], r["rule_id"]) for r in triage_rows}
+    if triage_rows:
+        flagged = [f for f in flagged
+                    if (f["file"], f["line"], f["rule_id"]) not in triaged_keys]
+
     return {
         "run_name": run_name,
         "docket_version": __version__,
@@ -98,6 +109,11 @@ def build_report(
         # and deliberately NOT part of finding_count or the exit code.
         "flagged_count": len(flagged),
         "flagged_not_proven": flagged,
+        # Triaged candidates: a verdict from an agent that read the surrounding source,
+        # with its reasoning. Still NOT `findings` — the evidence is a read of the code,
+        # not a reproduction, and the two must stay distinguishable.
+        "triage_counts": triage_counts,
+        "triaged": triage_rows,
         # Per-agent token accounting: explains where the run's cost actually went.
         "usage": get_global_report_state().usage.to_dict(),
         "findings": [f.model_dump(mode="json") for f in findings],
@@ -115,11 +131,13 @@ def write_report(
     agents_spawned: int = 0,
     success: bool = True,
     leads: list | None = None,
+    triage: object | None = None,
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     report = build_report(
         store, run_name=run_name, target=target, summary=summary,
         cost_usd=cost_usd, agents_spawned=agents_spawned, success=success, leads=leads,
+        triage=triage,
     )
     json_path = out_dir / "report.json"
     # Same redaction boundary as SARIF — see write_sarif. This also catches the raw
@@ -144,6 +162,14 @@ def format_summary(report: dict, *, paths: dict[str, Path] | None = None, full: 
         f"docket scan complete — target {report['target']}",
         f"{report['finding_count']} finding(s) ({present})",
     ]
+    if report.get("triage_counts"):
+        c = report["triage_counts"]
+        lines.append(
+            f"{sum(c.values())} static candidate(s) triaged by an agent that read the "
+            f"code: {c.get('CONFIRMED', 0)} confirmed, "
+            f"{c.get('FALSE_POSITIVE', 0)} false positive, "
+            f"{c.get('UNCERTAIN', 0)} uncertain"
+        )
     if report.get("flagged_count"):
         # Stated separately and labelled unproven, so a reader cannot read the two
         # numbers as one total. Silence here would hide the static coverage entirely.
