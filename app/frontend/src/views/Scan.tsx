@@ -6,7 +6,7 @@ import { AgentActivity } from "../components/AgentActivity";
 import { CweBreakdown } from "../components/CweBreakdown";
 import { Panel } from "../components/ui";
 import { useState } from "react";
-import { cancelScan, downloadUrl } from "../api";
+import { github, runs } from "../api";
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "queued", fetching: "downloading source", scanning: "scanning",
@@ -64,7 +64,7 @@ export function Scan({
     setBrief("working");
     setBriefError(null);
     try {
-      const res = await fetch(downloadUrl(scan.id, "brief"));
+      const res = await fetch(runs.downloadUrl(scan.id, "brief"));
       const text = await res.text();
       if (!res.ok) throw new Error(text.trim() || `server said ${res.status}`);
       // A blob URL rather than the endpoint URL, so opening the tab cannot trigger a
@@ -91,7 +91,7 @@ export function Scan({
     setStopping(true);
     setStopError(null);
     try {
-      await cancelScan(scan?.id);
+      await github.cancelScan(scan?.id);
     } catch (err) {
       // The button stays enabled on failure. A stop that silently did not happen is
       // worse than one that visibly failed.
@@ -112,9 +112,9 @@ export function Scan({
                  title="An executive brief written by the model over this scan's output, with the full findings table rendered from the report itself. One model call the first time; cached after that.">
                 {brief === "working" ? "Writing brief…" : "Executive brief"}
               </button>
-              <a className="btn" href={downloadUrl(scan!.id, "md")} download>report .md</a>
-              <a className="btn" href={downloadUrl(scan!.id, "json")} download>.json</a>
-              <a className="btn" href={downloadUrl(scan!.id, "sarif")} download>.sarif</a>
+              <a className="btn" href={runs.downloadUrl(scan!.id, "md")} download>report .md</a>
+              <a className="btn" href={runs.downloadUrl(scan!.id, "json")} download>.json</a>
+              <a className="btn" href={runs.downloadUrl(scan!.id, "sarif")} download>.sarif</a>
             </>
           )}
           {running && (

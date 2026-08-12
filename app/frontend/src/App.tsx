@@ -8,6 +8,7 @@ import { Surface } from "./views/Surface";
 import { Findings } from "./views/Findings";
 import { Repositories } from "./views/Repositories";
 import { Integrations } from "./views/Integrations";
+import { useHashRoute } from "./hooks/useHashRoute";
 
 type View = "overview" | "scan" | "surface" | "findings" | "repos" | "integrations";
 
@@ -22,13 +23,11 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "integrations", label: "Integrations" },
 ];
 
-const routeOf = (): View => {
-  const hash = window.location.hash.replace("#/", "") as View;
-  return VIEWS.some((v) => v.id === hash) ? hash : "overview";
-};
+// Derived, not a second hand-maintained list: the router and the sidebar cannot drift.
+const VIEW_IDS = VIEWS.map((v) => v.id);
 
 export default function App() {
-  const [view, setView] = useState<View>(routeOf);
+  const [view, go] = useHashRoute<View>(VIEW_IDS, "overview");
   const [session, setSession] = useState<Session | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [repos, setRepos] = useState<Repo[] | null>(null);
@@ -58,23 +57,12 @@ export default function App() {
   const [verdictFilter, setVerdictFilter] = useState<Verdict | null>(null);
   const prevIds = useRef<Set<string>>(new Set());
 
-  const go = useCallback((next: View) => {
-    setView(next);
-    window.location.hash = `#/${next}`;
-  }, []);
-
-  useEffect(() => {
-    const onHash = () => setView(routeOf());
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
-
   // A scan may be running that this browser has never seen: after a reload, in a
   // second tab, or because the previous view replaced it with history. Ask the server
   // rather than trusting local state, which is what went missing in the first place.
   useEffect(() => {
     let alive = true;
-    api.activeScans()
+    api.github.activeScans()
       .then(({ scans }) => {
         if (!alive) return;
         if (scans.length) rememberLive(scans[0].id);
@@ -96,7 +84,7 @@ export default function App() {
       // even though the server was up a second later.
       for (let attempt = 0; attempt < 3 && alive; attempt++) {
         try {
-          const s = await api.getSession();
+          const s = await api.github.getSession();
           if (!alive) return;
           setSession(s);
           setBootError(null);
@@ -112,7 +100,7 @@ export default function App() {
         }
       }
       try {
-        const r = await api.getRuns();
+        const r = await api.runs.getRuns();
         if (!alive) return;
         setRuns(r);
         // Reload used to land on an empty dashboard even though report.json was on
@@ -120,7 +108,7 @@ export default function App() {
         // indistinguishable from never having scanned.
         if (r.length) {
           try {
-            setScan(await api.getRun(r[0].run_name));
+            setScan(await api.github.getRun(r[0].run_name));
           } catch {
             /* a corrupt or half-written report must not blank the console */
           }
@@ -146,7 +134,7 @@ export default function App() {
   const loadRepos = useCallback(async () => {
     setReposError(null);
     try {
-      setRepos(await api.getRepos());
+      setRepos(await api.github.getRepos());
     } catch (err) {
       setRepos([]);
       setReposError(err instanceof ApiError ? err.message : String(err));
@@ -162,7 +150,7 @@ export default function App() {
         scan.status === "cancelled") return;
     const timer = setTimeout(async () => {
       try {
-        const next = await api.getScan(scan.id);
+        const next = await api.github.getScan(scan.id);
         const fresh = next.findings.find((f) => !prevIds.current.has(f.id));
         if (fresh) setNewestId(fresh.id);
         prevIds.current = new Set(next.findings.map((f) => f.id));
@@ -175,7 +163,7 @@ export default function App() {
         if (next.status === "done" || next.status === "cancelled" ||
             next.status === "error") {
           if (next.id === liveId) rememberLive(null);
-          if (next.status !== "error") api.getRuns().then(setRuns).catch(() => {});
+          if (next.status !== "error") api.runs.getRuns().then(setRuns).catch(() => {});
         }
       } catch (err) {
         setScanError(err instanceof ApiError ? err.message : String(err));
@@ -195,7 +183,7 @@ export default function App() {
       prevIds.current = new Set();
       setNewestId(undefined);
       try {
-        const { id } = await api.startScan(repo, ref, triageMax, recon, budgetUsd);
+        const { id } = await api.github.startRepoScan(repo, ref, triageMax, recon, budgetUsd);
         rememberLive(id);
         setScan({
           id,
@@ -235,7 +223,7 @@ export default function App() {
     setScanError(null);
     setSelected(null);
     try {
-      setScan(await api.getScan(liveId));
+      setScan(await api.github.getScan(liveId));
       go("scan");
     } catch {
       // The server no longer knows this scan — it finished and was evicted, or the
@@ -251,7 +239,7 @@ export default function App() {
       setCweFilter(null);
       setVerdictFilter(null);
       try {
-        setScan(await api.getRun(runName));
+        setScan(await api.github.getRun(runName));
       } catch (err) {
         setScanError(err instanceof ApiError ? err.message : String(err));
       }

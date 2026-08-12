@@ -43,13 +43,17 @@ export interface Cvss {
 
 export interface Finding {
   id: string;
-  rule_id: string;
+  /* Optional because a run with no report.json is projected from events.jsonl, where a
+     finding carries rule_type but not rule_id. Anything rendering these must tolerate
+     both — see ui.ruleLeaf. */
+  rule_id?: string;
+  rule_type?: string;
   cwe: string | null;
   title: string;
   severity: Severity;
-  location: Location;
-  description: string;
-  poc: PoC;
+  location?: Location;
+  description?: string;
+  poc?: PoC;
   discovered_by: string;
   discovered_at: string;
   status: string;
@@ -129,6 +133,9 @@ export interface ScanState {
   error: string | null;
   summary?: string;
   elapsed_sec?: number;
+  /** True when loaded from disk rather than observed live: the radar has no stages to
+   *  light and the sweep must not animate. */
+  historical?: boolean;
   triage_max?: number;
   recon?: boolean;
   surface?: Surface | null;
@@ -147,9 +154,6 @@ export interface ScanState {
   input_tokens?: number;
   output_tokens?: number;
   budget_usd?: number;
-  /** True when loaded from disk rather than observed live: the radar has no stages to
-   *  light and the sweep must not animate. */
-  historical?: boolean;
 }
 
 export interface Session {
@@ -171,10 +175,16 @@ export interface Repo {
 export interface RunSummary {
   run_name: string;
   target: string | null;
-  generated_at: string | null;
+  generated_at?: string | null;
   finding_count: number;
   severity_counts: Partial<Record<Severity, number>>;
   cost_usd: number;
+  /* app/backend adds these so the run list can show in-flight and failed runs, not
+     just finished ones. A scan that died before its first event has only a log. */
+  modified?: number;
+  finished?: boolean;
+  running?: boolean;
+  failed?: boolean;
 }
 
 export const SCANNERS = ["fetch", "trivy", "semgrep", "nuclei", "recon", "triage"] as const;
@@ -188,3 +198,86 @@ export const SCANNER_LABEL: Record<Scanner, string> = {
   recon: "recon · AI attack surface",
   triage: "triage · AI reachability",
 };
+
+
+/* ---------------------------------------------------------------------------------
+ * Local agent runs. The types above cover a repo scan (deterministic scanners over
+ * GitHub source); these cover a full agent run against a live target, which is the
+ * other half of what docket does and what app/backend serves.
+ * --------------------------------------------------------------------------------- */
+
+export interface AgentNode {
+  agent_id: string;
+  name?: string;
+  role?: string;
+  status: string;
+  parent_id?: string | null;
+  tool_calls: number;
+  findings: number;
+  summary?: string;
+  depth: number;
+}
+
+/** One row per tool call and per tool result, from
+ *  engine/docket/interface/tui/backend/projection.py. NOT a free-text log. */
+export interface TranscriptLine {
+  ts?: number;
+  agent_id?: string;
+  role?: string;
+  kind?: "call" | "result" | string;
+  tool?: string;
+  args?: Record<string, unknown>;
+  output?: string;
+}
+
+/** A static-analysis candidate. Deliberately NOT a Finding: it carries no reproduced
+ *  request/response and never will, so it lives in its own list and never touches
+ *  finding_count or the exit code. See engine/docket/report/writer.py. */
+export interface FlaggedCandidate {
+  rule_id: string;
+  engine: string;
+  severity: Severity;
+  cwe: string | null;
+  message: string;
+  file: string;
+  line: number;
+  snippet: string | null;
+  status: "flagged_not_proven";
+  endpoint: string | null;
+  reachable: boolean;
+  correlation_confidence: string;
+  correlation_reason: string;
+  cwe_proven_dynamically: boolean;
+}
+
+export interface RunPayload {
+  run_name: string;
+  target?: string;
+  finished: boolean;
+  running?: boolean;
+  exit_code?: number | null;
+  summary?: string;
+  severity_counts: Partial<Record<Severity, number>>;
+  finding_count: number;
+  flagged_count?: number;
+  flagged_not_proven?: FlaggedCandidate[];
+  cost_usd: number;
+  usage: { totals?: { total_tokens?: number } } & Record<string, unknown>;
+  agents: AgentNode[];
+  findings: Finding[];
+  transcript: TranscriptLine[];
+  notes: unknown[];
+  todos: unknown[];
+  has_sarif: boolean;
+}
+
+export interface Health {
+  ok: boolean;
+  llm?: string | null;
+  docker: boolean;
+  docker_error?: string | null;
+  search?: string | null;
+  warnings: string[];
+  loopback_only: boolean;
+  active_scan?: string | null;
+}

@@ -17,6 +17,10 @@ containers/**/*.log
 # OS
 .DS_Store
 
+# demo app build artifacts
+app/frontend/node_modules/
+app/frontend/dist/
+
 # console build
 node_modules/
 frontend/dist/

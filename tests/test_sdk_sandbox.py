@@ -1,5 +1,9 @@
 """R5 check: SandboxAgent + the SDK-native sandbox session bound to our container.
 
+These capabilities are HOSTED tools that only OpenAI's Responses API accepts, so
+build_agent gates them behind supports_hosted_tools(model). That check is what every
+LiteLLM-routed provider depends on, and it is pinned both ways below.
+
 Agents are built as SandboxAgent with capabilities=[Filesystem, Shell] rather than a
 plain Agent, which is why the tools/shell, apply_patch and view_image packages are
 README-only: those tools come from the SDK.
@@ -32,6 +36,19 @@ def _config() -> Config:
     return Config.from_env()
 
 
+def test_chatcompletions_model_gets_a_plain_agent_even_with_a_sandbox() -> None:
+    """The regression that killed the first live run. A LiteLLM-routed model speaks Chat
+    Completions, where hosted tools cannot be serialized at all — the SDK raises before
+    turn one. So a sandboxed agent on such a model must NOT be a SandboxAgent, and our
+    own container-backed shell must survive, because that is what does the work."""
+    from docket.agents.factory import build_agent, supports_hosted_tools
+
+    agent = build_agent("sqli", _config(), sandbox=object())
+    assert not supports_hosted_tools(agent.model), "a LitellmModel must not claim hosted tools"
+    assert not isinstance(agent, SandboxAgent), type(agent)
+    assert "shell" in {t.name for t in agent.tools}
+
+
 def test_plain_agent_without_sandbox() -> None:
     """No container means no SDK-native shell/filesystem — those tools would have
     nowhere safe to run, so we must NOT hand the model capabilities it can't use."""
@@ -40,15 +57,18 @@ def test_plain_agent_without_sandbox() -> None:
     assert not isinstance(agent, SandboxAgent)
 
 
-def test_sandbox_agent_and_native_session() -> None:
+def test_native_session_drives_the_container() -> None:
+    """The SDK-native session bound to our container.
+
+    No SandboxAgent assertion here any more: build_agent only produces one for a model
+    that supports hosted tools, which no LiteLLM-routed model does, and _config() is
+    LiteLLM. The session itself is the part worth pinning — it is what binds the SDK's
+    exec/read/write primitives to a real docket container, and it works regardless of
+    which Agent class the factory chose.
+    """
     directory = run_dir("r5-sdk-session")
     try:
         with Sandbox(directory / "sandbox") as sb:
-            agent = build_agent("sqli", _config(), sandbox=sb)
-            assert isinstance(agent, SandboxAgent), type(agent)
-            caps = {type(c).__name__ for c in agent.capabilities}
-            assert caps == {"Filesystem", "Shell"}, caps
-
             session = DocketSandboxSession(sb)
             assert asyncio.run(session.running()) is True
 
@@ -83,6 +103,7 @@ def test_sandbox_agent_and_native_session() -> None:
 
 
 if __name__ == "__main__":
+    test_chatcompletions_model_gets_a_plain_agent_even_with_a_sandbox()
     test_plain_agent_without_sandbox()
-    test_sandbox_agent_and_native_session()
-    print("test_sdk_sandbox: ok — SandboxAgent + Filesystem/Shell capabilities driving the container")
+    test_native_session_drives_the_container()
+    print("test_sdk_sandbox: ok — hosted-tool gating + the native session driving the container")

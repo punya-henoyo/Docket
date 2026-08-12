@@ -13,7 +13,7 @@ const SEV_COLOR: Record<Severity, string> = {
   info: "var(--info)",
 };
 
-const shortDate = (iso: string | null) =>
+const shortDate = (iso: string | null | undefined) =>
   iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
 
 /** The security dashboard.

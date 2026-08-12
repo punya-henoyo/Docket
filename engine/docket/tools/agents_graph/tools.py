@@ -52,12 +52,14 @@ async def create_agent(
         # single-threaded, so concurrent children's tool calls queue there rather than
         # racing — they still reason in parallel, only their sandbox calls serialize.
         sandbox=parent.sandbox,
+        child_max_turns=parent.child_max_turns,
     )
     child_agent = build_agent(role, parent.config, model=child_model, sandbox=parent.sandbox)
-    child_task = build_specialist_task(role, target_route, task)
+    child_task = build_specialist_task(role, target_route, task, parent.target_url)
 
     def run_coro_factory() -> Awaitable[dict]:
-        return run_agent_loop(child_agent, child_context, child_task, max_turns=12)
+        return run_agent_loop(child_agent, child_context, child_task,
+                               max_turns=parent.child_max_turns)
 
     # Register BEFORE returning, not inside the spawned task. Two bugs lived in the gap:
     # wait_for_agents skips ids absent from coordinator.agents, so spawn-then-wait in one

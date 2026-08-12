@@ -19,7 +19,11 @@ A docket is a register where nothing is entered without evidence. That is the wh
 - [Why docket](#why-docket)
 - [The guarantee](#the-guarantee)
 - [How a scan runs](#how-a-scan-runs)
+- [Finding the surface](#finding-the-surface)
+- [Static analysis, triaged by an agent](#static-analysis-triaged-by-an-agent-that-reads-the-code)
+- [Static analysis, used as a lead generator](#static-analysis-used-as-a-lead-generator)
 - [Proof, per vulnerability class](#proof-per-vulnerability-class)
+  - [Verified live](#verified-live)
 - [Agent capabilities](#agent-capabilities)
 - [Skills](#skills)
 - [The sandbox](#the-sandbox)
@@ -96,6 +100,101 @@ Structural guarantees in the agent graph:
   waiting parent cannot hang on a task that crashed
 - **Root gets 20 turns by default** (`--max-steps`); each specialist gets 12
 
+## Finding the surface
+
+docket does not assume it knows your routes. Discovery runs before the agents, as
+deterministic code rather than an agent task: the model exploits, it does not enumerate.
+An LLM crawling is slow, unreproducible, and produces prose nobody can diff.
+
+Sources are tried cheapest and most authoritative first, stopping at the first that yields:
+
+| Rung | Source | Requests |
+|---|---|---|
+| 1 | `--openapi` / `--har` you supply | **0** |
+| 2 | `/openapi.json`, `/swagger.json`, `/graphql` introspection, `robots.txt`, `sitemap.xml` | ~10 |
+| 3 | this run's captured proxy traffic | **0** |
+| 4 | bounded same-origin crawl | capped |
+
+The result is a typed, persisted `surface.json`: methods, paths, parameter names, and each
+parameter's *location* (query, form, json, path, header), which is what decides how a
+specialist injects. It is reviewable before you spend anything, diffable between runs so a
+new endpoint on the target is visible, and testable without a model.
+
+The crawl is last and fenced, because a discovery pass that can wander is how a lab tool
+becomes an incident. Off-origin links are dropped before they are ever queued, origin
+comparison is on parsed scheme/host/port rather than a string prefix, there are hard
+request/depth/page ceilings, and only `text/html` is parsed. **A cap is always reported** —
+a truncated sweep must never read as a complete one.
+
+If nothing is found, root is told so explicitly and instructed not to invent a route list.
+An honest "the surface could not be determined" beats a confident scan of three paths that
+do not exist.
+
+## Static analysis, triaged by an agent that reads the code
+
+This is the primary path. Point `--source` at a code tree (or `--sarif` at a report your CI
+already produces) and docket runs Semgrep, correlates each candidate to an endpoint, then
+**spawns one agent per candidate to read the surrounding source and rule on it.**
+
+```
+semgrep -> 15 candidates
+agent triage -> 10 CONFIRMED · 3 FALSE_POSITIVE · 2 UNCERTAIN
+```
+
+Measured on a tree where one file was genuinely vulnerable and one had the same pattern
+with an `escape()` on it: every candidate in the vulnerable file came back CONFIRMED, and
+all three in the safe file came back FALSE_POSITIVE, quoting the guard:
+
+> FALSE_POSITIVE: The user input ('q') is escaped before it is incorporated into the
+> returned HTML string. At `safe.py:6`, `q = escape(request.args.get("q", ""))` shows that
+> all potentially unsafe user-supplied data goes through `markupsafe.escape`...
+
+That is the job a rule engine cannot do and a person has to. Semgrep sees line 7; it cannot
+see the escape on line 6.
+
+**The verdict vocabulary is three-valued on purpose.** A binary confirmed/false-positive
+forces a guess, and a guessed FALSE_POSITIVE is the one outcome that gets somebody breached.
+So UNCERTAIN is a first-class answer, the prompt says to prefer it, and anything the parser
+cannot read becomes UNCERTAIN rather than either confident verdict. An agent that runs out
+of turns says UNCERTAIN, not "looks fine".
+
+**Triage has no network access.** It is the only role with file tools and the only one with
+no HTTP, shell or browser at all. A verdict must be auditable as a read of the code, not
+possibly the residue of something it probed. Reads are contained three ways: parent-traversal
+containment (not a string prefix), symlinks out of the tree refused, and bounded sizes.
+
+**A verdict is still not a finding.** Triaged rows live in `triaged`, findings in `findings`.
+The evidence for a verdict is a read of the code; the evidence for a finding is a
+reproduction. Both are useful and they are not the same thing, so the report keeps them
+apart and only `findings` drives the exit code.
+
+## Static analysis, used as a lead generator
+
+Point `--source` at a code tree, or `--sarif` at a report your CI already produces, and
+docket correlates each static candidate to the endpoint that reaches it, then sends a
+specialist to prove or disprove it.
+
+```
+semgrep -> 12 candidates
+correlate against surface.json -> 12 mapped to an endpoint
+agents exploit -> 3 PROVEN, 12 still flagged
+                  10 of those 12 are CWEs proven exploitable on this target
+```
+
+This is the part a pattern matcher cannot do. Semgrep tells you line 34 concatenates input
+into SQL; it cannot tell you which request reaches line 34 or whether that request works.
+That triage is the expensive half, and it is what the report now arrives pre-sorted by.
+
+**Static candidates are never findings.** They live in a separate `flagged_not_proven`
+list, marked unproven, and they do not touch `finding_count` or the exit code — a wall of
+candidates can never turn a clean scan red. A `Finding` is a reproduction with validated
+request and response evidence; a candidate has neither and never will. Two lists, so
+nothing downstream can present one as the other.
+
+`--sarif` accepts any SAST tool's SARIF 2.x (Semgrep, CodeQL, Bandit, gosec), which is
+usually cheaper than running an engine: no install, and it is what the team already
+standardised on.
+
 ## Proof, per vulnerability class
 
 | Class | What counts as proof |
@@ -103,6 +202,28 @@ Structural guarantees in the agent graph:
 | **SQL injection** | `sqlmap` confirms the injection and fingerprints the DBMS. Not a payload that "looked reflected" |
 | **Blind command injection** | A timing side-channel. Stdout never reaches the response, so an injected `sleep` plus a measured latency delta is the only honest oracle |
 | **Reflected XSS** | Real Chromium raises `alert()` and the dialog is captured. Proves the script *executed*, rather than that your payload appeared in the HTML |
+
+### Verified live
+
+Not a claim about the harness this time. One run, four agents, a real model reasoning
+unaided, against the bundled fixture through a real container:
+
+```
+success: True   findings: 3   agents: 4   cost: $0.108
+
+cmdi:  ?file=test.csv; sleep 5              -> "Response time: ~5016ms"
+sqli:  username=admin' --&password=[REDACTED] -> "Welcome"
+xss:   browser dialog_message='host.docker.internal'
+```
+
+Every payload was the model's own choice. The sqli specialist did not reach for sqlmap at
+all: it found `admin' --` comments out the password check, and proved the bypass with a
+request and a `Welcome`. The `[REDACTED]` is redaction firing at the write boundary.
+
+A second run on `DeepSeek-V4-Pro` through an OpenAI-compatible gateway found the same three
+classes, at 6x the tokens. Reproduce either against `tests/serve_target.py`. Read
+"Current limits" first: model choice changes cost by an order of magnitude, and one of these
+runs proved its XSS more weakly than the other.
 
 Findings carry a `Severity` (`critical`/`high`/`medium`/`low`/`info`), a CWE tag where the
 class has one, and a stable dedupe key: `sha256(rule_id|method|path|parameter)` truncated to
@@ -172,6 +293,13 @@ fallback, by design: an LLM-authored command belongs in the container or nowhere
 subprocesses docket starts on your machine are `docker` invocations. `--no-sandbox` runs
 without Docker and drops both tools rather than quietly relocating them.
 
+The SDK's own `Filesystem`/`Shell` capabilities are **off by default** (`DOCKET_SDK_SANDBOX_TOOLS=1`
+to enable). They are *hosted* tools, which only OpenAI's Responses API accepts; over the Chat
+Completions API that LiteLLM uses for everything else, a run dies before its first turn with
+`Hosted tools are not supported with the ChatCompletions API`. docket's own container-backed
+`shell` and `browser` are unaffected and do the actual work; only `apply_patch` and
+`view_image` go away, and no vulnerability class uses them.
+
 ## Cost control
 
 Budgets are checked *before* each model turn, so a run stops rather than discovering the
@@ -212,8 +340,21 @@ docket scan --target https://staging.internal \
 # CI mode: no progress output, named run, exit code as the gate
 docket scan --target https://staging.internal -n --run-name nightly
 
-# raise the turn ceiling for a larger target
-docket scan --target https://staging.internal --max-steps 40
+# hand it the target's own spec: the most authoritative source, and zero requests
+docket scan --target https://staging.internal --openapi ./openapi.json
+
+# use static analysis as a lead generator, correlated to discovered routes
+docket scan --target http://127.0.0.1:8000 --source ../my-app
+
+# or reuse the SARIF your CI already produces, from any SAST tool
+docket scan --target https://staging.internal --sarif ./semgrep.sarif
+
+# raise the turn ceiling. Children scale with it, which matters: model verbosity
+# varies ~6x for the same result
+docket scan --target https://staging.internal --max-steps 45
+
+# skip discovery and let root probe for itself
+docket scan --target https://staging.internal --no-discovery
 
 # no Docker available — costs you shell and browser
 docket scan --target http://127.0.0.1:5000 --no-sandbox
@@ -244,6 +385,8 @@ Every run writes to `docket_runs/<name>/`:
 | `artifacts/output/` | Full untruncated tool output, addressable by ref |
 | `artifacts/screenshots/` | Browser captures |
 | `artifacts/proxy_flows.jsonl` | Captured request/response pairs |
+| `surface.json` | The discovered attack surface: endpoints, params, and which source found each |
+| `static.json` | Raw static-analysis candidates, before correlation |
 | `.state/sessions.db` | Per-agent conversation history |
 
 ## Watching a scan
@@ -264,6 +407,9 @@ server serving it. No account, no upload, nothing hosted by us.
 |---|---|
 | `DOCKET_LLM` | Any LiteLLM `provider/model`, e.g. `anthropic/claude-sonnet-5` |
 | `LLM_API_KEY` | Or a provider-specific variable |
+| `DOCKET_LLM_BASE_URL` | Point at a self-hosted or proxied deployment. For an OpenAI-compatible gateway, use `openai/<gateway-model-name>` as `DOCKET_LLM` |
+| `DOCKET_STRUCTURED_OUTPUT` | `1` to send a response schema with the tool list. Off by default: it stops some models calling tools at all |
+| `DOCKET_SDK_SANDBOX_TOOLS` | `1` to add the SDK's hosted `Filesystem`/`Shell` tools. Off by default: they only work on OpenAI's Responses API |
 | `DOCKET_MAX_COST_USD` | Scan-wide budget ceiling. Default `2.00` |
 | `DOCKET_MAX_CHILD_COST_USD` | Per-specialist ceiling. Default `0.75` |
 | `DOCKET_MAX_AGENTS` | Concurrent agent cap. Default `6` |
@@ -305,7 +451,11 @@ name) are flags rather than environment variables, because they change every run
 | `engine/docket/llm/` | Context budget and conversation compaction |
 | `engine/docket/report/` | Finding model, dedupe, SARIF, writer, usage ledger |
 | `engine/docket/interface/` | CLI, Textual TUI, local web viewer |
+| `engine/docket/discovery/` | Attack-surface discovery: spec/HAR parsing, well-known probes, bounded crawl |
+| `engine/docket/static/` | SAST ingest (SARIF), Semgrep runner, correlation, agent triage |
+| `engine/docket/tools/source_read/` | Read-only, containment-checked source access for triage |
 | `engine/docket/skills/` | Markdown playbooks |
+| `app/` | Optional demo web app (FastAPI + React). Not part of the tool, not in the wheel |
 
 Built on the OpenAI Agents SDK with LiteLLM for provider routing, pydantic for the finding
 model — the trust boundary where model free-text becomes a structured report — and stdlib
@@ -334,32 +484,53 @@ so fewer specialists run at once.
 Findings from an audit of this codebase, listed because a security tool that hides its own
 gaps is worse than one that has none.
 
-- **Routes are hardcoded to the test fixture.** `build_root_task()` writes the same three
-  routes into every run's root task regardless of `--target`, and no crawl, spec-parsing or
-  discovery capability exists anywhere in the tool. Aimed at anything but the fixture, root
-  starts from three route hints that probably do not exist there, with no way to find the
-  real ones. Pass them through `--instruction` until discovery lands. This is the blocker
-  for real use, ahead of everything else on this list
+- **Static-to-route correlation is a heuristic, not dataflow.** A flagged line is paired
+  with the nearest discovered route literal *above* it. That works across Flask, FastAPI,
+  Express, Django and Rails without a per-framework plugin, and it is wrong in one known
+  way: a helper function sitting below a route decorator gets attributed to that route,
+  because nothing here follows a call graph. Every pairing carries a confidence and its
+  reason, and the agent is told to verify rather than trust it
+- **Semgrep is not bundled.** `--source` detects it (binary or `uvx`) and refuses loudly
+  when it is missing, because a silent zero would read as "your code is clean". Rules come
+  from `p/default`, not `--config=auto`, which cannot run with Semgrep's metrics disabled —
+  and they stay disabled
 - **Scope is not enforced, only requested.** The one guard point that would cover docket's
   own HTTP calls does not cover sqlmap, `curl` or Chromium, all of which open their own
   sockets from inside the container. An allowlist has to live at the container's network
   edge to mean anything
 - **Three vulnerability classes.** Specialists exist for SQL injection, command injection
   and reflected XSS. Anything else goes untested
-- **Not yet verified with a live model.** The harness is exercised end to end, but through a
-  scripted model: every tool call genuinely executes while the "which tool next" decision is
-  scripted. That proves the plumbing, not that a real model reasons its way there
-- **Blast radius is wider than the per-role tool lists suggest.** With the sandbox on, every
-  role is a `SandboxAgent` with filesystem and shell capabilities, so all roles have an
-  in-container shell even though only `sqli` is handed the `shell` tool. Still contained, but
-  not least-privilege
-- **Agents can stop without a finish tool.** The structured-output path lets the SDK end a
-  run on a plain message matching the schema, before the finish-tool gate is consulted
+- **Model cost varies enormously for the same result.** Two live runs, same fixture, all
+  three classes found by both: `gpt-4.1` took 19 model requests and 46k tokens; DeepSeek-V4-Pro
+  took 70 requests and 297k tokens, and spawned 7 specialists for 3 routes. Both correct,
+  6x apart. Nothing caps agent count per route beyond `DOCKET_MAX_AGENTS`
+- **The evidence gate proves the output is real, not that it proves the claim.** It rejects an
+  empty or invented `request`/`response`, which is what stops fabrication. It cannot judge
+  whether what came back supports the verdict. Seen live: an XSS specialist filed
+  reflection-only evidence — the payload echoed in the HTML — where the prompt asks for a
+  captured `dialog_message` from a real DOM. A true finding, proved weakly. Read the PoC,
+  do not just count findings
+- **A response schema and tools together defeat some models**, which is why `output_type` is
+  off unless `DOCKET_STRUCTURED_OUTPUT=1`. With a schema present, `DeepSeek-V4-Pro`,
+  `DeepSeek-V3.2`, `Kimi-K2.5` and `Llama-3.3-70B` each answered the schema and called no
+  tool at all; each calls tools normally without one. docket reads the finish tool's dict out
+  of the run items instead, so the schema is not needed. Turn it on only for a model that
+  needs it, and check a new model against the fixture first either way
+- **A run can still end without the finish tool, it just cannot lie about it now.** The SDK
+  ends a run on any plain assistant message matching `output_type`, and it checks that
+  *before* the tool-use gate. Observed live: a model emitted a schema-shaped message on turn
+  one with zero tool calls, inventing finding IDs and a verdict for routes it never
+  requested. docket now discards that, re-prompts, and refuses on the third attempt rather
+  than printing it. But the escape itself is the SDK's, and it is still there
+- **Budget enforcement is inert for models LiteLLM cannot price.** Cost is computed from
+  LiteLLM's price map, so a self-hosted or gateway model it does not recognise is charged
+  \$0.00 per turn and the ceilings never fire. Seen live: 8,562 tokens billed as nothing.
+  Token counts stay correct; only the money does not
 - **Compaction is reactive and can decline.** It runs only after the provider rejects an
   oversized request, then second-guesses that with a token estimate, and gives up if the
   estimate disagrees
 - **Budgets can overshoot.** The gate is pre-turn but the charge is post-turn, so concurrent
-  agents can each slip one turn past the cap
+  agents can each slip one turn past the cap. Separately, see the pricing gap above
 - **No scope controls or rate limiting.** Out-of-scope routes are avoided only by asking in
   `--instruction`
 - **`--out-dir` splits a run across two directories**, so `docket view` cannot find it.
@@ -380,36 +551,36 @@ the lane markings go in first.
    egress and deny by default there, so sqlmap, `curl` and Chromium are covered by the same
    guard as docket's own requests. A rule enforced anywhere above the socket is bypassed by
    the first tool that opens its own
-2. **Target discovery** — replace the hardcoded route list with a typed, persisted attack
-   surface (`method`, `path`, params and their location, content type, auth), written to the
-   run directory so it is reviewable before spend, diffable between runs, and testable
-   without a model. Deterministic code, not an agent task: the model exploits, it does not
-   enumerate. Cheapest authoritative source first, stopping at the first that yields
-   endpoints — an OpenAPI/GraphQL/HAR file passed in, then well-known paths
-   (`/openapi.json`, `/graphql` introspection, `robots.txt`, `sitemap.xml`), then flows
-   captured through the proxy, and only then a bounded same-origin crawl with `html.parser`,
-   depth 2 and a hard request cap. When the surface comes back empty root must be *told* it
-   is empty, rather than handed fiction as fact
+2. **Dataflow-backed correlation** — discovery and static analysis both landed, but the
+   static-sink-to-route pairing is nearest-literal-above with no call graph, so a sink in a
+   helper is attributed to whatever route sits above it. Worth upgrading once findings in
+   shared helpers matter more than the endpoints themselves
 3. **Expose the proxy** — capture, modify and replay is already built and tested, just not
    registered as a tool. It is also rung 3 of discovery and the route to authenticated
    scanning, so it pays for itself three times
 4. **Authenticated scanning** — a real login flow and session reuse, instead of pasting
    credentials into `--instruction`
-5. **A scheduled live-model eval** — the fixture scan run against a real model on a timer,
-   asserting all three classes are still found, with cost and turns recorded. Off the
-   per-push path, since it costs money and is nondeterministic. Nothing currently fails when
-   a prompt edit makes the agents worse
+5. **A scheduled live-model eval** — one live run now passes by hand, which is what shook out
+   the hosted-tools incompatibility, the fabricated-summary escape and a missing base URL.
+   Make it a timed job against the fixture asserting all three classes still land, recording
+   cost and turns. Off the per-push path, since it costs money and is nondeterministic.
+   Nothing automated currently fails when a prompt edit makes the agents worse
 6. **More classes** — IDOR/BOLA, SSRF, path traversal, auth bypass, SSTI, open redirect.
    Adding one is a role literal, a prompt and a tool grant. Worth little until a scan can
    find the routes to point them at
-7. **Source-aware scanning** — the plumbing accepts a source path but nothing mounts or
-   reads it
+7. **Deeper source use** — `--source` feeds Semgrep and correlation today. The agents still
+   never read the code themselves, so they cannot reason about a sink's guards or spot logic
+   flaws no rule encodes
 8. **A packaged CI action** — SARIF and exit codes already exist, so this is thin
 
 ## Development
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev loop and for adding tools, skills and
 vulnerability classes, and [`AGENTS.md`](AGENTS.md) for the invariants you must not break.
+
+[`app/`](app/README.md) is an optional browser front end for demoing a scan: start one, watch
+agents prove things live, page through past runs. It installs separately
+(`uv sync --extra app`) and the tool does not depend on it.
 
 ## License
 

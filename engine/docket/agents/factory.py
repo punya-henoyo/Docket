@@ -8,6 +8,8 @@ construct the children it spawns), so importing it back here would cycle. The ca
 """
 from __future__ import annotations
 
+import os
+
 import asyncio
 from typing import Any, Literal
 
@@ -16,6 +18,29 @@ from agents.extensions.models.litellm_model import LitellmModel
 from agents.models.interface import Model
 from agents.sandbox import SandboxAgent
 from agents.sandbox.capabilities import Filesystem, Shell
+
+
+def _absolutize(url: str, target_url: str) -> str:
+    """Resolve a bare path against the scan target.
+
+    Models pass "/login" as often as the full URL. urllib answers that with
+    `ValueError: unknown url type: '/login'`, which taught the first live run's agents
+    nothing except to start guessing hosts — they landed on `localhost`, which inside
+    the sandbox container is the container. Resolving here, at the one wrapper every
+    HTTP tool call passes through, is cheaper than a prompt telling them not to.
+
+    A host the model supplied is left alone, including a wrong one: silently rewriting
+    an absolute URL would hide an out-of-scope request instead of letting it fail
+    visibly.
+    """
+    url = (url or "").strip()
+    if not url:
+        return url
+    if url.startswith("/") and target_url:
+        return target_url.rstrip("/") + url
+    if "://" not in url and target_url:
+        return target_url.rstrip("/") + "/" + url
+    return url
 
 from docket.config.settings import Config
 from docket.core.execution import ScanContext
@@ -26,6 +51,7 @@ from docket.agents.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
 from docket.agents.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
 from docket.agents.prompts.recon import SYSTEM_PROMPT as RECON_SYSTEM_PROMPT
 from docket.agents.prompts.triage import SYSTEM_PROMPT as TRIAGE_SYSTEM_PROMPT
+from docket.agents.prompts.triage_static import SYSTEM_PROMPT as TRIAGE_STATIC_PROMPT
 from docket.tools.recon.tool import record_surface
 from docket.tools.source.tools import list_source, read_source, search_source
 from docket.tools.triage.tool import triage_verdict
@@ -37,8 +63,19 @@ from docket.tools.thinking.tool import think
 from docket.tools.todo.tools import set_todos, view_todos
 from docket.tools.web_search.tool import web_search
 from docket.tools.http_request.tools import do_http_request
+from docket.tools.source_read import tools as source_read
 
-Role = Literal["root", "sqli", "cmdi", "xss", "triage", "recon"]
+# `recon`, `triage` and `triage_static` read source and get NO network tools at all —
+# see build_agent. Two triage roles exist because two triage agents were built in
+# parallel: `triage` (core/triage.py) judges reachability and is the wired one;
+# `triage_static` (static/triage.py) rules on a correlated Semgrep candidate and is kept
+# but not wired. They were BOTH spelled "triage" after the merge, which made the second
+# `elif` unreachable — static triage would have silently run the other agent's prompt
+# and finish tool.
+# ponytail: collapse to one triage role once a real run shows which prompt holds up.
+Role = Literal["root", "sqli", "cmdi", "xss", "triage", "triage_static", "recon"]
+# Root spawns attack specialists only. Triage and recon are driven by the runner, not
+# delegated by root, so they are deliberately absent here.
 SpecialistRole = Literal["sqli", "cmdi", "xss"]
 
 _FINISH_TOOL_NAMES = {"finish_scan", "agent_finish", "triage_verdict", "record_surface"}
@@ -61,6 +98,7 @@ async def http_request(
     # blocking call (e.g. the deliberate 3s timing probe for blind command injection)
     # must not freeze the event loop for every other concurrently running agent.
     # Without this, "multi-agent" would be multi-agent in name only.
+    url = _absolutize(url, ctx.context.target_url)
     sandbox = ctx.context.sandbox
     if sandbox is not None:
         return await asyncio.to_thread(
@@ -262,6 +300,48 @@ async def web_search_tool(
 # Agent utilities every role gets: reasoning, shared memory, task tracking, and the
 # ability to pull in a playbook. None of them touch the target, so there's no reason
 # to withhold any of them from a specialist.
+@function_tool
+async def read_around(
+    ctx: RunContextWrapper[ScanContext], path: str, line: int, context: int = 12,
+) -> dict:
+    """Read the lines surrounding `line` in `path`. Start here when triaging: a guard three
+    lines above a sink is invisible to a rule engine and obvious in this window."""
+    return await asyncio.to_thread(
+        source_read.read_around, ctx.context.source_root or "", path, line, context=context,
+    )
+
+
+@function_tool
+async def read_source(
+    ctx: RunContextWrapper[ScanContext], path: str,
+    start_line: int | None = None, end_line: int | None = None,
+) -> dict:
+    """Read a source file, or a 1-indexed inclusive line range of it."""
+    return await asyncio.to_thread(
+        source_read.read_source, ctx.context.source_root or "", path,
+        start_line=start_line, end_line=end_line,
+    )
+
+
+@function_tool
+async def list_source(ctx: RunContextWrapper[ScanContext], path: str = ".") -> dict:
+    """List a directory in the repository."""
+    return await asyncio.to_thread(source_read.list_source, ctx.context.source_root or "", path)
+
+
+@function_tool
+async def grep_source(
+    ctx: RunContextWrapper[ScanContext], pattern: str, path: str = ".",
+) -> dict:
+    """Literal substring search across the repository. Not a regex — use it to find where a
+    helper is defined or called."""
+    return await asyncio.to_thread(
+        source_read.grep_source, ctx.context.source_root or "", pattern, path=path,
+    )
+
+
+_SOURCE_TOOLS: list[Tool] = [read_around, read_source, list_source, grep_source]
+
 _COMMON_TOOLS: list[Tool] = [thinking, notes, todo, load_skill_tool, list_skills_tool, web_search_tool]
 
 
@@ -303,6 +383,15 @@ def build_agent(
         # Root delegates, so it gets no `finding`; it does get `respond`, being the
         # agent that speaks for the scan.
         base_tools: list[Tool] = [http_request, respond, *_COMMON_TOOLS]
+    elif role == "triage_static":
+        # NO http_request, NO shell, NO browser. Triage reads code and rules on a
+        # candidate; giving it network access would let it wander into attacking a target
+        # this product no longer points at, and would make a verdict impossible to audit
+        # (was that FALSE_POSITIVE reasoning, or something it probed?).
+        instructions = TRIAGE_STATIC_PROMPT
+        base_tools = [*_SOURCE_TOOLS, *_COMMON_TOOLS]
+        finish_tool = agent_finish
+        name = "triage-static-agent"
     elif role in ("sqli", "cmdi", "xss"):
         instructions = SPECIALIST_SYSTEM_PROMPT
         finish_tool = agent_finish
@@ -359,21 +448,28 @@ def build_agent(
         # tool's dict from being stringified) is now done losslessly by
         # ScanContext.final_result.
         #
-        # Removing it also closes the README's "agents can stop without a finish tool"
-        # gap at the root: with no output_type there is no schema for a stray message
-        # to match, and tool_choice="required" below blocks the bare-text exit.
-        # Previously built and then dropped on the floor (the README's "per-request
-        # model settings are not applied" gap). Applying them is what carries
-        # tool_choice="required", without which an agent can end a run on a plain
-        # message that happens to match output_type — see build_model_settings.
+        # Removing it also closes the "agents can stop without a finish tool" gap at the
+        # root: with no output_type there is no schema for a stray message to match, and
+        # tool_choice="required" blocks the bare-text exit. run_agent_loop keeps its
+        # correction-and-refuse path as the recovery half — prevention here, recovery
+        # there, because a provider that ignores tool_choice would otherwise be silent.
         "model_settings": build_model_settings(config.llm),
     }
     if sandbox is not None and supports_hosted_tools(common["model"]):
         from docket.runtime.sdk_session import DocketSandboxSession
 
-        # SandboxAgent + capabilities is why tools/shell/, apply_patch/ and
-        # view_image/ are README-only: those tools come from the SDK, aimed at a
-        # real container by this session.
+        # OPT-IN, and off by default, because these are HOSTED tools: the SDK sends them
+        # as provider-side tool types that only OpenAI's Responses API accepts. Over the
+        # Chat Completions API — which is what LiteLLM uses for every other provider and
+        # for OpenAI-compatible gateways — the run dies before its first turn with
+        # "Hosted tools are not supported with the ChatCompletions API. Got tool type:
+        # SandboxApplyPatchTool". No scripted test could catch that, because a scripted
+        # model never serializes the tool list to a provider.
+        #
+        # Nothing load-bearing is lost by leaving this off: `common["tools"]` already
+        # carries our own shell/browser function tools, which reach the same container
+        # through the RPC shim. Only apply_patch and view_image go away, and neither is
+        # used by any of the three vulnerability classes.
         session = DocketSandboxSession(sandbox)
         return SandboxAgent[ScanContext](
             **common, capabilities=[Filesystem(session=session), Shell(session=session)],

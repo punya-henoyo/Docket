@@ -12,7 +12,7 @@ from docket.report.dedupe import FindingStore
 from docket.report.models import Finding, Severity
 from docket.report.sarif import write_sarif
 from docket.report.state import get_global_report_state
-from docket.utils.secret_files import redact_tree
+from docket.utils.secret_files import redact_document
 
 _SEVERITY_ORDER = list(Severity)  # CRITICAL first, per declaration order in models.py
 
@@ -37,11 +37,66 @@ def build_report(
     cost_usd: float = 0.0,
     agents_spawned: int = 0,
     success: bool = True,
+    leads: list | None = None,
+    triage: object | None = None,
     coverage: dict | None = None,
     surface: dict | None = None,
     agents: list[dict] | None = None,
 ) -> dict:
+    """`leads` are static-analysis candidates (docket.static.correlate.Lead). They are
+    reported in a SEPARATE list from `findings` and never merged into it.
+
+    A Finding is a reproduction: its PoC request and response are validated non-empty at
+    construction, which is the guarantee the whole tool rests on. A static candidate has
+    neither and never will. Merging them would force the validator to accept blanks and
+    delete that guarantee for every finding, not just these. Keeping two lists also means
+    nothing downstream can accidentally present a lead as a confirmed exploit — the
+    structure enforces the distinction, not a naming convention.
+
+    Note `finding_count` and the exit code stay driven by proven findings only. A wall of
+    unproven candidates must never turn a clean scan red.
+    """
     findings = sort_findings(store.findings())
+    # Cross-link static leads to proven findings by CWE, which is the finest granularity
+    # actually available. A Finding records the ROUTE it exploited, not the source line —
+    # `location.source_file` is optional and usually null, because an agent works from the
+    # outside and has no reason to know which line it reached. So this answers "was a
+    # vulnerability of this class proven exploitable on this target", not "was this exact
+    # line proven". The field name says so, rather than implying line-level proof.
+    proven_cwes = {f.cwe for f in findings if getattr(f, "cwe", None)}
+    flagged = []
+    for lead in leads or []:
+        finding = lead.finding
+        flagged.append({
+            "rule_id": finding.rule_id,
+            "engine": finding.engine,
+            "severity": finding.severity,
+            "cwe": finding.cwe,
+            "message": finding.message,
+            "file": finding.file,
+            "line": finding.line,
+            "snippet": finding.snippet,
+            "status": "flagged_not_proven",
+            "endpoint": (f"{lead.endpoint.method} {lead.endpoint.path}"
+                          if lead.endpoint else None),
+            "reachable": lead.reachable,
+            "correlation_confidence": lead.confidence,
+            "correlation_reason": lead.why,
+            # Did an agent prove this CWE exploitable on this target? Turns two unrelated
+            # lists into a hand-off a reader can follow: a flagged CWE-89 next to a proven
+            # CWE-89 says "the pattern matcher was right about this class here".
+            "cwe_proven_dynamically": bool(finding.cwe and finding.cwe in proven_cwes),
+        })
+    # When triage ran, a candidate carries a verdict from an agent that READ the code.
+    # That row supersedes the bare candidate: "flagged, and here is why an engineer thinks
+    # it is real" is a different artifact from "flagged".
+    triage_rows = [v.to_dict() for v in getattr(triage, "verdicts", []) or []]
+    triage_counts = triage.counts() if hasattr(triage, "counts") else {}
+    triaged_keys = {(r["file"], r["line"], r["rule_id"]) for r in triage_rows}
+    if triage_rows:
+        flagged = [f for f in flagged
+                    if (f["file"], f["line"], f["rule_id"]) not in triaged_keys]
+
     return {
         "run_name": run_name,
         "docket_version": __version__,
@@ -64,6 +119,15 @@ def build_report(
         # the run and is gone the moment the console reloads.
         "agents": agents or [],
         "severity_counts": severity_counts(findings),
+        # Static candidates: leads, not results. Explicitly unproven, counted separately,
+        # and deliberately NOT part of finding_count or the exit code.
+        "flagged_count": len(flagged),
+        "flagged_not_proven": flagged,
+        # Triaged candidates: a verdict from an agent that read the surrounding source,
+        # with its reasoning. Still NOT `findings` — the evidence is a read of the code,
+        # not a reproduction, and the two must stay distinguishable.
+        "triage_counts": triage_counts,
+        "triaged": triage_rows,
         # Per-agent token accounting: explains where the run's cost actually went.
         "usage": get_global_report_state().usage.to_dict(),
         "findings": [f.model_dump(mode="json") for f in findings],
@@ -80,6 +144,8 @@ def write_report(
     cost_usd: float = 0.0,
     agents_spawned: int = 0,
     success: bool = True,
+    leads: list | None = None,
+    triage: object | None = None,
     coverage: dict | None = None,
     surface: dict | None = None,
     agents: list[dict] | None = None,
@@ -87,17 +153,17 @@ def write_report(
     out_dir.mkdir(parents=True, exist_ok=True)
     report = build_report(
         store, run_name=run_name, target=target, summary=summary,
-        cost_usd=cost_usd, agents_spawned=agents_spawned, success=success,
-        coverage=coverage, surface=surface, agents=agents,
+        cost_usd=cost_usd, agents_spawned=agents_spawned, success=success, leads=leads,
+        triage=triage, coverage=coverage, surface=surface, agents=agents,
     )
     json_path = out_dir / "report.json"
     # Same redaction boundary as SARIF — see write_sarif. This also catches the raw
     # exception strings folded into `summary`, which are the one realistic way our OWN
     # key could reach an artifact (a LiteLLM auth error echoing what it was given).
-    # Redact the STRUCTURE, then serialize. Redacting the serialized text could
-    # break a JSON escape and produce a report nothing can read back — see
-    # utils/secret_files.redact_tree.
-    json_path.write_text(json.dumps(redact_tree(report), indent=2))
+    # redact_document, NOT redact(json.dumps(...)): the latter runs the patterns over
+    # escaped JSON and can eat a backslash, leaving a bare quote and an unparseable
+    # report. See redact_document's docstring for the exact input that did it.
+    json_path.write_text(json.dumps(redact_document(report), indent=2))
     sarif_path = write_sarif(out_dir / "report.sarif", sort_findings(store.findings()), target=target)
     return {"json": json_path, "sarif": sarif_path}
 
@@ -113,6 +179,25 @@ def format_summary(report: dict, *, paths: dict[str, Path] | None = None, full: 
         f"docket scan complete — target {report['target']}",
         f"{report['finding_count']} finding(s) ({present})",
     ]
+    if report.get("triage_counts"):
+        c = report["triage_counts"]
+        lines.append(
+            f"{sum(c.values())} static candidate(s) triaged by an agent that read the "
+            f"code: {c.get('CONFIRMED', 0)} confirmed, "
+            f"{c.get('FALSE_POSITIVE', 0)} false positive, "
+            f"{c.get('UNCERTAIN', 0)} uncertain"
+        )
+    if report.get("flagged_count"):
+        # Stated separately and labelled unproven, so a reader cannot read the two
+        # numbers as one total. Silence here would hide the static coverage entirely.
+        flagged = report.get("flagged_not_proven", [])
+        reachable = sum(1 for f in flagged if f.get("reachable"))
+        confirmed = sum(1 for f in flagged if f.get("cwe_proven_dynamically"))
+        lines.append(
+            f"{report['flagged_count']} static candidate(s) NOT proven "
+            f"({reachable} mapped to an endpoint, {confirmed} whose CWE was proven "
+            f"elsewhere on this target) — leads only, see flagged_not_proven"
+        )
     for finding in findings:
         param = f" ({finding['location']['parameter']})" if finding["location"].get("parameter") else ""
         lines.append(

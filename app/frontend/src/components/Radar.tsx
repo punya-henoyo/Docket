@@ -64,7 +64,9 @@ export function Radar({
   const blips = useMemo<Blip[]>(() => {
     if (!scan) return [];
     return scan.findings.map((finding) => {
-      const angle = (angleFor(finding.id || finding.rule_id) * Math.PI) / 180;
+      // Any stable string will do — the blip only needs a deterministic angle. Both
+      // fields can be absent on an event-stream projection.
+      const angle = (angleFor(finding.id || finding.rule_id || finding.title || "?") * Math.PI) / 180;
       const radius = CORE + SEVERITY_RADIUS[finding.severity] * (MAX_R - CORE);
       return {
         finding,

@@ -52,6 +52,13 @@ class EventEmitter:
         self.emit("tool_result", agent_id=agent_id, role=role, tool=tool,
                   output=truncate(str(output), 600))
 
+    def log_discovery(self, endpoint_count: int, requests: int, sources: list[str]) -> None:
+        self.emit("discovery", endpoint_count=endpoint_count, requests=requests,
+                  sources=sources)
+
+    def log_static(self, note: str) -> None:
+        self.emit("static", note=note)
+
     def finding(self, agent_id: str, role: str, **finding: Any) -> None:
         self.emit("finding", agent_id=agent_id, role=role, **finding)
 

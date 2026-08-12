@@ -74,7 +74,18 @@ class _Handler(BaseHTTPRequestHandler):
             # V3 — REFLECTED XSS: untrusted input rendered into HTML without escaping.
             self._reply(200, "<h1>Results for " + q + "</h1>")
         elif parsed.path == "/":
-            self._reply(200, "<h1>target fixture</h1>")
+            # A landing page that actually links to the app, because a real one does and
+            # because discovery has to have something to crawl. Without the form and the
+            # links, docket.discovery finds zero endpoints here and root is correctly told
+            # the surface is unknown — honest, but it makes the whole discovery path
+            # untestable against the only target we ship.
+            self._reply(200,
+                "<h1>target fixture</h1>"
+                '<form method="post" action="/login">'
+                '<input name="username"><input type="password" name="password">'
+                '<button type="submit">Sign in</button></form>'
+                '<form method="get" action="/search"><input name="q"></form>'
+                '<a href="/export?file=report.csv">export</a>')
         else:
             self._reply(404, html.escape("not found"))
 

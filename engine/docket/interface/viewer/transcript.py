@@ -48,6 +48,12 @@ def build_payload(run_dir: Path) -> dict:
         "summary": report.get("summary") or view.summary,
         "severity_counts": report.get("severity_counts") or view.severity_counts(),
         "finding_count": report.get("finding_count", len(findings)),
+        # Static candidates, forwarded so a viewer can show them. Kept as their own keys
+        # rather than merged into `findings`, for the same reason report.json keeps two
+        # lists: a candidate carries no reproduced evidence and must never render as a
+        # proven finding. Absent for a live run — they only exist once the report is written.
+        "flagged_count": report.get("flagged_count", 0),
+        "flagged_not_proven": report.get("flagged_not_proven", []),
         "cost_usd": report.get("cost_usd", view.cost_usd),
         "usage": report.get("usage", {}),
         "agents": agents,
@@ -84,10 +90,16 @@ def demo() -> None:
             "run_name": "r", "target": "http://x", "finding_count": 2,
             "severity_counts": {"high": 1, "critical": 1}, "cost_usd": 0.5,
             "findings": [{"rule_id": "sql-injection"}, {"rule_id": "command-injection"}],
+            "flagged_count": 1,
+            "flagged_not_proven": [{"file": "app.py", "line": 34, "cwe": "CWE-89"}],
         }))
         (tmp / "report.sarif").write_text("{}")
         final = build_payload(tmp)
         assert final["finding_count"] == 2 and final["cost_usd"] == 0.5
+        # Static candidates reach the payload, and stay OUT of `findings`.
+        assert final["flagged_count"] == 1, final["flagged_count"]
+        assert final["flagged_not_proven"][0]["file"] == "app.py"
+        assert all("file" not in f for f in final["findings"])
         assert final["severity_counts"] == {"high": 1, "critical": 1}
         assert final["has_sarif"] is True
         # A corrupt report degrades to the event view rather than raising.

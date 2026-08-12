@@ -26,58 +26,151 @@ Rules:
 """
 
 
-def build_root_task(target_url: str, instruction: str | None,
-                    surface: dict | None = None) -> str:
-    """Renders root's opening task, from the recon agent's map when there is one.
+def build_root_task(
+    target_url: str,
+    instruction: str | None,
+    surface: object | None = None,
+    leads: list | None = None,
+) -> str:
+    """Renders root's opening task from a discovered attack surface.
 
-    This closes the gap this docstring used to describe: the route list was the test
-    fixture's three routes, asserted as fact for ANY target. That is worse than an
-    empty list — root was handed fiction confidently, went looking for routes that do
-    not exist on the actual target, and reported nothing without ever signalling it
-    had been misinformed.
-
-    The AI recon agent now produces a real map by reading the repository, and
-    render_attack_plan turns it into these lines. Each carries the parameters the
-    handler reads, whether anything guards it, and the file it was read from — so a
-    specialist knows where to aim and root can say where a route came from.
-
-    When there is no map, the fixture list is used and LABELLED as a fixture, so a
-    misinformed run is visible instead of silent. That fallback is the remaining half
-    of the old problem, and it now announces itself.
+    `surface` is a discovery.models.AttackSurface. When it is absent or empty, root is
+    told so EXPLICITLY and asked to probe — never handed the fixture's routes as if they
+    were facts about the target. That was the old behaviour and its failure mode was
+    worse than an empty list: root confidently tested three paths that may not exist,
+    found nothing, and reported success without ever signalling it was misinformed.
     """
-    from docket.core.surface_findings import render_attack_plan
+    lines = [f"Target: {target_url}"]
+    endpoints = list(getattr(surface, "endpoints", []) or [])
 
-    discovered = render_attack_plan(surface)
-    if discovered:
-        lines = [
-            f"Target: {target_url}",
-            "Attack surface mapped from source by the recon agent. Every route below "
-            "was read out of a real file, named at the end of each line:",
-            *discovered,
-            "",
-            "Routes marked with no auth, or an auth check its siblings have and it "
-            "does not, are where to start. Spawn one specialist per route worth "
-            "testing, wait for them, then aggregate their findings.",
-        ]
-        if instruction:
-            lines.append(f"Extra context from the operator: {instruction}")
-        return "\n".join(lines)
+    if endpoints:
+        lines.append(
+            f"{len(endpoints)} endpoint(s) were discovered on this target "
+            f"(from {', '.join(getattr(surface, 'sources_tried', []) or ['discovery'])}). "
+            "These are observed, not guessed:"
+        )
+        lines += [f"- {e.describe()}" for e in endpoints[:_MAX_LISTED]]
+        if len(endpoints) > _MAX_LISTED:
+            lines.append(
+                f"- ...and {len(endpoints) - _MAX_LISTED} more in surface.json. Prioritise "
+                "what you listed; do not assume the rest are safe."
+            )
+        for note in getattr(surface, "notes", []) or []:
+            lines.append(f"Note on discovery: {note}")
+        lines.append(
+            "Pick the endpoints worth testing and spawn ONE specialist per "
+            "(vulnerability class, endpoint) pair. A parameter named in the list is a "
+            "candidate injection point. Endpoints marked 'auth required' need credentials "
+            "— use what the operator gave you, or say so and move on."
+        )
+    else:
+        lines.append(
+            "NO endpoints were discovered. Discovery found nothing: the target may need "
+            "authentication, publish no spec, render its routes client-side, or simply be "
+            "unreachable. You have NOT been given a route list, so do not invent one."
+        )
+        lines.append(
+            "Use `http_request` yourself to probe a small number of likely paths before "
+            "spawning anyone. If you still find nothing, call `finish_scan` and say "
+            "plainly that the surface could not be determined. Reporting an honest "
+            "nothing is correct; guessing is not."
+        )
+        for note in getattr(surface, "notes", []) or []:
+            lines.append(f"Note on discovery: {note}")
 
-    lines = [
-        f"Target: {target_url}",
-        "NO ATTACK SURFACE WAS MAPPED for this target — the routes below are the test "
-        "fixture's, not this application's. Treat them as a guess: confirm each one "
-        "exists before spending a specialist on it, and say so if they do not.",
-        "- POST /login (form fields: username, password) -> role \"sqli\": check for "
-        "an injection-style auth bypass.",
-        "- GET /export?file=... -> role \"cmdi\": check whether `file` can influence "
-        "server-side command execution. This may be BLIND (the response body never "
-        "changes regardless of what the command does) — a timing side-channel is a "
-        "valid, real proof technique.",
-        "- GET /search?q=... -> role \"xss\": check whether input is reflected "
-        "unescaped in the response body.",
-        "Spawn one specialist per route, wait for them, then aggregate their findings.",
-    ]
+    if leads:
+        reachable = [lead for lead in leads if getattr(lead, "reachable", False)]
+        lines.append("")
+        lines.append(
+            f"STATIC ANALYSIS produced {len(leads)} candidate(s), {len(reachable)} of "
+            "which a discovered endpoint appears to reach. These are UNPROVEN leads from "
+            "a pattern matcher, not findings. Each names a file and line where dangerous "
+            "code was flagged, and the request that may reach it:"
+        )
+        for lead in reachable[:_MAX_LISTED]:
+            lines.append(f"- {lead.describe()}")
+        unmapped = len(leads) - len(reachable)
+        if unmapped:
+            lines.append(
+                f"- ...and {unmapped} candidate(s) with no endpoint mapped. Ignore them "
+                "unless you run out of leads: without a route you cannot reach the code."
+            )
+        lines.append(
+            "Prioritise these over blind probing — a named sink with a route is the "
+            "cheapest thing on this target to prove or rule out. The correlation is a "
+            "HEURISTIC (nearest route literal above the line, no dataflow), so verify it "
+            "rather than trusting it, and register a finding only if you actually exploit "
+            "it. A lead you cannot exploit is a lead, not a finding: leave it alone and "
+            "it stays in the report as unproven."
+        )
+
     if instruction:
         lines.append(f"Extra context from the operator: {instruction}")
+    lines.append(
+        "Spawn specialists, wait for them with `wait_for_agents`, then aggregate what "
+        "they PROVED with `finish_scan`."
+    )
     return "\n".join(lines)
+
+
+_MAX_LISTED = 40
+
+
+def demo() -> None:
+    from docket.discovery.models import AttackSurface, Endpoint, Param
+
+    # With a surface, root is handed observations.
+    s = AttackSurface(target="http://t.test", sources_tried=["well-known"])
+    s.add(Endpoint("POST", "/api/login", params=(Param("email", "json", True),),
+                    auth_required=True))
+    task = build_root_task("http://t.test", None, s)
+    assert "POST /api/login" in task and "email(json)" in task
+    assert "auth required" in task
+    assert "1 endpoint(s) were discovered" in task
+    # The fixture's routes must NOT appear from nowhere.
+    assert "/export" not in task and "/search" not in task
+
+    # With nothing, root is told nothing was found and instructed not to invent.
+    empty = build_root_task("http://t.test", None, AttackSurface(target="http://t.test"))
+    assert "NO endpoints were discovered" in empty
+    assert "do not invent one" in empty
+    assert "/login" not in empty, "an empty surface must not leak example routes"
+
+    # No surface argument at all behaves like an empty one, not like the old hardcoding.
+    assert "NO endpoints were discovered" in build_root_task("http://t.test", None)
+
+    # Operator instruction survives both branches.
+    assert "creds a/b" in build_root_task("http://t.test", "creds a/b", s)
+    assert "creds a/b" in build_root_task("http://t.test", "creds a/b")
+
+    # --- static leads ----------------------------------------------------------------
+    from docket.static.correlate import Lead
+    from docket.static.models import StaticFinding
+
+    sink = StaticFinding("sqli", "input in query", "app.py", 34, "high", "CWE-89")
+    mapped = Lead(sink, Endpoint("POST", "/login"), "high", "'/login' appears 4 line(s) above")
+    orphan = Lead(StaticFinding("x", "m", "helpers.py", 9), None, "none", "no route above")
+    with_leads = build_root_task("http://t.test", None, s, [mapped, orphan])
+    assert "STATIC ANALYSIS produced 2 candidate(s), 1 of which" in with_leads
+    assert "app.py:34" in with_leads and "CWE-89" in with_leads
+    assert "1 candidate(s) with no endpoint mapped" in with_leads
+    # The heuristic must be flagged AS a heuristic, or the model trusts the pairing.
+    assert "HEURISTIC" in with_leads
+    # And a lead must never read as a finding.
+    assert "UNPROVEN leads" in with_leads
+    # No leads: the section is absent entirely rather than saying "0 candidates".
+    assert "STATIC ANALYSIS" not in build_root_task("http://t.test", None, s)
+    assert "STATIC ANALYSIS" not in build_root_task("http://t.test", None, s, [])
+
+    # A long surface is truncated, and the truncation is stated rather than silent.
+    big = AttackSurface(target="http://t.test")
+    for i in range(_MAX_LISTED + 5):
+        big.add(Endpoint("GET", f"/p{i}"))
+    long_task = build_root_task("http://t.test", None, big)
+    assert "and 5 more in surface.json" in long_task
+    assert "/p0" in long_task and f"/p{_MAX_LISTED + 4}" not in long_task
+    print("agents.prompts.root: ok")
+
+
+if __name__ == "__main__":
+    demo()

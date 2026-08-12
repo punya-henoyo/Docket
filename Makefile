@@ -28,6 +28,14 @@ check:
 	  docket.config.settings docket.config.models \
 	  docket.core.agents docket.core.paths docket.core.sessions docket.core.inputs docket.core.hooks \
 	  docket.llm.context_budget docket.llm.compaction \
+	  docket.discovery.models docket.discovery.sources docket.discovery.discover \
+	  docket.static.models docket.static.engines docket.static.correlate \
+	  docket.static.triage docket.tools.source_read.tools \
+	  docket.agents.prompts.triage_static \
+	  docket.core.triage docket.core.recon \
+	  docket.tools.triage.tool docket.tools.recon.tool docket.tools.source.tools \
+	  docket.report.markdown \
+	  docket.agents.prompts.root \
 	  docket.report.models docket.report.dedupe docket.report.sarif docket.report.writer \
 	  docket.report.state docket.report.usage \
 	  docket.tools.output_store docket.tools.shell.tools docket.tools.http_request.tools \

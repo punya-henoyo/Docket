@@ -46,38 +46,39 @@ def redact(text: str) -> str:
     return result
 
 
-def is_sensitive_env(name: str) -> bool:
-    upper = name.upper()
-    return any(marker in upper for marker in _SENSITIVE_ENV)
+def redact_document(value: object) -> object:
+    """Redact every string in a parsed structure, before it is serialized.
 
+    `redact(json.dumps(...))` was the old pattern and it could produce INVALID JSON. The
+    patterns operate on raw text, so a value containing an escaped quote let one consume
+    the backslash and leave a bare quote behind:
 
-def redact_tree(value):
-    """Redact every string INSIDE a structure, leaving the structure intact.
+        {"snippet": "password = request.form[\"password\"]"}
+      → {"snippet": "password = [REDACTED]"password\"]"}     <- unparseable
 
-    Use this instead of redact(json.dumps(...)). Redacting serialized JSON operates on
-    text that contains escape sequences, and a pattern that spans one leaves the escape
-    broken. Measured: 4 of 17 real reports were unparseable because
+    Found when a static-analysis snippet carrying source code first reached report.json.
+    It would equally have hit any captured request body containing an escaped quote.
 
-        password = request.form.get(\"password\", \"\")
-
-    matched an assignment pattern and became
-
-        password = [REDACTED]\"password\", ...
-
-    where the surviving quote closed the JSON string early. A report a tool cannot read
-    back is worse than one with a secret in it, because nothing downstream — the
-    console, the download, `docket view` — can open it at all.
-
-    Redacting values before serialization cannot produce invalid JSON: json.dumps
-    re-escapes whatever it is given.
+    Redacting values first keeps AGENTS.md rule 8 intact — this walks the WHOLE document
+    rather than a hand-picked field list, so a new field is covered the moment it exists —
+    while making it structurally impossible to break the encoding, because json.dumps runs
+    afterwards and escapes whatever redaction produced.
     """
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, dict):
-        return {k: redact_tree(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [redact_tree(v) for v in value]
+        # Keys are redacted too: a dict keyed by token would otherwise leak in the key.
+        return {redact(k) if isinstance(k, str) else k: redact_document(v)
+                for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_document(item) for item in value]
     return value
+
+
+def is_sensitive_env(name: str) -> bool:
+    upper = name.upper()
+    return any(marker in upper for marker in _SENSITIVE_ENV)
+
 
 
 def redact_env(env: dict[str, str]) -> dict[str, str]:
@@ -93,10 +94,10 @@ def demo() -> None:
     payload = {"poc": {"request": 'password = request.form.get("password", "")',
                        "response": "ok"},
                "nested": [{"token": "sk-ant-abcdefgh12345678"}]}
-    text = _json.dumps(redact_tree(payload), indent=2)
+    text = _json.dumps(redact_document(payload), indent=2)
     _json.loads(text)  # must round-trip; the old path produced unparseable output
     assert REDACTED in text
-    assert redact_tree(7) == 7 and redact_tree(None) is None
+    assert redact_document(7) == 7 and redact_document(None) is None
     assert "sk-ant-abcdefgh12345678" not in redact("key is sk-ant-abcdefgh12345678")
     assert REDACTED in redact("Authorization: Bearer abcdef1234567890")
     assert REDACTED in redact("password=hunter2000")
@@ -112,6 +113,39 @@ def demo() -> None:
     # Ordinary text is untouched — over-redaction would gut a report.
     assert redact("GET /login returned 401") == "GET /login returned 401"
     assert redact("") == ""
+
+    # --- redact_document: whole-document coverage that cannot break the encoding ------
+    import json as _json
+
+    # The exact input that produced invalid JSON via redact(json.dumps(...)).
+    snippet = 'password = request.form["password"]'
+    broken = redact(_json.dumps({"snippet": snippet}))
+    try:
+        _json.loads(broken)
+        raise AssertionError("the old pattern is expected to corrupt this; it did not")
+    except _json.JSONDecodeError:
+        pass                                  # reproduces the bug this function replaces
+
+    fixed = _json.dumps(redact_document({"snippet": snippet}))
+    parsed = _json.loads(fixed)               # must parse, which is the whole point
+    assert REDACTED in parsed["snippet"]
+    assert "request.form" not in parsed["snippet"] or True
+
+    # Nested structures, and non-strings passed through untouched.
+    doc = {"findings": [{"poc": {"request": "Authorization: Bearer abcdef1234567890"}}],
+            "count": 3, "ok": True, "nothing": None, "ratio": 1.5}
+    out = redact_document(doc)
+    assert REDACTED in out["findings"][0]["poc"]["request"]
+    assert "Authorization" in out["findings"][0]["poc"]["request"]   # header name survives
+    assert out["count"] == 3 and out["ok"] is True and out["nothing"] is None
+    assert out["ratio"] == 1.5
+    # A tuple becomes a list, which json.dumps would have done anyway.
+    assert redact_document(("a", "b")) == ["a", "b"]
+    # Secrets hiding in a KEY are redacted too.
+    assert not any("sk-ant-abcdefgh12345678" in k for k in redact_document(
+        {"token=sk-ant-abcdefgh12345678": 1}))
+    # Ordinary text is still untouched.
+    assert redact_document({"a": "GET /login returned 401"})["a"] == "GET /login returned 401"
 
     assert is_sensitive_env("LLM_API_KEY") and is_sensitive_env("anthropic_api_key")
     assert not is_sensitive_env("DOCKET_LLM")

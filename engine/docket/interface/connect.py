@@ -54,6 +54,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from docket.tools.scanners import read_coverage
 from docket.utils.resource_paths import frontend_dir
 
@@ -165,7 +167,16 @@ SESSION = Session()
 
 
 def oauth_config() -> tuple[str, str, str] | None:
-    """(client_id, client_secret, redirect_uri) or None when unconfigured."""
+    """(client_id, client_secret, redirect_uri) or None when unconfigured.
+
+    Reads .env on every call, for the same reason app/backend/scans.py and runs.py do.
+    Nothing in this module's import chain loads it: `docket connect` got it for free
+    because interface/main.py imports docket.config.settings (which calls load_dotenv at
+    import), but the app console imports only this module — so credentials sat in .env
+    while /api/session answered `configured: false` and /auth/start answered 503. The
+    Connect GitHub button did nothing, with no error anywhere to explain why.
+    """
+    load_dotenv(override=True)
     client_id = os.environ.get("DOCKET_GITHUB_CLIENT_ID", "").strip()
     client_secret = os.environ.get("DOCKET_GITHUB_CLIENT_SECRET", "").strip()
     if not client_id or not client_secret:
@@ -655,7 +666,9 @@ def download_run(run_name: str, fmt: str) -> tuple[int, bytes, str, str]:
     directory = (root / run_name).resolve()
     # Same containment check as load_run: the name comes from the browser and is
     # joined onto a filesystem path.
-    if not str(directory).startswith(str(root)) or not directory.is_dir():
+    # `in .parents`, NOT a string prefix: "<root>-other/x" shares a prefix with
+    # "<root>" and is a different directory. Proven against the viewer already.
+    if root not in directory.parents or not directory.is_dir():
         return 404, b'{"error":"no such run"}', "application/json", ""
 
     filename, content_type = DOWNLOAD_FORMATS[fmt]
@@ -686,7 +699,7 @@ def load_run(run_name: str) -> tuple[int, dict[str, Any]]:
     # onto a filesystem path, so a traversal here would read arbitrary files.
     root = runs_root().resolve()
     report = (root / run_name / "report.json").resolve()
-    if not str(report).startswith(str(root)) or not report.is_file():
+    if root not in report.parents or not report.is_file():
         return 404, {"error": f"no run named {run_name}"}
     try:
         data = json.loads(report.read_text())
@@ -1108,6 +1121,14 @@ def demo() -> None:
 
     saved = {k: os.environ.pop(k, None)
              for k in ("DOCKET_GITHUB_CLIENT_ID", "DOCKET_GITHUB_CLIENT_SECRET")}
+    # oauth_config() now reads .env on every call, so popping the keys is not enough: a
+    # real developer .env puts them straight back and BOTH branches below would assert
+    # against whatever happens to be on this machine. Stub the loader for the duration —
+    # what is under test here is how the two variables are read, not where they came from.
+    # Without this the self-check passed only on a machine with no GitHub App configured,
+    # which is the one machine where it proves the least.
+    real_load_dotenv = globals()["load_dotenv"]
+    globals()["load_dotenv"] = lambda *a, **k: None
     try:
         assert oauth_config() is None
         token, error = exchange_code("irrelevant")
@@ -1338,6 +1359,7 @@ def demo() -> None:
 
         server.shutdown()
     finally:
+        globals()["load_dotenv"] = real_load_dotenv
         for key, value in saved.items():
             if value is not None:
                 os.environ[key] = value

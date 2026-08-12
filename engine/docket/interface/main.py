@@ -84,6 +84,10 @@ def cmd_scan(args) -> int:
             use_sandbox=setup.use_sandbox,
             max_turns=args.max_steps,
             store=store,
+            openapi_path=args.openapi,
+            har_path=args.har,
+            sarif_path=args.sarif,
+            discovery=not args.no_discovery,
             static_only=setup.static_only,
         )
     except KeyboardInterrupt:
@@ -102,7 +106,8 @@ def cmd_scan(args) -> int:
             reporter.stop()
 
     kwargs |= dict(summary=result.summary, cost_usd=result.cost_usd,
-                   agents_spawned=result.agents_spawned, success=result.success)
+                   agents_spawned=result.agents_spawned, success=result.success,
+                   leads=result.leads, triage=result.triage)
     paths = write_report(store, setup.run_dir, **kwargs)
     print(format_summary(build_report(store, **kwargs), paths=paths))
     return exit_code(store, result.success)

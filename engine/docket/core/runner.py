@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from agents.models.interface import Model
@@ -25,11 +25,16 @@ from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.core.inputs import DEFAULT_MAX_TURNS
 from docket.core.cancel import NEVER, CancelToken
+from docket.discovery.discover import discover
 from docket.report.dedupe import merge_static
+from docket.static.correlate import correlate, summarise
+from docket.static.engines import collect as collect_static
+from docket.static.triage import triage_all
 from docket.report.models import Finding
 from docket.interface.tui.backend.messages import set_emitter
 from docket.report.state import init_report_state, reset_report_state
 from docket.runtime.sandbox import Sandbox, rewrite_for_container
+from docket.tools.http_request.tools import do_http_request
 from docket.tools.agents_graph.tools import create_agent, view_agent_graph, wait_for_agents
 from docket.tools.scanners.nuclei import run_nuclei
 from docket.tools.scanners.semgrep import run_semgrep
@@ -106,6 +111,8 @@ class ScanResult:
     finding_count: int
     cost_usd: float = 0.0
     agents_spawned: int = 1
+    leads: list = field(default_factory=list)
+    triage: object | None = None
 
 
 def run_scan(
@@ -120,7 +127,12 @@ def run_scan(
     model_override: Callable[[str], Model] | None = None,
     use_sandbox: bool = True,
     store: object | None = None,
+    openapi_path: str | None = None,
+    har_path: str | None = None,
+    sarif_path: str | None = None,
+    discovery: bool = True,
     static_only: bool = False,
+    static_triage: bool = False,
     on_stage: Callable[[str, str], None] | None = None,
     triage_max: int = 0,
     on_progress: Callable[[], None] | None = None,
@@ -162,7 +174,9 @@ def run_scan(
                       max_child_cost_usd=min(cfg.max_child_cost_usd, float(budget_usd)))
     # Bound here so the name exists whether or not recon runs — root reads it much
     # later when building its task, and `if recon:` is otherwise the only binder.
-    surface = surface if isinstance(surface, dict) else None
+    # Bound here so the name exists whether or not recon runs — root reads it much
+    # later, and `if recon:` is otherwise the only binder.
+    recon_surface: dict | None = None
     coordinator = AgentCoordinator(
         max_agents=cfg.max_agents,
         budget_usd=cfg.max_cost_usd,
@@ -220,7 +234,7 @@ def run_scan(
 
                 if on_stage:
                     on_stage("recon", "running")
-                surface = run_recon(  # noqa: F841 — read below when building root's task
+                recon_surface = run_recon(
                     str(whitebox_path or target_url or "repository"),
                     run_dir=directory, config=cfg, sandbox=sandbox,
                     findings=[f.model_dump(mode="json") for f in store.findings()]
@@ -228,24 +242,24 @@ def run_scan(
                     model_override=model_override, cancel=cancel,
                     on_agent=on_agent,
                 )
-                if surface:
+                if recon_surface:
                     # Into the SAME store the scanners feed, so candidates appear in
                     # the findings list, the report, the SARIF and the brief rather
                     # than only on a tab nobody opens. They carry discovered_by
                     # "recon" and status OPEN so nothing mistakes them for a match.
                     from docket.core.surface_findings import candidates_to_findings
 
-                    for candidate in candidates_to_findings(surface):
+                    for candidate in candidates_to_findings(recon_surface):
                         if store is not None:
                             store.add(candidate)
                         if on_finding is not None:
                             on_finding(candidate)
-                if surface and on_surface is not None:
-                    on_surface(surface)
+                if recon_surface and on_surface is not None:
+                    on_surface(recon_surface)
                 if on_stage:
                     # No surface means the agent never produced one. Reporting that as
                     # "done" would present a missing map as an empty application.
-                    on_stage("recon", "done" if surface else "error")
+                    on_stage("recon", "done" if recon_surface else "error")
                 if on_progress is not None:
                     on_progress()
             elif on_stage:
@@ -283,6 +297,61 @@ def run_scan(
             elif on_stage:
                 on_stage("triage", "skipped")
 
+        # Discovery is deterministic and needs no model, so it runs for --static-only too:
+        # surface.json is a useful artifact on its own, and correlation below needs it.
+        surface = None
+        if discovery and agent_target:
+            # Discovery must reach the target the SAME way the agents will, or it maps a
+            # host they cannot dial: inside the container 127.0.0.1 is the container, so
+            # it has to go through the shim when there is one.
+            def fetch(method: str, url: str, **kw) -> dict:
+                if sandbox is not None:
+                    return sandbox.call("http_request", method=method, url=url,
+                                         timeout_sec=15, **kw)
+                return do_http_request(method, url, directory, timeout_sec=15, **kw)
+
+            surface = discover(
+                agent_target, fetch=fetch, openapi_path=openapi_path, har_path=har_path,
+                flows_path=(directory / "artifacts" / "proxy_flows.jsonl"),
+            )
+            surface.save(directory)
+            emitter.log_discovery(len(surface), surface.requests_made, surface.sources_tried)
+
+        # Static analysis AFTER discovery, because correlation needs the endpoint list:
+        # a sink is only actionable once we know which request reaches it.
+        leads = []
+        triage_report = None
+        if sarif_path or whitebox_path:
+            static = collect_static(sarif_path=sarif_path, source_root=whitebox_path)
+            static.save(directory)
+            leads = correlate(static.findings, surface, whitebox_path)
+            for note in static.notes:
+                emitter.log_static(note)
+            emitter.log_static(summarise(leads))
+
+            # Agent triage: read the code around each candidate and rule on it. This is
+            # the whole value over running Semgrep directly — a candidate with a verdict
+            # and a quoted guard is actionable where a candidate alone is a queue item.
+            # Needs the source, and a model, so it is skipped for --static-only.
+            # Kept, deliberately OFF by default: core/triage.py above is the wired
+            # triage. Two triage agents were built in parallel; running both would
+            # double the model spend and produce two verdicts per finding with no
+            # rule for which wins.
+            # ponytail: pick a winner after a real run and delete the loser.
+            if static_triage and whitebox_path and leads and not static_only:
+                triage_context = ScanContext(
+                    target_url=agent_target or "", run_dir=directory,
+                    on_finding=None, agent_id="triage", role="triage",
+                    coordinator=coordinator, config=cfg,
+                    model_override=model_override, sandbox=sandbox,
+                    source_root=whitebox_path,
+                )
+                verdicts = asyncio.run(triage_all(leads, triage_context))
+                triage_report = verdicts
+                for note in verdicts.notes:
+                    emitter.log_static(note)
+                emitter.log_static(verdicts.summary())
+
         if static_only:
             output = {
                 "success": True,
@@ -302,6 +371,10 @@ def run_scan(
                 config=cfg,
                 model_override=model_override,
                 sandbox=sandbox,
+                # Children get a share of the operator's ceiling rather than a constant, so
+                # --max-steps is the one knob that scales the whole run. Floor of 12 keeps
+                # the previous default for anyone who does not pass the flag.
+                child_max_turns=max(12, max_turns * 3 // 5),
             )
             root_model = model_override("root") if model_override else None
             agent = build_agent(
@@ -309,9 +382,11 @@ def run_scan(
                 extra_tools=[create_agent, wait_for_agents, view_agent_graph],
                 model=root_model, sandbox=sandbox,
             )
-            # The map recon just built, when it ran. This is what stops root being
-            # handed the test fixture's routes and told they are this target's.
-            task = build_root_task(agent_target, instruction, surface)
+            # `surface` here is discovery's AttackSurface, probed over HTTP against a
+            # live target. The recon AGENT's map (recon_surface below) is a different
+            # thing built by reading source, and the two are complementary rather than
+            # rivals: discovery knows what answers, recon knows what the code declares.
+            task = build_root_task(agent_target, instruction, surface, leads)
             output = asyncio.run(run_agent_loop(agent, context, task, max_turns=max_turns))
     finally:
         if sandbox is not None:
@@ -324,5 +399,7 @@ def run_scan(
         summary=output.get("summary", ""),
         finding_count=len(findings),
         cost_usd=round(coordinator.spent_usd, 6),
-        agents_spawned=0 if static_only else len(coordinator.agents) + 1,  # +1 for root itself
+        agents_spawned=0 if static_only else len(coordinator.agents) + 1,  # +1 for root
+        leads=leads,
+        triage=triage_report,
     )

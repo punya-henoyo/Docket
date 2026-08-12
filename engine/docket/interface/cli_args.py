@@ -23,9 +23,11 @@ def add_scan_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                         help="Freeform hints for the agents (e.g. seeded credentials).")
     parser.add_argument("--source", default=None,
                         help="Path to the target's source tree. Mounted read-only into "
-                             "the sandbox and scanned by trivy (dependencies) and "
-                             "semgrep (SAST) as a deterministic pre-scan. Omit to skip "
-                             "both — nuclei still runs against --target either way.")
+                             "the sandbox for the trivy/semgrep pre-scan, and used "
+                             "host-side to correlate each static candidate to a "
+                             "discovered endpoint so agents get named sinks instead of "
+                             "blind probes. Omit to skip both — nuclei still runs "
+                             "against --target either way.")
     parser.add_argument("--static-only", action="store_true",
                         help="Run only the scanner pre-scan (nuclei if --target is "
                              "given, trivy/semgrep if --source is given) — no AI "
@@ -44,6 +46,21 @@ def add_scan_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                              "(no Docker needed; disables the shell and browser tools).")
     parser.add_argument("--tui", action="store_true",
                         help="Watch the scan live in a terminal UI.")
+    parser.add_argument("--openapi", default=None,
+                        help="Path to an OpenAPI/Swagger JSON document describing the "
+                             "target. The most authoritative source of routes, and it "
+                             "costs zero requests.")
+    parser.add_argument("--har", default=None,
+                        help="Path to a HAR capture of real traffic to the target. "
+                             "Also zero requests, and it carries real parameters.")
+    parser.add_argument("--sarif", default=None,
+                        help="Path to a SARIF report from any SAST tool (Semgrep, CodeQL, "
+                             "Bandit). Preferred over --source when CI already produces "
+                             "one: no engine to install and it is what the team already "
+                             "standardised on.")
+    parser.add_argument("--no-discovery", action="store_true",
+                        help="Skip attack-surface discovery. Root then starts with no "
+                             "route list and must probe for itself.")
     return parser
 
 

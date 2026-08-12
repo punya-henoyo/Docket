@@ -33,16 +33,23 @@ export const SevTag = ({ severity }: { severity: Severity }) => (
 
 /** A rule_id is `semgrep/python.lang.security.audit.foo.foo` — show the leaf, which is
  *  the part a human actually reads, and keep the full id available on hover. */
-export function ruleLeaf(ruleId: string): string {
+export function ruleLeaf(ruleId: string | null | undefined): string {
+  // Null-safe on purpose. A run with no report.json is rendered from the event stream,
+  // where a finding carries `rule_type` but NOT `rule_id` — and this helper assuming a
+  // string took the entire console to a blank page. A display helper must never be able
+  // to do that over a missing optional field.
+  if (!ruleId) return "—";
   const afterScanner = ruleId.includes("/") ? ruleId.slice(ruleId.indexOf("/") + 1) : ruleId;
   const parts = afterScanner.split(".");
   return parts[parts.length - 1] || afterScanner;
 }
 
 export function findingLocation(finding: Finding): string {
-  const { source_file, method, path, parameter } = finding.location;
+  // Same reason as ruleLeaf: an event-stream finding may have no location at all.
+  const { source_file, method, path, parameter } = finding.location ?? {};
   if (source_file) return source_file.replace(/^\/work\/source\//, "");
-  return `${method} ${path}${parameter ? ` (${parameter})` : ""}`;
+  const where = `${method ?? ""} ${path ?? ""}`.trim();
+  return (where || "—") + (parameter ? ` (${parameter})` : "");
 }
 
 const VERDICT_STYLE: Record<string, { label: string; color: string }> = {

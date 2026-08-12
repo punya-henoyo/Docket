@@ -57,9 +57,23 @@ _TECHNIQUE_HINTS: dict[str, str] = {
 }
 
 
-def build_task(role: str, target_route: str, task: str) -> str:
+def build_task(role: str, target_route: str, task: str, target_url: str = "") -> str:
+    """`target_url` is the ABSOLUTE base the child must dial, and omitting it was a real
+    bug: given only a route like "POST /login", the first live run's specialists passed
+    the bare path to http_request (urllib: "unknown url type: \'/login\'"), then guessed
+    absolute URLs and hit `localhost` — which, inside the sandbox container, is the
+    container itself. 19 connection failures and zero findings on a target that was up
+    the whole time. Never let a child infer the host."""
     hint = _TECHNIQUE_HINTS.get(role, "")
-    lines = [
+    lines = []
+    if target_url:
+        lines.append(
+            f"The target's base URL is {target_url} — use it verbatim. Every url you pass "
+            f"to a tool must be absolute and start with it, e.g. {target_url}/some/path. "
+            f"Never send a bare path, and never substitute localhost or 127.0.0.1: your "
+            f"tools run inside a container where those mean the container itself."
+        )
+    lines += [
         f"You are scoped to exactly ONE route: {target_route}. Do not touch any other route.",
         f"Objective from the coordinating agent: {task}",
     ]

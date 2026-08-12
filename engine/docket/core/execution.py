@@ -50,13 +50,21 @@ class ScanContext:
     # model_override(role) instead of building a real LitellmModel — lets a mock
     # harness script every spawned agent's decisions without touching production code.
     model_override: Callable[[str], Model] | None = None
-    # Where the finish tool parks its result, so reading it never depends on how the
-    # SDK chose to shape `final_output`. Agent.output_type used to carry that job, but
-    # declaring it makes the SDK send response_format=json_schema, and some providers
-    # (confirmed: DeepSeek V4 Pro on Azure AI Foundry) then stop emitting tool calls
-    # entirely — the agent loop spins until MaxTurnsExceeded having done nothing. See
-    # factory._finish_tool_use_behavior.
+    # Turn ceiling for spawned specialists. Was hardcoded at 12, which was fine until a
+    # live run showed model verbosity varies ~6x for the same result: gpt-4.1 finishes an
+    # endpoint in a handful of turns, DeepSeek-V4-Pro burned all 12 on every child and the
+    # whole scan died on MaxTurnsExceeded with 1 finding of 3. --max-steps raised root's
+    # ceiling but children were unreachable, so there was no way to run a verbose model.
+    child_max_turns: int = 12
+    # Where the finish tool parks its result (set in factory._finish_tool_use_behavior),
+    # so reading it never depends on how the SDK chose to shape `final_output`.
+    # Agent.output_type used to carry that job, but declaring it makes the SDK send
+    # response_format=json_schema, and some providers (confirmed: DeepSeek V4 Pro on Azure
+    # AI Foundry) then stop emitting tool calls entirely.
     final_result: dict | None = None
+    # Repository root the triage role reads from. None for every other role — they have no
+    # file tools at all, so there is nothing for them to point at.
+    source_root: str | None = None
 
 
 # Errors that mean "this run is over", not "the network hiccuped". Retrying any of
@@ -109,6 +117,43 @@ def _is_context_overflow(exc: BaseException) -> bool:
     return "context" in text and ("length" in text or "window" in text or "too long" in text)
 
 
+def _finish_output(result: object) -> object:
+    """The finish tool's own return value, preferred over `result.final_output`.
+
+    `final_output` is only a dict when Agent.output_type is set, and setting it costs
+    real model compatibility: a response schema sent alongside the tool list makes some
+    models answer the schema and never call a tool. Reading the tool's output directly
+    removes that trade-off — `ToolCallOutputItem.output` is the actual object the tool
+    returned, not a re-serialization of it.
+
+    Scanned newest-first and matched on shape rather than tool name, because the two
+    finish tools (`agent_finish`, `finish_scan`) return the same three keys and a role
+    only ever has one of them.
+    """
+    for item in reversed(getattr(result, "new_items", []) or []):
+        output = getattr(item, "output", None)
+        if isinstance(output, dict) and "summary" in output and "success" in output:
+            return output
+    # No finish tool ran, or output_type is on and the SDK already parsed it.
+    return getattr(result, "final_output", None)
+
+
+_NO_TOOL_CORRECTION = """You ended your last turn by writing a summary instead of using
+your tools. Nothing you wrote was verified, so it was discarded in full — including this:
+
+{claim}
+
+You have sent no requests and observed no responses. You cannot know any of that.
+
+Do it properly this time. Use your tools to actually interact with the target. Register a
+finding only after you have sent a real request and seen a real response, and quote both
+literally. Then end by CALLING your finish tool — not by writing another summary.
+
+Your original task follows.
+
+{task}"""
+
+
 async def run_agent_loop(
     agent: Agent[ScanContext],
     context: ScanContext,
@@ -138,6 +183,7 @@ async def run_agent_loop(
         run_config = RunConfig(sandbox=SandboxRunConfig(session=DocketSandboxSession(context.sandbox)))
     last_exc: Exception | None = None
     compacted_already = False
+    original_task = task
 
     for attempt in range(3):
         try:
@@ -146,17 +192,44 @@ async def run_agent_loop(
                 hooks=BudgetHooks(max_turns=max_turns), session=session,
                 run_config=run_config,
             )
-            # context.final_result first: the finish tool parks the real dict there,
-            # which survives regardless of how the SDK shapes final_output. Without
-            # an Agent.output_type (see factory.build_agent for why declaring one
-            # breaks tool calling on some providers) final_output arrives stringified.
+            # context.final_result first: the finish tool parks the real dict there
+            # from inside the tool-use gate, which is unambiguous. _finish_output is the
+            # fallback for a run where the gate did not fire.
             output = context.final_result
             if not isinstance(output, dict):
-                output = result.final_output
+                output = _finish_output(result)
             if not isinstance(output, dict):
-                # The finish-tool gate should make this unreachable; treat a run that
-                # ended some other way as failed rather than silently "successful".
-                output = {"summary": str(output), "findings": [], "success": False}
+                # NOT a defensive fallback — this fires in practice, and it is the one
+                # hole in the "nothing is reported unproven" guarantee.
+                #
+                # tool_use_behavior gates the TOOL path, but the SDK also ends a run on
+                # any plain assistant message matching Agent.output_type, and it checks
+                # that FIRST. Seen on the first live run: the model emitted a
+                # schema-shaped message on turn one having made zero tool calls,
+                # inventing finding IDs ('finding_sqli_1'), inventing a verdict for
+                # routes it never requested, and declaring success=True.
+                #
+                # Accepting that would print a fabricated pentest summary into a report
+                # whose whole premise is that nothing enters it unproven. So: correct
+                # the agent and retry, and if it still will not use its tools, refuse
+                # and say exactly that. The FindingStore stays the source of truth for
+                # findings either way — a claimed id that was never registered does not
+                # exist.
+                logger.warning(
+                    "%s ended without calling its finish tool (attempt %d) — discarding "
+                    "its unverified output", context.agent_id, attempt + 1,
+                )
+                if attempt < 2:
+                    task = _NO_TOOL_CORRECTION.format(claim=str(output)[:400], task=original_task)
+                    continue
+                return {
+                    "summary": (
+                        "refused: agent ended without calling its finish tool, so nothing "
+                        "it stated was verified. Unverified claim discarded: "
+                        f"{str(output)[:400]}"
+                    ),
+                    "findings": [], "success": False,
+                }
             return output
         except MaxTurnsExceeded as exc:
             # Hitting the ceiling used to discard everything. Measured on a real

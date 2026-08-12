@@ -16,7 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
-from docket.utils.secret_files import redact
+from docket.utils.secret_files import redact_document
 
 RUN_DIR = Path(os.environ.get("DOCKET_RUN_DIR", "/work/run"))
 FLOWS_PATH = RUN_DIR / "artifacts" / "proxy_flows.jsonl"
@@ -49,4 +49,4 @@ def response(flow) -> None:  # mitmproxy calls this by name
         # so a single authenticated crawl writes the target's session cookie and bearer
         # token to disk hundreds of times. redact() is stdlib-only (`re`), which keeps this
         # module importable by mitmdump inside the container.
-        handle.write(redact(json.dumps(record)) + "\n")
+        handle.write(json.dumps(redact_document(record)) + "\n")

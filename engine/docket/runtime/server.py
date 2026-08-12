@@ -43,9 +43,21 @@ def _read_file(path: str) -> dict:
 
 
 def _write_file(path: str, b64: str) -> dict:
+    """Write inside the run directory ONLY.
+
+    This took any absolute path and wrote to it. It is reachable over the shim's /invoke
+    endpoint, so anything that could reach the shim could write anywhere in the container —
+    including /work/source, which is mounted :ro precisely so a scan cannot modify a repo,
+    and including the shim's own code. Contained with parent traversal rather than a string
+    prefix, because "<run>-other/x" starts with "<run>" but is a different directory.
+    """
     import base64
 
-    target = Path(path)
+    root = Path(RUN_DIR).resolve()
+    target = Path(path).resolve()
+    if target != root and root not in target.parents:
+        return {"ok": False,
+                "error": f"refused: {path} is outside the run directory ({RUN_DIR})"}
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = base64.b64decode(b64)
     target.write_bytes(payload)

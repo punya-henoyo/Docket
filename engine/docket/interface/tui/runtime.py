@@ -90,7 +90,11 @@ def demo() -> None:
     holder = ScanThreadResult()
 
     class _Setup:
+        # Every attribute run_scan_in_thread reads. Kwargs are evaluated BEFORE the
+        # patched run_scan is called, so a missing one raises AttributeError here and
+        # masks the RuntimeError this test is actually asserting on.
         target, instruction, run_name, use_sandbox = "http://x", None, "r", False
+        source_path, static_only = None, False
 
     # A scan that raises must land in holder.error rather than killing the process.
     # Patch THIS module's globals, not `import docket.interface.tui.runtime`: under
