@@ -42,6 +42,10 @@ class ScanContext:
     # of its reading budget is gone — see tools/source/tools.py. A plain int rather
     # than anything cleverer: it is per-agent, single-threaded, and dies with the run.
     reads: int = 0
+    # Set when the run hit its turn ceiling and was rescued by _salvage(). The result
+    # is real but INCOMPLETE, and anything presenting it must say so — a partial map
+    # shown as authoritative is the failure this whole codebase is built to avoid.
+    salvaged: bool = False
     # Test-only hook: if set, create_agent (docket/tools/agents_graph/tools.py) uses
     # model_override(role) instead of building a real LitellmModel — lets a mock
     # harness script every spawned agent's decisions without touching production code.
@@ -165,6 +169,7 @@ async def run_agent_loop(
             # avoid losing all of them.
             salvaged = await _salvage(agent, context, session, run_config)
             if salvaged is not None:
+                context.salvaged = True
                 logger.info("recovered a result on the salvage turn after %s", type(exc).__name__)
                 return salvaged
             return {"summary": f"stopped: {type(exc).__name__}: {exc}", "findings": [], "success": False}

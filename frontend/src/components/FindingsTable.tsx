@@ -66,6 +66,18 @@ export function FindingDetail({ finding }: { finding: Finding }) {
         </span>
       </div>
 
+      {finding.merged_cwes && finding.merged_cwes.length > 1 && (
+        <div className="note bad" style={{ fontSize: 12 }}>
+          Weakness disputed: the {finding.merged_rules?.length ?? finding.merged_cwes.length}{" "}
+          rules that matched this line disagree — {finding.merged_cwes.join(", ")}. Docket
+          shows none of them rather than picking one, because semgrep's CWE metadata is
+          wrong often enough that a confident answer here would be a guess.
+          <div className="mono" style={{ fontSize: 11, marginTop: 5, color: "var(--ink-3)" }}>
+            {(finding.merged_rules ?? []).map((r) => r.split("/").pop()).join("\n")}
+          </div>
+        </div>
+      )}
+
       {/* The vector, spelled out. A score with no vector is a number to take on faith;
           with it, anyone can check how it was reached — and see that it rates the
           vulnerability class, not this repository's exposure to it. */}
@@ -83,6 +95,9 @@ export function FindingDetail({ finding }: { finding: Finding }) {
       <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)", wordBreak: "break-all" }}>
         {finding.rule_id}
         {finding.cwe ? ` · ${finding.cwe}` : ""} · found by {finding.discovered_by}
+        {finding.merged_rules && finding.merged_rules.length > 1 && (
+          <> · {finding.merged_rules.length} rules matched this line</>
+        )}
       </div>
       <div className="note" style={{ color: "var(--ink-2)", maxWidth: "72ch" }}>
         {finding.description}

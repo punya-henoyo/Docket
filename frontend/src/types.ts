@@ -58,8 +58,16 @@ export interface Finding {
   triage: Triage | null;
   /** null means no scoring body published one, NOT a score of zero. */
   cvss?: Cvss | null;
+  /** Rule ids folded into this finding when several matched the same line. Empty on
+   *  an unmerged finding. */
+  merged_rules?: string[];
+  /** Only populated when those rules DISAGREED about the weakness, in which case
+   *  `cwe` is null — docket will not pick one arbitrarily. */
+  merged_cwes?: string[];
 }
 
+/** `partial` means recon ran out of turns and recorded what it had on a salvage turn.
+ *  Everything present is real; what is absent was never looked at. */
 export interface EntryPoint {
   method?: string;
   path?: string;
@@ -79,6 +87,7 @@ export interface Candidate {
 
 /** What the recon agent mapped. Null until recon runs, which is opt-in. */
 export interface Surface {
+  partial?: boolean;
   entry_points: EntryPoint[];
   auth_model: string;
   candidates: Candidate[];

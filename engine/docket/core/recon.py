@@ -113,6 +113,12 @@ def run_recon(
             on_agent({"id": "recon", "role": "recon", "status": "error"})
         return None
     surface = _surface_from(output)
+    if surface is not None and getattr(context, "salvaged", False):
+        # The agent ran out of turns and was given one last turn to write down what it
+        # had. What it recorded is real; what it never reached is unknown, and only
+        # this flag distinguishes "the app has 20 routes" from "it found 20 before
+        # running out".
+        surface["partial"] = True
     if on_agent is not None:
         on_agent({"id": "recon", "role": "recon",
                   "status": "done" if surface else "error",

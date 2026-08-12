@@ -45,6 +45,14 @@ export function SurfacePanel({ scan, title = "Attack surface" }:
         </span>
       }
     >
+      {surface.partial && (
+        <div className="note bad">
+          Incomplete. The agent ran out of turns and recorded what it had. Everything
+          below was read from source; anything missing was never looked at, so treat
+          this as a floor rather than the whole surface.
+        </div>
+      )}
+
       {noSurface ? (
         <div className="note">No HTTP surface — this repository exposes no routes.</div>
       ) : (
