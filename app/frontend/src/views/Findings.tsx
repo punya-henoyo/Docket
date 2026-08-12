@@ -3,6 +3,7 @@ import type { Finding, ScanState, Severity } from "../types";
 import { SEVERITIES } from "../types";
 import { FindingDetail, FindingsTable } from "../components/FindingsTable";
 import { Empty, Panel } from "../components/ui";
+import { cweLabel } from "../cwe";
 
 export function Findings({
   findings,
@@ -10,12 +11,16 @@ export function Findings({
   onSelect,
   scan,
   onGoRepos,
+  cweFilter,
+  onCweSelect,
 }: {
   findings: Finding[];
   selected: Finding | null;
   onSelect: (f: Finding) => void;
   scan: ScanState | null;
   onGoRepos: () => void;
+  cweFilter: string | null;
+  onCweSelect: (cwe: string | null) => void;
 }) {
   const [filter, setFilter] = useState<Severity | "all">("all");
 
@@ -26,10 +31,12 @@ export function Findings({
 
   const shown = useMemo(
     () =>
-      (filter === "all" ? findings : findings.filter((f) => f.severity === filter))
+      findings
+        .filter((f) => filter === "all" || f.severity === filter)
+        .filter((f) => !cweFilter || f.cwe === cweFilter)
         .slice()
         .sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)),
-    [findings, filter],
+    [findings, filter, cweFilter],
   );
 
   const active = selected && shown.some((f) => f.id === selected.id) ? selected : shown[0] ?? null;
@@ -56,6 +63,18 @@ export function Findings({
           ))}
         </div>
       </div>
+
+      {cweFilter && (
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <span className="chip">{cweLabel(cweFilter)}</span>
+          <span className="note">
+            showing {shown.length} of {findings.length}
+          </span>
+          <button className="btn sm" onClick={() => onCweSelect(null)}>
+            clear
+          </button>
+        </div>
+      )}
 
       {findings.length === 0 ? (
         <Panel>

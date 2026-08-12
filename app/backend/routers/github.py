@@ -23,6 +23,9 @@ router = APIRouter()
 
 class RepoScanRequest(BaseModel):
     repo: str
+    # A branch, tag or commit SHA. None means the repository's default branch, which is
+    # what GitHub serves when the tarball path omits a ref.
+    ref: str | None = None
 
 
 @router.get("/api/session")
@@ -33,6 +36,9 @@ def session() -> dict:
         "connected": bool(token),
         "login": connect.SESSION.login,
         "configured": configured,
+        # Shown in the console so the granted scope is visible on screen rather than
+        # buried in a config file nobody rereads.
+        "scope": connect.oauth_scope(),
     }
 
 
@@ -53,7 +59,7 @@ def auth_start() -> RedirectResponse:
     if config is None:
         raise HTTPException(
             503,
-            "GitHub App is not configured. Set the client id/secret — see "
+            "GitHub OAuth App is not configured. Set the client id/secret — see "
             "engine/docket/interface/connect.py:oauth_config.",
         )
     client_id, _, redirect = config
@@ -62,7 +68,10 @@ def auth_start() -> RedirectResponse:
     # session. Single-use — the callback clears it.
     state = secrets.token_urlsafe(24)
     connect.SESSION.oauth_state = state
-    params = {"client_id": client_id, "state": state}
+    # The scope MUST reach the authorize URL. Without it GitHub issues a token that can
+    # read nothing private, and the failure looks identical to "this user has no
+    # repositories".
+    params = {"client_id": client_id, "state": state, "scope": connect.oauth_scope()}
     if redirect:
         params["redirect_uri"] = redirect
     return RedirectResponse(
@@ -78,6 +87,20 @@ def scan_state(scan_id: str) -> dict:
     return state
 
 
+@router.get("/api/run/{run_name}")
+def load_run(run_name: str) -> dict:
+    """A finished run, rehydrated from disk into the ScanState shape.
+
+    The console keeps its live scan in memory only, so without this a reload loses
+    everything even though report.json has been sitting there the whole time.
+    connect.load_run does the path-traversal check and returns (status, payload).
+    """
+    status, payload = connect.load_run(run_name)
+    if status != 200:
+        raise HTTPException(status, payload.get("error", "could not load run"))
+    return payload
+
+
 @router.post("/api/scan", status_code=201)
 def start_repo_scan(request: RepoScanRequest) -> dict:
     token = connect.SESSION.token
@@ -86,10 +109,16 @@ def start_repo_scan(request: RepoScanRequest) -> dict:
     if not connect._FULL_NAME.match(request.repo):
         # Validated before it reaches a URL or the filesystem, not after.
         raise HTTPException(400, f"invalid repository name: {request.repo!r}")
+    ref = (request.ref or "").strip() or None
+    # Slashes are legal in a ref and are not in owner/name, so this is a separate check
+    # rather than a reuse of _FULL_NAME. Same reason it is done here: the ref is
+    # interpolated into a GitHub API path.
+    if ref is not None and not connect.valid_ref(ref):
+        raise HTTPException(400, f"not a usable branch/tag/sha: {ref!r}")
     scan_id = uuid.uuid4().hex[:12]
-    connect.SESSION.scans[scan_id] = connect.new_scan_state(scan_id, request.repo)
+    connect.SESSION.scans[scan_id] = connect.new_scan_state(scan_id, request.repo, ref)
     threading.Thread(
-        target=connect.run_repo_scan, args=(request.repo, token, scan_id),
+        target=connect.run_repo_scan, args=(request.repo, token, scan_id, ref),
         name=f"repo-scan-{scan_id}", daemon=True,
     ).start()
     return {"id": scan_id, "status": "queued"}

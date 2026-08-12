@@ -44,6 +44,8 @@ export type ScanStatus = "queued" | "fetching" | "scanning" | "done" | "error";
 export interface ScanState {
   id: string;
   repo: string;
+  /** null = whatever GitHub calls the repo's default branch. */
+  ref: string | null;
   status: ScanStatus;
   stages: Record<string, StageState>;
   findings: Finding[];
@@ -51,12 +53,18 @@ export interface ScanState {
   error: string | null;
   summary?: string;
   elapsed_sec?: number;
+  /** True when loaded from disk rather than observed live: the radar has no stages to
+   *  light and the sweep must not animate. */
+  historical?: boolean;
 }
 
 export interface Session {
   connected: boolean;
   login: string | null;
   configured: boolean;
+  /** The OAuth scope granted. Surfaced so the console can state on screen that the
+   *  token carries write access, which GitHub gives no way to avoid for private code. */
+  scope: string;
 }
 
 export interface Repo {

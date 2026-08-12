@@ -5,6 +5,7 @@ import { Panel } from "../components/ui";
 export function Integrations({ session }: { session: Session | null }) {
   const connected = session?.connected ?? false;
   const configured = session?.configured ?? false;
+  const scope = session?.scope ?? "repo";
 
   return (
     <>
@@ -13,33 +14,42 @@ export function Integrations({ session }: { session: Session | null }) {
       </div>
 
       <div className="cols">
-        <Panel title="GitHub">
+        <Panel title="GitHub" action={<span className="chip">{scope}</span>}>
           <div className="note" style={{ color: "var(--ink-2)" }}>
-            Authorize docket on the repositories you want scanned. You pick which ones, docket
-            sees nothing outside that selection, and you can revoke it from GitHub at any time.
+            Authorize once and docket can scan any repository your account reaches, including
+            ones you only collaborate on. Nobody else has to install anything, and you can
+            revoke it from GitHub at any time.
           </div>
 
-          <div className="eyebrow">Permissions requested</div>
+          <div className="eyebrow">What this grants</div>
           <ul className="scopes">
             <li>
               <span className="yes">✓</span>
               <span>
-                <b>Contents: read</b> — download the source to scan it
+                Every repo your account can reach, <b>owned or collaborated on</b>
               </span>
             </li>
             <li>
-              <span className="yes">✓</span>
+              <span className="no">!</span>
               <span>
-                <b>Metadata: read</b> — list the repositories you selected
+                The <b>{scope}</b> scope also carries <b>write</b> access. GitHub publishes no
+                read-only scope for private code, so this cannot be narrowed further.
               </span>
             </li>
           </ul>
-          <div className="note">No write access. Docket opens no branches and pushes no commits.</div>
+          <div className="note">
+            Docket only ever reads. It clones nothing and pushes nothing — source arrives as a
+            tarball precisely so there is no remote to push back to.
+          </div>
 
           {connected ? (
             <div className="note good">Connected as {session?.login ?? "GitHub user"}.</div>
           ) : configured ? (
-            <a className="btn primary" href={github.AUTH_START} style={{ textDecoration: "none", alignSelf: "flex-start" }}>
+            <a
+              className="btn primary"
+              href={github.AUTH_START}
+              style={{ textDecoration: "none", alignSelf: "flex-start" }}
+            >
               Connect GitHub
             </a>
           ) : (
@@ -48,8 +58,8 @@ export function Integrations({ session }: { session: Session | null }) {
                 Connect GitHub
               </button>
               <div className="note bad">
-                Not configured. Register a GitHub App, then set the two environment variables
-                below and restart <span className="mono">docket connect</span>.
+                Not configured. Register an OAuth App, then set the two variables below and
+                restart <span className="mono">docket connect</span>.
               </div>
             </>
           )}
@@ -57,14 +67,14 @@ export function Integrations({ session }: { session: Session | null }) {
 
         <Panel title="Setting it up">
           <div className="note" style={{ color: "var(--ink-2)" }}>
-            GitHub → Settings → Developer settings → <b>GitHub Apps</b> → New. Enable “Request
-            user authorization (OAuth) during installation”, set the callback to:
+            GitHub → Settings → Developer settings → <b>OAuth Apps</b> → New OAuth App. Three
+            fields, no permissions to pick and no install step. Set the callback to:
           </div>
           <div className="evidence">
             <pre>http://127.0.0.1:8765/auth/callback</pre>
           </div>
           <div className="note" style={{ color: "var(--ink-2)" }}>
-            Then export the app's credentials:
+            Then export the credentials:
           </div>
           <div className="evidence">
             <pre>{`export DOCKET_GITHUB_CLIENT_ID=...
@@ -72,9 +82,9 @@ export DOCKET_GITHUB_CLIENT_SECRET=...
 docket connect`}</pre>
           </div>
           <div className="note">
-            A classic OAuth App cannot do this read-only: its <span className="mono">repo</span>{" "}
-            scope grants write access too. Only a GitHub App has{" "}
-            <span className="mono">contents: read</span>.
+            <span className="mono">DOCKET_GITHUB_SCOPE</span> defaults to{" "}
+            <span className="mono">repo</span>. Set it to <span className="mono">public_repo</span>{" "}
+            to limit docket to public repositories.
           </div>
         </Panel>
 
@@ -82,7 +92,7 @@ docket connect`}</pre>
           <ul className="scopes">
             <li>
               <span className="yes">✓</span>
-              <span>Authorize, list repos, fetch source read-only, scan, show findings</span>
+              <span>Authorize, list repos, fetch source, scan, show findings</span>
             </li>
             <li>
               <span className="yes">✓</span>
@@ -91,7 +101,8 @@ docket connect`}</pre>
             <li>
               <span className="no">✗</span>
               <span>
-                Session is <b>in memory</b> — no accounts, no tenant isolation
+                Session is <b>in memory</b> — no accounts, no tenant isolation, and a
+                write-capable token with nowhere safe to persist it
               </span>
             </li>
             <li>
@@ -102,10 +113,7 @@ docket connect`}</pre>
             </li>
             <li>
               <span className="no">✗</span>
-              <span>
-                AI agents do not run here — route discovery is still hardcoded to the test
-                fixture, so only the static scanners are wired
-              </span>
+              <span>AI agents do not run here; the static scanners do</span>
             </li>
           </ul>
         </Panel>

@@ -37,6 +37,7 @@ export default function App() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Finding | null>(null);
   const [newestId, setNewestId] = useState<string | undefined>();
+  const [cweFilter, setCweFilter] = useState<string | null>(null);
   const prevIds = useRef<Set<string>>(new Set());
 
   const reloadLocalRuns = useCallback(() => {
@@ -74,7 +75,18 @@ export default function App() {
       }
       try {
         const r = await api.runs.getRuns();
-        if (alive) setRuns(r);
+        if (!alive) return;
+        setRuns(r);
+        // Reload used to land on an empty dashboard even though report.json was on
+        // disk the whole time. Restore the newest run so refreshing is not
+        // indistinguishable from never having scanned.
+        if (r.length) {
+          try {
+            setScan(await api.github.getRun(r[0].run_name));
+          } catch {
+            /* a corrupt or half-written report must not blank the console */
+          }
+        }
       } catch {
         /* run history is optional context, not a blocker */
       }
@@ -123,16 +135,18 @@ export default function App() {
   }, [scan]);
 
   const runScan = useCallback(
-    async (repo: string) => {
+    async (repo: string, ref?: string) => {
       setScanError(null);
       setSelected(null);
+      setCweFilter(null);
       prevIds.current = new Set();
       setNewestId(undefined);
       try {
-        const { id } = await api.github.startRepoScan(repo);
+        const { id } = await api.github.startRepoScan(repo, ref);
         setScan({
           id,
           repo,
+          ref: ref ?? null,
           status: "queued",
           stages: { fetch: "pending", trivy: "pending", semgrep: "pending", nuclei: "pending" },
           findings: [],
@@ -154,6 +168,20 @@ export default function App() {
     for (const f of findings) acc[f.severity] = (acc[f.severity] ?? 0) + 1;
     return acc;
   }, [findings]);
+
+  const openRun = useCallback(
+    async (runName: string) => {
+      setScanError(null);
+      setSelected(null);
+      setCweFilter(null);
+      try {
+        setScan(await api.github.getRun(runName));
+      } catch (err) {
+        setScanError(err instanceof ApiError ? err.message : String(err));
+      }
+    },
+    [],
+  );
 
   const openFinding = useCallback(
     (finding: Finding) => {
@@ -225,6 +253,9 @@ export default function App() {
             newestId={newestId}
             onGoRepos={() => go("repos")}
             onGoIntegrations={() => go("integrations")}
+            cweFilter={cweFilter}
+            onCweSelect={setCweFilter}
+            onOpenRun={openRun}
           />
         ) : view === "live" ? (
           <LiveRun
@@ -241,6 +272,8 @@ export default function App() {
             onSelect={setSelected}
             scan={scan}
             onGoRepos={() => go("repos")}
+            cweFilter={cweFilter}
+            onCweSelect={setCweFilter}
           />
         ) : view === "repos" ? (
           <Repositories
