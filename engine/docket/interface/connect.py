@@ -285,7 +285,35 @@ def fetch_source(full_name: str, token: str, dest: Path, ref: str | None = None)
     )
     dest.mkdir(parents=True, exist_ok=True)
     archive = dest / "source.tar.gz"
-    with urllib.request.urlopen(request, timeout=120) as response:
+    try:
+        response_cm = urllib.request.urlopen(request, timeout=120)
+    except urllib.error.HTTPError as exc:
+        # "HTTP Error 404: Not Found" tells the operator nothing, and GitHub returns
+        # 404 for three quite different situations — a missing ref, a repo the token
+        # cannot see, and a repo that does not exist. It deliberately will not confirm
+        # a private repo exists, so the status alone can never distinguish them. Say
+        # what was requested and list the causes; the operator can tell which is which
+        # instantly, and the raw status alone has them guessing.
+        if exc.code == 404:
+            where = f"{full_name}@{ref}" if ref else f"{full_name} (default branch)"
+            raise RuntimeError(
+                f"GitHub has no source at {where}. That 404 means one of three things, "
+                f"and GitHub will not say which: the branch or tag '{ref}' does not "
+                "exist; your token cannot see this repository (a private repo you lack "
+                "access to returns 404, not 403); or the repository name is wrong. "
+                "Leave the branch blank to use the default."
+                if ref else
+                f"GitHub has no source for {full_name}. That 404 means either your "
+                "token cannot see this repository — a private repo you lack access to "
+                "returns 404, not 403 — or the name is wrong."
+            ) from exc
+        if exc.code in (401, 403):
+            raise RuntimeError(
+                f"GitHub refused the request for {full_name} ({exc.code}). The token "
+                "is expired, revoked, or lacks the `repo` scope. Reconnect GitHub."
+            ) from exc
+        raise
+    with response_cm as response:
         size = 0
         with archive.open("wb") as out:
             while chunk := response.read(1 << 16):
@@ -1216,6 +1244,32 @@ def demo() -> None:
         finally:
             SESSION.scans.pop("fake", None)
             SESSION.cancels.pop("fake", None)
+
+        # ── a 404 from GitHub must say WHICH 404 ──────────────────────────────
+        # GitHub returns 404 for a missing ref, a repo the token cannot see, and a
+        # repo that does not exist, and deliberately will not distinguish them. The
+        # raw "HTTP Error 404: Not Found" left the operator with no idea which.
+        import urllib.error as _ue
+
+        def _fetch_404(ref_value):
+            def _raise(*_a, **_k):
+                raise _ue.HTTPError("u", 404, "Not Found", {}, None)
+            saved = urllib.request.urlopen
+            urllib.request.urlopen = _raise
+            try:
+                fetch_source("o/r", "tok", Path(_tempfile.mkdtemp()), ref_value)
+            except RuntimeError as exc:
+                return str(exc)
+            finally:
+                urllib.request.urlopen = saved
+            raise AssertionError("a 404 must not pass silently")
+
+        with_ref = _fetch_404("nope")
+        assert "o/r@nope" in with_ref and "does not exist" in with_ref, with_ref
+        assert "not 403" in with_ref, "the private-repo case must be named"
+        no_ref = _fetch_404(None)
+        assert "default branch" not in no_ref, "no ref means no ref to blame"
+        assert "the name is wrong" in no_ref, no_ref
 
         # ── per-scan budget ───────────────────────────────────────────────────
         # Validated, not clamped: the operator chooses the ceiling. Refusing a
