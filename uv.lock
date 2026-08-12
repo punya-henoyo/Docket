@@ -421,6 +421,9 @@ app = [
     { name = "fastapi" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+tokenizer = [
+    { name = "tokenizers" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -429,9 +432,10 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2" },
     { name = "python-dotenv", specifier = ">=1" },
     { name = "textual", specifier = ">=8.2.8" },
+    { name = "tokenizers", marker = "extra == 'tokenizer'", specifier = ">=0.20" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'app'", specifier = ">=0.32" },
 ]
-provides-extras = ["app"]
+provides-extras = ["app", "tokenizer"]
 
 [[package]]
 name = "fastapi"

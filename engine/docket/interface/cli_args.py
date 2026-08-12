@@ -16,10 +16,23 @@ EXIT_FINDINGS = 2
 
 
 def add_scan_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    parser.add_argument("--target", required=True,
-                        help="Base URL of the target, e.g. http://127.0.0.1:5000")
+    parser.add_argument("--target", default=None,
+                        help="Base URL of the target, e.g. http://127.0.0.1:5000. "
+                             "Required unless --static-only is set.")
     parser.add_argument("--instruction", default=None,
                         help="Freeform hints for the agents (e.g. seeded credentials).")
+    parser.add_argument("--source", default=None,
+                        help="Path to the target's source tree. Mounted read-only into "
+                             "the sandbox for the trivy/semgrep pre-scan, and used "
+                             "host-side to correlate each static candidate to a "
+                             "discovered endpoint so agents get named sinks instead of "
+                             "blind probes. Omit to skip both — nuclei still runs "
+                             "against --target either way.")
+    parser.add_argument("--static-only", action="store_true",
+                        help="Run only the scanner pre-scan (nuclei if --target is "
+                             "given, trivy/semgrep if --source is given) — no AI "
+                             "agents spawn, so no DOCKET_LLM/API key is needed. For a "
+                             "CI gate that just wants dependency/SAST findings.")
     parser.add_argument("-n", "--non-interactive", action="store_true",
                         help="Suppress progress output; print only the final summary.")
     parser.add_argument("--run-name", default=None,
@@ -40,10 +53,6 @@ def add_scan_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--har", default=None,
                         help="Path to a HAR capture of real traffic to the target. "
                              "Also zero requests, and it carries real parameters.")
-    parser.add_argument("--source", default=None,
-                        help="Path to the target's source tree. Runs Semgrep over it and "
-                             "correlates each candidate to a discovered endpoint, so "
-                             "agents get named sinks instead of blind probes.")
     parser.add_argument("--sarif", default=None,
                         help="Path to a SARIF report from any SAST tool (Semgrep, CodeQL, "
                              "Bandit). Preferred over --source when CI already produces "
@@ -79,6 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_scan_args(sub.add_parser("scan", help="Run a scan against a target."))
     add_view_args(sub.add_parser("view", help="Show a past run's findings."))
     sub.add_parser("doctor", help="Check the environment (LLM key, Docker, search).")
+    connect = sub.add_parser(
+        "connect", help="Serve the console: connect GitHub, then scan a repo.")
+    connect.add_argument("--port", type=int, default=8765,
+                         help="Port to bind on 127.0.0.1 (default: 8765).")
     return parser
 
 
@@ -87,11 +100,22 @@ def demo() -> None:
     args = parser.parse_args(["scan", "--target", "127.0.0.1:5000", "-n"])
     assert args.command == "scan" and args.non_interactive is True
     assert args.max_steps == DEFAULT_MAX_TURNS and args.no_sandbox is False
+    assert args.source is None  # trivy/semgrep pre-scans stay off without --source
+    assert args.static_only is False
+
+    with_source = parser.parse_args(["scan", "--target", "x", "--source", "/repo"])
+    assert with_source.source == "/repo"
+
+    # --target is optional so --static-only can run with no live target at all.
+    static = parser.parse_args(["scan", "--static-only", "--source", "/repo"])
+    assert static.target is None and static.static_only is True
 
     view = parser.parse_args(["view", "baseline", "--format", "sarif", "--full"])
     assert view.run_name == "baseline" and view.format == "sarif" and view.full is True
     assert parser.parse_args(["view"]).run_name is None  # defaults to most recent
     assert parser.parse_args(["doctor"]).command == "doctor"
+    assert parser.parse_args(["connect"]).port == 8765
+    assert parser.parse_args(["connect", "--port", "9000"]).port == 9000
     assert (EXIT_CLEAN, EXIT_ERROR, EXIT_FINDINGS) == (0, 1, 2)
     print("interface.cli_args: ok")
 

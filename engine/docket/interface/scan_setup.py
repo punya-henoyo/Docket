@@ -40,27 +40,34 @@ def normalize_target(target: str) -> str:
 @dataclass(slots=True)
 class ScanSetup:
     run_name: str
-    target: str
+    target: str | None
     run_dir: Path
     instruction: str | None = None
     use_sandbox: bool = True
+    source_path: str | None = None  # trivy/semgrep pre-scan; see interface/cli_args.py
+    static_only: bool = False  # scanner pre-scan only, no agents; see interface/cli_args.py
 
 
 def prepare_scan(
-    target: str,
+    target: str | None,
     *,
     run_name: str | None = None,
     instruction: str | None = None,
     out_dir: str | None = None,
     use_sandbox: bool = True,
+    source_path: str | None = None,
+    static_only: bool = False,
 ) -> ScanSetup:
+    if not target and not static_only:
+        raise ValueError("--target is required unless --static-only is set")
     name = sanitize_run_name(run_name) if run_name else default_run_name()
     base = Path(out_dir) if out_dir else None
     directory = (base / name) if base else run_path(name)
     directory.mkdir(parents=True, exist_ok=True)
     return ScanSetup(
-        run_name=name, target=normalize_target(target), run_dir=directory,
-        instruction=instruction, use_sandbox=use_sandbox,
+        run_name=name, target=normalize_target(target) if target else None, run_dir=directory,
+        instruction=instruction, use_sandbox=use_sandbox, source_path=source_path,
+        static_only=static_only,
     )
 
 
@@ -106,6 +113,15 @@ def demo() -> None:
         assert list_runs(tmp) == [setup.run_dir]
         assert latest_run(tmp) == setup.run_dir
         assert latest_run(tmp / "nope") is None
+
+        # --static-only needs no --target at all.
+        static = prepare_scan(None, static_only=True, out_dir=str(tmp))
+        assert static.target is None and static.static_only is True
+        try:
+            prepare_scan(None, out_dir=str(tmp))
+            raise AssertionError("missing --target without --static-only must raise")
+        except ValueError:
+            pass
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("interface.scan_setup: ok")

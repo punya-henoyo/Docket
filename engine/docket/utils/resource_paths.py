@@ -27,6 +27,14 @@ def dashboard_html() -> Path:
     return package_path("interface", "viewer", "dashboard.html")
 
 
+def frontend_dir() -> Path:
+    """The console's React source (interface/connect.py serves its build output from
+    frontend/dist). Lives at the repo root rather than inside the package: it is the
+    product surface for a hosted deployment and build input, not a runtime resource
+    the CLI needs, so it is absent from an installed wheel."""
+    return REPO_ROOT / "frontend"
+
+
 def containers_dir() -> Path:
     """The Dockerfile lives at the repo root, not inside the package — it is build
     input, not a runtime resource, so it is absent from an installed wheel."""
@@ -43,6 +51,7 @@ def demo() -> None:
     # "containers", so only existence actually catches a moved package.
     assert containers_dir().is_dir(), containers_dir()
     assert (containers_dir() / "Dockerfile").is_file()
+    assert (frontend_dir() / 'package.json').is_file(), frontend_dir()
     print("utils.resource_paths: ok")
 
 

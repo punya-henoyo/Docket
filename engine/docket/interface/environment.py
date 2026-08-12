@@ -55,16 +55,19 @@ def check_docker(timeout: float = 10.0) -> tuple[bool, str | None]:
     return True, None
 
 
-def check_environment(*, require_sandbox: bool = True) -> EnvironmentReport:
+def check_environment(*, require_sandbox: bool = True, require_llm: bool = True) -> EnvironmentReport:
+    """`require_llm=False` is for `--static-only` runs: no agent ever spawns there, so
+    DOCKET_LLM/an API key would be a check for a prerequisite that scan doesn't have."""
     report = EnvironmentReport()
 
     model = (os.environ.get("DOCKET_LLM") or "").strip()
     report.llm_model = model or None
     if not model:
-        report.errors.append(
-            "DOCKET_LLM is not set. Example: DOCKET_LLM=anthropic/claude-sonnet-5 "
-            "(any LiteLLM provider/model string). A .env file is picked up automatically."
-        )
+        if require_llm:
+            report.errors.append(
+                "DOCKET_LLM is not set. Example: DOCKET_LLM=anthropic/claude-sonnet-5 "
+                "(any LiteLLM provider/model string). A .env file is picked up automatically."
+            )
     else:
         provider = model.split("/", 1)[0].lower() if "/" in model else "openai"
         provider_var = _PROVIDER_KEY_VARS.get(provider)
@@ -72,7 +75,7 @@ def check_environment(*, require_sandbox: bool = True) -> EnvironmentReport:
             report.llm_configured, report.api_key_source = True, "LLM_API_KEY"
         elif provider_var and os.environ.get(provider_var):
             report.llm_configured, report.api_key_source = True, provider_var
-        else:
+        elif require_llm:
             hint = f" or {provider_var}" if provider_var else ""
             report.errors.append(f"No API key found. Set LLM_API_KEY{hint} for {model!r}.")
 
@@ -132,6 +135,12 @@ def demo() -> None:
         searched = check_environment(require_sandbox=False)
         assert searched.search_configured and searched.search_provider == "tavily"
         assert format_report(searched) == "" or "warning" in format_report(searched)
+
+        # --static-only: no DOCKET_LLM/key needed at all, since no agent ever spawns.
+        os.environ.pop("DOCKET_LLM", None)
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        static = check_environment(require_sandbox=False, require_llm=False)
+        assert static.ok, static.errors
     finally:
         for key, value in saved.items():
             if value is not None:

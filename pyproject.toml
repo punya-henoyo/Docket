@@ -11,13 +11,17 @@ dependencies = [
     "textual>=8.2.8",
 ]
 
+[project.optional-dependencies]
 # The demo app in app/ is not part of the tool. Kept an optional extra so installing
 # docket does not drag a web framework in: `uv sync --extra app`.
-[project.optional-dependencies]
 app = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
 ]
+# Real token counting for pre-flight context sizing (llm/context_budget.py). Optional
+# because the character fallback keeps a scan running without it; worth installing
+# because that fallback is ~40% off on the JSON/HTTP an agent conversation is made of.
+tokenizer = ["tokenizers>=0.20"]
 
 [project.scripts]
 docket = "docket.interface.main:main"

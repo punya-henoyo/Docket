@@ -31,12 +31,14 @@ def run_scan_in_thread(setup, config: Config, store: FindingStore, max_turns: in
             holder.result = run_scan(
                 target_url=setup.target,
                 instruction=setup.instruction,
+                whitebox_path=setup.source_path,
                 on_finding=store.add,
                 config=config,
                 run_name=setup.run_name,
                 use_sandbox=setup.use_sandbox,
                 max_turns=max_turns,
                 store=store,
+                static_only=setup.static_only,
             )
         except BaseException as exc:  # surfaced to the caller after the UI closes
             holder.error = exc
@@ -88,7 +90,11 @@ def demo() -> None:
     holder = ScanThreadResult()
 
     class _Setup:
+        # Every attribute run_scan_in_thread reads. Kwargs are evaluated BEFORE the
+        # patched run_scan is called, so a missing one raises AttributeError here and
+        # masks the RuntimeError this test is actually asserting on.
         target, instruction, run_name, use_sandbox = "http://x", None, "r", False
+        source_path, static_only = None, False
 
     # A scan that raises must land in holder.error rather than killing the process.
     # Patch THIS module's globals, not `import docket.interface.tui.runtime`: under

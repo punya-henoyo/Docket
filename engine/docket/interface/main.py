@@ -39,19 +39,26 @@ def cmd_doctor(args) -> int:
 
 
 def cmd_scan(args) -> int:
-    env = check_environment(require_sandbox=not args.no_sandbox)
+    env = check_environment(require_sandbox=not args.no_sandbox, require_llm=not args.static_only)
     if not env.ok:
         print(format_report(env), file=sys.stderr)
         return EXIT_ERROR
     for warning in env.warnings:
         print(f"warning: {warning}", file=sys.stderr)
+    if args.source and args.no_sandbox:
+        print(
+            "warning: --source has no effect with --no-sandbox — trivy/semgrep run "
+            "inside the container only, and this run has none",
+            file=sys.stderr,
+        )
 
     try:
         setup = prepare_scan(
             args.target, run_name=args.run_name, instruction=args.instruction,
             out_dir=args.out_dir, use_sandbox=not args.no_sandbox,
+            source_path=args.source, static_only=args.static_only,
         )
-        config = Config.from_env()
+        config = Config.static_only() if args.static_only else Config.from_env()
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -63,13 +70,14 @@ def cmd_scan(args) -> int:
 
     store = FindingStore()
     reporter = None if args.non_interactive else ProgressReporter()
-    kwargs = dict(run_name=setup.run_name, target=setup.target)
+    kwargs = dict(run_name=setup.run_name, target=setup.target or "(static-only)")
     try:
         if reporter:
             reporter.start()
         result = run_scan(
             target_url=setup.target,
             instruction=setup.instruction,
+            whitebox_path=setup.source_path,
             on_finding=make_on_finding(store.add, reporter),
             config=config,
             run_name=setup.run_name,
@@ -79,8 +87,8 @@ def cmd_scan(args) -> int:
             openapi_path=args.openapi,
             har_path=args.har,
             sarif_path=args.sarif,
-            whitebox_path=args.source,
             discovery=not args.no_discovery,
+            static_only=setup.static_only,
         )
     except KeyboardInterrupt:
         print("\ninterrupted — writing what was confirmed so far", file=sys.stderr)
@@ -131,9 +139,16 @@ def cmd_view(args) -> int:
     return EXIT_CLEAN
 
 
+def cmd_connect(args) -> int:
+    from docket.interface.connect import serve
+
+    return serve(port=args.port)
+
+
 def main() -> None:
     args = build_parser().parse_args()
-    handlers = {"scan": cmd_scan, "view": cmd_view, "doctor": cmd_doctor}
+    handlers = {"scan": cmd_scan, "view": cmd_view, "doctor": cmd_doctor,
+                "connect": cmd_connect}
     sys.exit(handlers[args.command](args))
 
 

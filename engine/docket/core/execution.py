@@ -48,6 +48,12 @@ class ScanContext:
     # whole scan died on MaxTurnsExceeded with 1 finding of 3. --max-steps raised root's
     # ceiling but children were unreachable, so there was no way to run a verbose model.
     child_max_turns: int = 12
+    # Where the finish tool parks its result (set in factory._finish_tool_use_behavior),
+    # so reading it never depends on how the SDK chose to shape `final_output`.
+    # Agent.output_type used to carry that job, but declaring it makes the SDK send
+    # response_format=json_schema, and some providers (confirmed: DeepSeek V4 Pro on Azure
+    # AI Foundry) then stop emitting tool calls entirely.
+    final_result: dict | None = None
 
 
 # Errors that mean "this run is over", not "the network hiccuped". Retrying any of
@@ -144,7 +150,12 @@ async def run_agent_loop(
                 hooks=BudgetHooks(max_turns=max_turns), session=session,
                 run_config=run_config,
             )
-            output = _finish_output(result)
+            # context.final_result first: the finish tool parks the real dict there
+            # from inside the tool-use gate, which is unambiguous. _finish_output is the
+            # fallback for a run where the gate did not fire.
+            output = context.final_result
+            if not isinstance(output, dict):
+                output = _finish_output(result)
             if not isinstance(output, dict):
                 # NOT a defensive fallback — this fires in practice, and it is the one
                 # hole in the "nothing is reported unproven" guarantee.
