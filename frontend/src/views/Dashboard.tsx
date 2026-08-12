@@ -2,6 +2,7 @@ import type { Finding, RunSummary, ScanState, Session, Severity } from "../types
 import { SCANNER_LABEL, SCANNERS } from "../types";
 import { Radar } from "../components/Radar";
 import { SeverityDonut, TrendBars } from "../components/charts";
+import { CweBreakdown } from "../components/CweBreakdown";
 import { Empty, findingLocation, Panel, ruleLeaf, SevTag } from "../components/ui";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -28,6 +29,9 @@ export function Dashboard({
   newestId,
   onGoRepos,
   onGoIntegrations,
+  cweFilter,
+  onCweSelect,
+  onOpenRun,
 }: {
   scan: ScanState | null;
   runs: RunSummary[];
@@ -38,8 +42,13 @@ export function Dashboard({
   newestId?: string;
   onGoRepos: () => void;
   onGoIntegrations: () => void;
+  cweFilter: string | null;
+  onCweSelect: (cwe: string | null) => void;
+  onOpenRun: (runName: string) => void;
 }) {
-  const running = scan?.status === "queued" || scan?.status === "fetching" || scan?.status === "scanning";
+  const running =
+    !scan?.historical &&
+    (scan?.status === "queued" || scan?.status === "fetching" || scan?.status === "scanning");
   const top = [...(scan?.findings ?? [])]
     .sort((a, b) => order(a.severity) - order(b.severity))
     .slice(0, 5);
@@ -67,7 +76,9 @@ export function Dashboard({
         <Panel
           title={
             <span className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
-              {scan ? `SCANNING ${scan.repo}` : "NO SCAN RUNNING"}
+              {scan
+                ? `${scan.historical ? "LAST RUN" : "SCANNING"} ${scan.repo}${scan.ref ? "@" + scan.ref : ""}`
+                : "NO SCAN RUNNING"}
             </span>
           }
           action={
@@ -78,6 +89,7 @@ export function Dashboard({
         >
           <Radar scan={scan} onSelect={onSelectFinding} newestId={newestId} />
 
+          {!scan?.historical && (
           <div className="stages" style={{ borderTop: "1px dashed rgba(255,255,255,.2)", paddingTop: 9 }}>
             {SCANNERS.map((s) => {
               const state = scan?.stages?.[s] ?? "pending";
@@ -92,6 +104,7 @@ export function Dashboard({
               );
             })}
           </div>
+          )}
 
           {scan?.status === "error" && <div className="note bad">{scan.error}</div>}
           {scan?.status === "done" && (
@@ -159,8 +172,28 @@ export function Dashboard({
               )}
             </Panel>
 
-            <Panel title="Severity breakdown">
+            <Panel
+              title="Weakness classes"
+              action={
+                cweFilter ? (
+                  <button className="btn sm" onClick={() => onCweSelect(null)}>
+                    clear filter
+                  </button>
+                ) : (
+                  <span className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
+                    by CWE
+                  </span>
+                )
+              }
+            >
               <SeverityDonut counts={counts} />
+              <div style={{ borderTop: "1px dashed rgba(255,255,255,.2)", paddingTop: 9 }}>
+                <CweBreakdown
+                  findings={scan?.findings ?? []}
+                  selected={cweFilter}
+                  onSelect={onCweSelect}
+                />
+              </div>
             </Panel>
           </div>
 
@@ -171,14 +204,32 @@ export function Dashboard({
               <>
                 <TrendBars values={[...runs].reverse().map((r) => r.finding_count)} />
                 <div className="feed">
-                  {runs.slice(0, 4).map((r) => (
-                    <div key={r.run_name} style={{ display: "flex", gap: 8 }}>
+                  {runs.slice(0, 6).map((r) => (
+                    <button
+                      key={r.run_name}
+                      onClick={() => onOpenRun(r.run_name)}
+                      title={`Open ${r.target ?? r.run_name}`}
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        background: scan?.id === r.run_name ? "var(--wash)" : "none",
+                        border: 0,
+                        borderRadius: 4,
+                        padding: "4px 6px",
+                        cursor: "pointer",
+                        font: "11px var(--mono)",
+                        color: "var(--ink-2)",
+                        textAlign: "left",
+                      }}
+                    >
                       <span className="t">{(r.generated_at ?? "").slice(0, 16).replace("T", " ")}</span>
-                      <span style={{ minWidth: 0, wordBreak: "break-all" }}>{r.run_name}</span>
+                      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {(r.target ?? r.run_name).replace(/^github:/, "")}
+                      </span>
                       <span style={{ marginLeft: "auto", color: "var(--ink-3)" }}>
                         {r.finding_count}
                       </span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </>

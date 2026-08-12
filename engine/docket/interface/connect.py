@@ -4,17 +4,26 @@ This is the hosted-product surface, not the CLI. A customer opens the console, c
 Connect GitHub, authorizes, and picks repositories; docket pulls each one read-only and
 runs the deterministic scanners (trivy + semgrep) against it.
 
-WHY A GITHUB APP AND NOT A CLASSIC OAUTH APP
---------------------------------------------
-OAuth Apps have no read-only repository scope. `repo` grants full read AND WRITE to
-private code; `public_repo` likewise for public. There is no `repo:read`. The only
-GitHub mechanism that grants read-only source access is a GitHub App's
-`contents: read` permission.
+AN OAUTH APP, AND WHAT THAT COSTS
+---------------------------------
+Register an OAuth App (Developer settings -> OAuth Apps), callback
+http://127.0.0.1:8765/auth/callback.
 
-The customer-facing flow is identical either way: GitHub Apps support user
-authorization over the same /login/oauth/authorize + /login/oauth/access_token
-endpoints an OAuth App uses, so the code below works with either kind. Register a
-GitHub App with `contents: read` + `metadata: read` to keep the access read-only.
+The user authorizes once and docket can scan every repository they can reach,
+INCLUDING ones they only collaborate on, with no repository owner installing
+anything. That reach is the product requirement, and only an OAuth App delivers it.
+
+The price is real: GitHub has NO read-only scope for private code. `repo` grants read
+AND WRITE; there is no `repo:read`. Docket only ever reads — it clones nothing, pushes
+nothing, opens no branches, and fetch_source() below pulls a tarball precisely so
+there is no remote to push to — but the token it holds could write. A leaked token is
+therefore worse than the access actually used, which raises the bar on the token
+storage this module does not yet have.
+
+A GitHub App would have been read-only (`contents: read`), at the cost of every
+repository OWNER having to install it first; a collaborator cannot grant access to a
+repo they do not own. That path was removed deliberately: it made onboarding depend on
+someone other than the person connecting.
 
 WHAT THIS IS NOT
 ----------------
@@ -55,6 +64,22 @@ GITHUB_API = "https://api.github.com"
 # "../" or scheme here would be a path-traversal / SSRF primitive.
 _FULL_NAME = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
+# A git ref: branch, tag or commit SHA. Slashes are legal and common ("feat/x"), which
+# is exactly why this needs its own check rather than reusing _FULL_NAME — it is
+# interpolated into the same API path, so "..", a leading "-" (which a shell or CLI
+# could read as a flag) and empty segments are all rejected explicitly.
+_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+# A run name is a directory name under docket_runs/ and arrives from the browser.
+# sanitize_run_name() already restricts what gets written; this restricts what can be
+# read back.
+_RUN_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def valid_ref(ref: str) -> bool:
+    return bool(_REF.match(ref)) and ".." not in ref and not ref.endswith("/") and "//" not in ref
+
 # GitHub caps a tarball at a few hundred MB; refuse anything absurd rather than filling
 # the disk of whoever runs this.
 MAX_TARBALL_BYTES = 512 * 1024 * 1024
@@ -81,6 +106,24 @@ def oauth_config() -> tuple[str, str, str] | None:
         return None
     redirect = os.environ.get("DOCKET_GITHUB_REDIRECT_URI", "").strip()
     return client_id, client_secret, redirect
+
+
+def oauth_scope() -> str:
+    """OAuth scope to request. `repo` unless DOCKET_GITHUB_SCOPE overrides it.
+
+    `repo` covers every repository the user can reach, including ones they only
+    collaborate on. That reach is the point: anyone with access to a repo can connect
+    it and scan it, with no repository owner having to install anything.
+
+    The cost is unavoidable, not a choice made here: GitHub has NO read-only scope for
+    private code. `repo` grants read AND WRITE; there is no `repo:read`. Docket only
+    ever reads — it clones nothing, pushes nothing, opens no branches — but the token
+    it holds could write, which makes a leaked token worse than the access we use.
+
+    `public_repo` narrows this to public repositories (still write on those) and is
+    the only meaningful alternative worth setting.
+    """
+    return os.environ.get("DOCKET_GITHUB_SCOPE", "").strip() or "repo"
 
 
 def _api(path: str, token: str, *, timeout: float = 20.0) -> Any:
@@ -125,24 +168,24 @@ def exchange_code(code: str) -> tuple[str | None, str | None]:
 
 
 def list_repos(token: str) -> list[dict[str, Any]]:
-    """Repos this authorization can see. A GitHub App user token returns only the
-    repositories the customer selected at install time, which is the whole point."""
-    try:
-        installations = _api("/user/installations", token)
-        repos: list[dict[str, Any]] = []
-        for install in (installations or {}).get("installations", []):
-            listing = _api(f"/user/installations/{install['id']}/repositories?per_page=100", token)
-            repos.extend((listing or {}).get("repositories", []))
-        if repos:
-            return repos
-    except urllib.error.HTTPError:
-        # Classic OAuth App tokens have no /user/installations; fall through.
-        pass
-    return _api("/user/repos?per_page=100&sort=updated", token) or []
+    """Every repository this user can reach, newest first.
+
+    affiliation is spelled out rather than left to GitHub's default: repos the user
+    only COLLABORATES on are the entire reason this product uses OAuth, so a change
+    in that default is the one thing that would quietly break it.
+    """
+    return _api(
+        "/user/repos?per_page=100&sort=updated"
+        "&affiliation=owner,collaborator,organization_member", token,
+    ) or []
 
 
-def fetch_source(full_name: str, token: str, dest: Path) -> Path:
-    """Download `full_name`'s default-branch tarball and extract it under `dest`.
+def fetch_source(full_name: str, token: str, dest: Path, ref: str | None = None) -> Path:
+    """Download a tarball of `full_name` at `ref` and extract it under `dest`.
+
+    `ref` is a branch, tag or commit SHA; None means the repository's default branch,
+    which is what GitHub returns when the path omits a ref. A PR branch is the point:
+    scanning only ever the default branch cannot gate a change before it merges.
 
     Deliberately NOT `git clone`: a clone puts the token in the command line (visible
     to `ps`) or persists it in .git/config. The REST tarball carries the token in an
@@ -151,9 +194,12 @@ def fetch_source(full_name: str, token: str, dest: Path) -> Path:
     """
     if not _FULL_NAME.match(full_name):
         raise ValueError(f"refusing suspicious repository name: {full_name!r}")
+    if ref is not None and not valid_ref(ref):
+        raise ValueError(f"refusing suspicious ref: {ref!r}")
 
+    path = f"/repos/{full_name}/tarball" + (f"/{ref}" if ref else "")
     request = urllib.request.Request(
-        f"{GITHUB_API}/repos/{full_name}/tarball",
+        f"{GITHUB_API}{path}",
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -185,7 +231,7 @@ def fetch_source(full_name: str, token: str, dest: Path) -> Path:
     return entries[0] if len(entries) == 1 else extracted
 
 
-def run_repo_scan(full_name: str, token: str, scan_id: str) -> None:
+def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = None) -> None:
     """Fetch + scan, updating SESSION.scans[scan_id] as it goes. Never raises: the
     status dict is how the browser learns something failed.
 
@@ -216,7 +262,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str) -> None:
     try:
         set_state(status="fetching")
         stage("fetch", "running")
-        source = fetch_source(full_name, token, workdir)
+        source = fetch_source(full_name, token, workdir, ref)
         stage("fetch", "done")
 
         set_state(status="scanning")
@@ -239,7 +285,8 @@ def run_repo_scan(full_name: str, token: str, scan_id: str) -> None:
         from docket.report.writer import write_report
 
         write_report(
-            store, run_path(run_name), run_name=run_name, target=f"github:{full_name}",
+            store, run_path(run_name), run_name=run_name,
+            target=f"github:{full_name}" + (f"@{ref}" if ref else ""),
             summary=result.summary, cost_usd=result.cost_usd,
             agents_spawned=result.agents_spawned, success=result.success,
         )
@@ -254,10 +301,13 @@ def run_repo_scan(full_name: str, token: str, scan_id: str) -> None:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def new_scan_state(scan_id: str, full_name: str) -> dict[str, Any]:
+def new_scan_state(scan_id: str, full_name: str, ref: str | None = None) -> dict[str, Any]:
     return {
         "id": scan_id,
         "repo": full_name,
+        # None renders as "default branch" in the console; a real value is echoed back
+        # so a finished scan says which code it actually looked at.
+        "ref": ref,
         "status": "queued",
         # Radar rings, outermost last. "skipped" is a real outcome, not a failure:
         # nuclei needs a live URL and a source-only scan has none.
@@ -322,6 +372,43 @@ def list_runs() -> list[dict[str, Any]]:
     return runs
 
 
+def load_run(run_name: str) -> tuple[int, dict[str, Any]]:
+    """(status, payload) for one finished run, shaped like a ScanState so the console
+    can render a reloaded run through exactly the same components as a live one."""
+    from docket.core.paths import runs_root
+
+    if not run_name or not _RUN_NAME.match(run_name):
+        return 400, {"error": "bad run name"}
+    # Resolved and containment-checked: run_name comes from the browser and is joined
+    # onto a filesystem path, so a traversal here would read arbitrary files.
+    root = runs_root().resolve()
+    report = (root / run_name / "report.json").resolve()
+    if not str(report).startswith(str(root)) or not report.is_file():
+        return 404, {"error": f"no run named {run_name}"}
+    try:
+        data = json.loads(report.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return 500, {"error": f"unreadable report: {exc}"}
+
+    target = str(data.get("target") or "")
+    repo, _, ref = target.removeprefix("github:").partition("@")
+    return 200, {
+        "id": run_name,
+        "repo": repo or target or run_name,
+        "ref": ref or None,
+        "status": "done",
+        # A finished run says nothing about which scanners were skipped, and inventing
+        # stages would put lit rings on the radar that never ran. "done" everywhere is
+        # the honest rendering of "this is history, not a live scan".
+        "stages": {},
+        "findings": data.get("findings", []),
+        "finding_count": data.get("finding_count", 0),
+        "error": None,
+        "summary": data.get("summary", ""),
+        "historical": True,
+    }
+
+
 def make_handler() -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -353,11 +440,19 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self._static(path)
             elif path == "/api/runs":
                 self._json(200, {"runs": list_runs()})
+            elif path.startswith("/api/run/"):
+                # A finished run, rehydrated from disk. The console keeps its live scan
+                # in memory only, so without this a reload loses everything — even
+                # though report.json has been sitting there the whole time.
+                self._json(*load_run(path[len("/api/run/"):]))
             elif path == "/api/session":
                 self._json(200, {
                     "connected": SESSION.token is not None,
                     "login": SESSION.login,
                     "configured": oauth_config() is not None,
+                    # Shown in the console so the granted scope is visible on screen
+                    # rather than buried in a config file nobody rereads.
+                    "scope": oauth_scope(),
                 })
             elif path == "/auth/start":
                 self._auth_start()
@@ -394,12 +489,16 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             if not _FULL_NAME.match(full_name):
                 self._json(400, {"error": "repo must look like owner/name"})
                 return
+            ref = str(body.get("ref", "")).strip() or None
+            if ref is not None and not valid_ref(ref):
+                self._json(400, {"error": f"not a usable branch/tag/sha: {ref}"})
+                return
 
             scan_id = secrets.token_hex(8)
             with SESSION.lock:
-                SESSION.scans[scan_id] = new_scan_state(scan_id, full_name)
+                SESSION.scans[scan_id] = new_scan_state(scan_id, full_name, ref)
             threading.Thread(
-                target=run_repo_scan, args=(full_name, SESSION.token, scan_id),
+                target=run_repo_scan, args=(full_name, SESSION.token, scan_id, ref),
                 name=f"docket-scan-{scan_id}", daemon=True,
             ).start()
             self._json(202, {"id": scan_id, "status": "queued"})
@@ -438,7 +537,7 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             # own code would otherwise bind THEIR GitHub account to this session.
             state = secrets.token_urlsafe(24)
             SESSION.oauth_state = state
-            params = {"client_id": client_id, "state": state}
+            params = {"client_id": client_id, "state": state, "scope": oauth_scope()}
             if redirect:
                 params["redirect_uri"] = redirect
             self._redirect(f"{GITHUB_AUTHORIZE}?{urllib.parse.urlencode(params)}")
@@ -527,7 +626,17 @@ def demo() -> None:
 
     state = new_scan_state("abc", "o/r")
     assert state["status"] == "queued" and state["finding_count"] == 0
+    assert state["ref"] is None  # None means "whatever GitHub calls the default"
     assert set(state["stages"]) == {"fetch", "trivy", "semgrep", "nuclei"}
+    assert new_scan_state("abc", "o/r", "feat/x")["ref"] == "feat/x"
+
+    # Refs are interpolated into the same API path as the repo name, so they get the
+    # same scrutiny. Slashes ARE legal here, which is why this is a separate check.
+    for good in ("main", "feat/new-ui", "v1.2.3", "release/2026.08", "a1b2c3d4"):
+        assert valid_ref(good), good
+    for bad in ("../../etc/passwd", "-rf", "feat//x", "feat/", "", "a b",
+                "main;rm -rf /", "..", "/abs"):
+        assert not valid_ref(bad), bad
 
     saved = {k: os.environ.pop(k, None)
              for k in ("DOCKET_GITHUB_CLIENT_ID", "DOCKET_GITHUB_CLIENT_SECRET")}
@@ -562,7 +671,25 @@ def demo() -> None:
         assert isinstance(runs.get("runs"), list), runs
 
         session = json.loads(urllib.request.urlopen(base + "/api/session", timeout=5).read())
-        assert session == {"connected": False, "login": None, "configured": True}, session
+        assert session["configured"] is True and session["connected"] is False, session
+        assert session["scope"] == "repo", session
+
+        # The scope MUST reach the authorize URL. Without it GitHub issues a token that
+        # can read nothing private, and the failure looks identical to "this user has
+        # no repositories" — which is exactly the dead end that killed the App path.
+        opener = urllib.request.build_opener(_NoRedirect())
+        try:
+            opener.open(base + "/auth/start", timeout=5)
+            raise AssertionError("expected a redirect")
+        except urllib.error.HTTPError as exc:
+            assert "scope=repo" in exc.headers["Location"], exc.headers["Location"]
+
+        os.environ["DOCKET_GITHUB_SCOPE"] = "public_repo"
+        try:
+            assert oauth_scope() == "public_repo"
+        finally:
+            os.environ.pop("DOCKET_GITHUB_SCOPE", None)
+        assert oauth_scope() == "repo", "unset must default to repo, not empty"
 
         # 2. /auth/start redirects to GitHub and plants a CSRF state.
         opener = urllib.request.build_opener(_NoRedirect())
@@ -596,8 +723,15 @@ def demo() -> None:
             except urllib.error.HTTPError as exc:
                 assert exc.code == 401, (path, exc.code)
 
-        # 5. With a token present, a malformed repo name never reaches the network.
+        # 5. With a token present, a malformed repo name or ref never reaches the network.
         SESSION.token = "fake"
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                base + "/api/scan", data=b'{"repo":"a/b","ref":"../../etc/passwd"}',
+                method="POST"), timeout=5)
+            raise AssertionError("bad ref must be rejected")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 400, exc.code
         try:
             urllib.request.urlopen(urllib.request.Request(
                 base + "/api/scan", data=b'{"repo":"../../etc/passwd"}', method="POST"), timeout=5)

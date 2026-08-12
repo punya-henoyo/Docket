@@ -16,12 +16,14 @@ export function Repositories({
   repos: Repo[] | null;
   error: string | null;
   onReload: () => void;
-  onScan: (repo: string) => void;
+  onScan: (repo: string, ref?: string) => void;
   scanning: boolean;
   activeRepo?: string;
   onGoIntegrations: () => void;
 }) {
   const [query, setQuery] = useState("");
+  // Per-repo, so typing a branch for one does not follow you to another.
+  const [refs, setRefs] = useState<Record<string, string>>({});
 
   const shown = useMemo(() => {
     const list = repos ?? [];
@@ -66,9 +68,9 @@ export function Repositories({
       </div>
 
       <div className="note" style={{ maxWidth: "70ch" }}>
-        Exactly the repositories this authorization can see. Each is downloaded read-only as a
-        tarball (never cloned, so there is no remote to push back to), scanned with trivy and
-        semgrep in the sandbox, then deleted.
+        Every repository your GitHub account can reach, including ones you only collaborate
+        on. Leave the branch box empty to scan the default branch, or name a branch, tag or commit. Each is downloaded as a tarball (never cloned, so there is no remote to push back
+        to), scanned with trivy and semgrep in the sandbox, then deleted.
       </div>
 
       {error && <div className="note bad">{error}</div>}
@@ -77,7 +79,11 @@ export function Repositories({
         {repos === null ? (
           <Empty>Loading repositories…</Empty>
         ) : shown.length === 0 ? (
-          <Empty>{query ? "Nothing matches that filter." : "No repositories available."}</Empty>
+          query ? (
+            <Empty>Nothing matches that filter.</Empty>
+          ) : (
+            <Empty>This account can reach no repositories on GitHub.</Empty>
+          )
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {shown.map((repo) => (
@@ -87,10 +93,18 @@ export function Repositories({
                   {repo.private ? "private" : "public"}
                   {repo.language ? ` · ${repo.language}` : ""}
                 </span>
+                <input
+                  className="btn sm"
+                  style={{ width: 130, color: "var(--ink)", marginLeft: 10 }}
+                  placeholder="default branch"
+                  aria-label={`branch, tag or commit to scan in ${repo.full_name}`}
+                  value={refs[repo.full_name] ?? ""}
+                  onChange={(e) => setRefs({ ...refs, [repo.full_name]: e.target.value })}
+                />
                 <button
                   className="btn sm"
                   disabled={scanning}
-                  onClick={() => onScan(repo.full_name)}
+                  onClick={() => onScan(repo.full_name, refs[repo.full_name]?.trim() || undefined)}
                 >
                   {scanning && activeRepo === repo.full_name ? "scanning…" : "scan"}
                 </button>
