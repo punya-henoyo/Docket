@@ -19,8 +19,9 @@ from agents.sandbox.capabilities import Filesystem, Shell
 
 from docket.config.settings import Config
 from docket.core.execution import ScanContext
+from docket.core.inputs import build_model_settings
 from docket.interface.tui.backend.messages import get_emitter
-from docket.tools.finish.tool import AgentFinalOutput, agent_finish, finish_scan
+from docket.tools.finish.tool import agent_finish, finish_scan
 from docket.agents.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
 from docket.agents.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
 from docket.tools.load_skill.tool import list_skills, load_skill
@@ -65,6 +66,30 @@ async def http_request(
         do_http_request, method, url, ctx.context.run_dir,
         headers=headers, params=params, data=data, timeout_sec=timeout_sec,
     )
+
+
+def supports_hosted_tools(model: Model | None) -> bool:
+    """Can this model carry the SDK's HOSTED tools (apply_patch, view_image, the
+    native sandbox shell)?
+
+    Only over OpenAI's Responses API. Every LiteLLM-routed model — which is docket's
+    whole point, including its own documented default anthropic/claude-sonnet-5 —
+    speaks ChatCompletions, where the SDK raises
+
+        UserError: Hosted tools are not supported with the ChatCompletions API.
+                   Got tool type: SandboxApplyPatchTool
+
+    before the first turn even runs. Found by the first live-model run: every
+    sandboxed scan with a real model died here instantly, while the scripted test
+    model sailed past because it never goes through LiteLLM's tool serialisation.
+    That is exactly the gap the README's "not yet verified with a live model" was
+    hiding.
+
+    Dropping to a plain Agent costs nothing docket uses: `shell` and `browser` are
+    docket's own function tools that reach the container over the RPC shim, and it
+    narrows the blast radius the README flags as its own least-privilege gap.
+    """
+    return not isinstance(model, LitellmModel)
 
 
 @function_tool
@@ -234,6 +259,10 @@ async def _finish_tool_use_behavior(
     structurally here, not by asking nicely in the prompt."""
     last = results[-1]
     if last.tool.name in _FINISH_TOOL_NAMES and isinstance(last.output, dict):
+        # Park it on the context too. Without Agent.output_type the SDK stringifies
+        # whatever it gets here, so this is the only lossless channel back to
+        # run_agent_loop — see ScanContext.final_result.
+        ctx.context.final_result = last.output
         return ToolsToFinalOutputResult(is_final_output=True, final_output=last.output)
     return ToolsToFinalOutputResult(is_final_output=False, final_output=None)
 
@@ -252,6 +281,7 @@ def build_agent(
     `sandbox`, if given, builds a SandboxAgent with the SDK's native Filesystem and
     Shell capabilities bound to that container, instead of a plain Agent. That is what makes apply_patch and view_image work
     without custom implementations — they come from the SDK, pointed at our sandbox.
+    ONLY when the model can actually carry hosted tools; see supports_hosted_tools.
     """
     if role == "root":
         instructions = ROOT_SYSTEM_PROMPT
@@ -282,12 +312,29 @@ def build_agent(
         "name": name,
         "instructions": instructions,
         "tools": [*base_tools, *(extra_tools or []), finish_tool],
-        "model": model or LitellmModel(model=config.llm, api_key=config.llm_api_key),
+        "model": model or LitellmModel(
+            model=config.llm, api_key=config.llm_api_key, base_url=config.llm_base_url,
+        ),
         "tool_use_behavior": _finish_tool_use_behavior,
-        # non-str output_type — see AgentFinalOutput's docstring for why it's required
-        "output_type": AgentFinalOutput,
+        # NO output_type, deliberately. Declaring one makes the SDK send
+        # response_format=json_schema, and DeepSeek V4 Pro (Azure AI Foundry) then
+        # returns zero tool calls for the rest of the run — measured directly against
+        # the endpoint: tools+tool_choice=required alone gives a tool call, adding the
+        # json_schema gives tool_calls=0 AND empty content, so the loop spins to
+        # MaxTurnsExceeded having tested nothing. Its other job (keeping the finish
+        # tool's dict from being stringified) is now done losslessly by
+        # ScanContext.final_result.
+        #
+        # Removing it also closes the README's "agents can stop without a finish tool"
+        # gap at the root: with no output_type there is no schema for a stray message
+        # to match, and tool_choice="required" below blocks the bare-text exit.
+        # Previously built and then dropped on the floor (the README's "per-request
+        # model settings are not applied" gap). Applying them is what carries
+        # tool_choice="required", without which an agent can end a run on a plain
+        # message that happens to match output_type — see build_model_settings.
+        "model_settings": build_model_settings(config.llm),
     }
-    if sandbox is not None:
+    if sandbox is not None and supports_hosted_tools(common["model"]):
         from docket.runtime.sdk_session import DocketSandboxSession
 
         # SandboxAgent + capabilities is why tools/shell/, apply_patch/ and
@@ -297,6 +344,56 @@ def build_agent(
         return SandboxAgent[ScanContext](
             **common, capabilities=[Filesystem(session=session), Shell(session=session)],
         )
-    # No container: a plain Agent, since the SDK's native shell/filesystem tools would
-    # otherwise have nowhere safe to run.
+    # Plain Agent. Two cases reach here, and neither loses the container:
+    #   - no sandbox: the SDK's native shell/filesystem would have nowhere safe to run
+    #   - a ChatCompletions model: hosted tools cannot be sent at all (see
+    #     supports_hosted_tools)
+    # docket's `shell` and `browser` are its OWN function tools that reach the
+    # container through the RPC shim, so a specialist keeps every capability its
+    # prompt actually uses. Only the SDK's apply_patch/view_image drop out, and the
+    # README already calls those documentation stubs.
     return Agent[ScanContext](**common)
+
+
+def demo() -> None:
+    """Regression guard for the hosted-tools incompatibility.
+
+    A sandboxed scan on a LiteLLM model used to raise UserError before its first turn
+    (see supports_hosted_tools). Nothing caught it, because the test suite's scripted
+    model is not a LitellmModel and so took the SandboxAgent branch that real runs
+    never reach.
+    """
+    from docket.config.settings import Config
+
+    cfg = Config(llm="openai/DeepSeek-V4-Pro", llm_api_key="k", max_cost_usd=1.0,
+                 max_child_cost_usd=0.5, max_agents=2, llm_base_url="https://x/openai/v1/")
+    sentinel = object()  # stands in for a Sandbox; never dereferenced on this path
+
+    live = LitellmModel(model=cfg.llm, api_key=cfg.llm_api_key, base_url=cfg.llm_base_url)
+    assert supports_hosted_tools(live) is False
+    assert supports_hosted_tools(None) is True
+
+    # THE BUG: sandbox on + LiteLLM model must NOT be a SandboxAgent.
+    agent = build_agent("sqli", cfg, model=live, sandbox=sentinel)
+    assert not isinstance(agent, SandboxAgent), "LiteLLM + sandbox must use a plain Agent"
+    assert isinstance(agent, Agent)
+
+    # ...and the container is still reachable: shell/browser are docket's own tools.
+    names = {t.name for t in agent.tools}
+    assert "shell" in names, names          # sqli drives sqlmap in the container
+    assert "http_request" in names, names
+    assert "finding" in names, names
+    assert "apply_patch" not in names       # the SDK hosted tool that could not be sent
+
+    # xss keeps its browser; cmdi gets neither shell nor browser.
+    assert "browser" in {t.name for t in build_agent("xss", cfg, model=live, sandbox=sentinel).tools}
+    cmdi = {t.name for t in build_agent("cmdi", cfg, model=live, sandbox=sentinel).tools}
+    assert "shell" not in cmdi and "browser" not in cmdi, cmdi
+
+    # No sandbox at all is still a plain Agent.
+    assert not isinstance(build_agent("root", cfg, model=live), SandboxAgent)
+    print("agents.factory: ok")
+
+
+if __name__ == "__main__":
+    demo()

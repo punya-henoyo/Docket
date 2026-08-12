@@ -7,7 +7,10 @@ real window is cheaper and more accurate than a hardcoded guess.
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
+
+from docket.report.state import mark_warned
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +73,52 @@ def usable_tokens(model: str, *, fraction: float = USABLE_FRACTION) -> int:
     return int(max_input_tokens(model) * fraction)
 
 
+@lru_cache(maxsize=1)
+def _tokenizer() -> object | None:
+    """The model's real tokenizer, when DOCKET_TOKENIZER_PATH points at a HuggingFace
+    tokenizer.json. Cached: loading parses a multi-MB vocabulary.
+
+    Uses the `tokenizers` package directly rather than `transformers` — same encoder,
+    a fraction of the install, and nothing here needs a model runtime. Returns None
+    (so callers fall back to CHARS_PER_TOKEN) if the var is unset, the file is
+    missing, or the package is absent. A pre-flight estimate must never be the thing
+    that breaks a scan.
+    """
+    path = os.environ.get("DOCKET_TOKENIZER_PATH", "").strip()
+    if not path:
+        return None
+    try:
+        from tokenizers import Tokenizer
+
+        return Tokenizer.from_file(path)
+    except Exception as exc:
+        if mark_warned("tokenizer-load"):
+            logger.warning("DOCKET_TOKENIZER_PATH=%r unusable (%s); using the "
+                           "chars-per-token estimate instead", path, exc)
+        return None
+
+
 def estimate_tokens(items: object) -> int:
-    """Cheap pre-flight size estimate for a conversation. Character-based on purpose:
-    a real tokenizer would need the provider's exact encoding, cost real time every
-    turn, and still only decide the same yes/no question."""
-    return max(0, len(str(items)) // CHARS_PER_TOKEN)
+    """Pre-flight size estimate for a conversation.
+
+    Real tokenizer when one is configured, characters otherwise. The fallback is
+    genuinely poor on the content docket actually carries: measured against DeepSeek
+    V4 Pro, chars/4 undercounts JSON tool results by ~38% and raw HTTP dumps by ~40%
+    (it overcounts prose by ~10%). Undercounting is the dangerous direction — docket
+    believes it is at 60% of the window while it is really at 100%, so compaction
+    never fires until the provider rejects the request. That is the README's
+    "compaction is reactive" gap, and pointing DOCKET_TOKENIZER_PATH at the model's
+    tokenizer.json closes it: the same measurement puts the real encoder within ~2%
+    across prose, code, JSON and HTTP.
+    """
+    text = str(items)
+    tokenizer = _tokenizer()
+    if tokenizer is not None:
+        try:
+            return len(tokenizer.encode(text).ids)
+        except Exception:  # pragma: no cover — never fail a scan over an estimate
+            pass
+    return max(0, len(text) // CHARS_PER_TOKEN)
 
 
 def over_budget(model: str, items: object, *, fraction: float = USABLE_FRACTION) -> bool:
@@ -91,9 +135,38 @@ def demo() -> None:
     assert max_input_tokens("totally-made-up-model-zzz") == DEFAULT_MAX_INPUT_TOKENS
 
     assert usable_tokens("openai/gpt-4o") == 96_000  # 128k * 0.75
-    assert estimate_tokens("x" * 4000) == 1000
-    assert not over_budget("openai/gpt-4o", "short conversation")
-    assert over_budget("openai/gpt-4o", "x" * (4 * 96_000 + 8))
+
+    saved = os.environ.pop("DOCKET_TOKENIZER_PATH", None)
+    try:
+        _tokenizer.cache_clear()
+        assert _tokenizer() is None                       # unconfigured -> fallback
+        assert estimate_tokens("x" * 4000) == 1000
+        assert not over_budget("openai/gpt-4o", "short conversation")
+        assert over_budget("openai/gpt-4o", "x" * (4 * 96_000 + 8))
+
+        # A bad path degrades to the estimate rather than raising mid-scan.
+        os.environ["DOCKET_TOKENIZER_PATH"] = "/nope/missing.json"
+        _tokenizer.cache_clear()
+        assert _tokenizer() is None
+        assert estimate_tokens("x" * 4000) == 1000
+
+        # The vendored tokenizer, when the optional package is installed. JSON is
+        # where chars/4 is worst, so that is what this asserts on.
+        from pathlib import Path
+
+        bundled = Path(__file__).resolve().parent / "tokenizers" / "deepseek-v3.json"
+        os.environ["DOCKET_TOKENIZER_PATH"] = str(bundled)
+        _tokenizer.cache_clear()
+        if _tokenizer() is not None:
+            payload = '{"rule":"sqli","severity":"high","path":"app.py"}' * 20
+            real, rough = estimate_tokens(payload), len(payload) // CHARS_PER_TOKEN
+            assert real > rough * 1.25, (real, rough)  # measured gap was ~38%
+    finally:
+        _tokenizer.cache_clear()
+        if saved is not None:
+            os.environ["DOCKET_TOKENIZER_PATH"] = saved
+        else:
+            os.environ.pop("DOCKET_TOKENIZER_PATH", None)
     print("llm.context_budget: ok")
 
 

@@ -1,0 +1,89 @@
+name: docket-scan
+
+# Runs docket's deterministic scanner pre-scan (trivy + semgrep, via `--static-only
+# --source .`) against this repo's own source on every push/PR, and uploads the
+# result as a GitHub code-scanning alert (SARIF). No DOCKET_LLM/API key needed:
+# --static-only skips the AI agents entirely (see Config.static_only in
+# docket/config/settings.py), so this costs CI minutes only, no secret to configure,
+# no LLM spend.
+#
+# What this does NOT cover: the AI-driven dynamic scan (SQLi/CMDi/XSS agents + nuclei
+# against a LIVE app). That needs the sandbox to reach a target over
+# host.docker.internal, which only resolves to the host's loopback on Docker Desktop
+# for Mac — a GitHub-hosted Linux runner can't make that connection (see
+# sandbox-image.yml's own comment on this exact gap). Wiring that up means starting
+# the app-under-test as a reachable service in this same job (0.0.0.0 bind or a
+# sibling container on the Docker network) plus a configured DOCKET_LLM secret —
+# left for when there's a real app in this repo to point it at.
+#
+# Authorization model: a repo-scoped CI workflow IS the authorization — this only
+# ever runs where a maintainer committed this file, scanning exactly the checked-out
+# source of THIS repo. --static-only never accepts a --target, so nothing in a PR's
+# diff can redirect a scan at a third party's system.
+on:
+  push:
+    branches: [main]
+    paths:
+      - containers/**
+      - engine/docket/**
+      - pyproject.toml
+      - .github/workflows/docket-scan.yml
+  pull_request:
+    paths:
+      - containers/**
+      - engine/docket/**
+      - pyproject.toml
+      - .github/workflows/docket-scan.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write # required by github/codeql-action/upload-sarif
+
+concurrency:
+  group: docket-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Build the sandbox image
+        run: make image
+
+      # Exit 2 (findings present) is docket's documented CI-gate contract — a run that
+      # proves a vulnerability fails the build (see interface/main.py's exit_code()).
+      # continue-on-error here so the SARIF upload below still runs on that exit code;
+      # the job's real pass/fail is decided explicitly by the last step instead.
+      #
+      # Deliberately NOT --out-dir: run_scan()'s internal artifact directory ignores
+      # it (docket's own README, "Current limits" — "--out-dir splits a run across
+      # two directories"), so this uses the default docket_runs/<run-name>/ layout,
+      # where report.sarif and the raw scanner artifacts are guaranteed to agree.
+      - name: docket scan --static-only (trivy + semgrep against this repo's source)
+        id: scan
+        continue-on-error: true
+        run: |
+          uv run docket scan --static-only --source . -n \
+            --run-name "gha-${{ github.run_id }}"
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: docket_runs/gha-${{ github.run_id }}/report.sarif
+          category: docket
+
+      - name: Fail the job if docket errored or found something
+        if: steps.scan.outcome == 'failure'
+        run: exit 1

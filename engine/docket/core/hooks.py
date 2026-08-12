@@ -13,6 +13,7 @@ whereas one that is simply cut off mid-thought loses that turn's work.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -47,30 +48,74 @@ def _stage_for(fraction: float, bands: tuple[float, ...]) -> str | None:
     return stage
 
 
-def estimate_cost(model: str, usage: Any) -> float:
-    """Dollar cost of one model turn, via LiteLLM's pricing tables.
+def manual_rates() -> tuple[float, float] | None:
+    """(input, output) USD per MILLION tokens from DOCKET_PRICE_INPUT_PER_1M /
+    DOCKET_PRICE_OUTPUT_PER_1M, or None when unset.
 
-    Returns 0.0 for a model LiteLLM has no pricing data for (it raises rather than
-    guessing). That means budget enforcement silently becomes a no-op for unpriced
-    models — max_turns is then the only ceiling — so warn once per model rather than
-    swallowing it, and never crash a scan over missing pricing metadata.
+    Per-million is how providers quote, so the number copied off a pricing page goes
+    in as-is with no unit conversion to get wrong. Both must be set: pricing only one
+    side would under-report every turn and hand back a budget that silently lets a run
+    overspend, which is worse than the honest $0.
+    """
+    raw_in = os.environ.get("DOCKET_PRICE_INPUT_PER_1M", "").strip()
+    raw_out = os.environ.get("DOCKET_PRICE_OUTPUT_PER_1M", "").strip()
+    if not raw_in or not raw_out:
+        return None
+    try:
+        return float(raw_in), float(raw_out)
+    except ValueError:
+        if mark_warned("bad-manual-price"):
+            print(
+                f"warning: DOCKET_PRICE_INPUT_PER_1M / _OUTPUT_PER_1M are not numbers "
+                f"({raw_in!r}, {raw_out!r}) — ignoring them.",
+                file=sys.stderr,
+            )
+        return None
+
+
+def estimate_cost(model: str, usage: Any) -> float:
+    """Dollar cost of one model turn.
+
+    LiteLLM's pricing tables first, since those are the provider's real numbers. They
+    miss any model LiteLLM does not know — notably a custom Azure AI Foundry
+    DEPLOYMENT name, which is arbitrary text, so `openai/DeepSeek-V4-Pro` is unpriced
+    however well-known the underlying model is.
+
+    Without a price, budget enforcement silently becomes a no-op and max_turns is the
+    only ceiling. DOCKET_PRICE_*_PER_1M closes that: set the two rates off your
+    provider's pricing page and both the report and the pre-turn budget gate work
+    again. Still 0.0 (and a one-time warning) when neither source knows the model —
+    a fabricated number would be worse than an explicit zero.
     """
     if usage is None:
         return 0.0
+    prompt_tokens = getattr(usage, "input_tokens", 0) or 0
+    completion_tokens = getattr(usage, "output_tokens", 0) or 0
     try:
         import litellm
 
         prompt_cost, completion_cost = litellm.cost_per_token(
             model=model,
-            prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
-            completion_tokens=getattr(usage, "output_tokens", 0) or 0,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
         return prompt_cost + completion_cost
     except Exception:
+        rates = manual_rates()
+        if rates is not None:
+            per_in, per_out = rates
+            if mark_warned(f"manual-priced:{model}"):
+                print(
+                    f"note: {model!r} is unpriced by LiteLLM; using DOCKET_PRICE_*_PER_1M "
+                    f"(${per_in}/M in, ${per_out}/M out) so the budget stays enforceable.",
+                    file=sys.stderr,
+                )
+            return (prompt_tokens * per_in + completion_tokens * per_out) / 1_000_000
         if mark_warned(f"unpriced:{model}"):
             print(
-                f"warning: no LiteLLM pricing data for {model!r} — cost budget cannot be "
-                f"enforced for this model; --max-steps/max_turns is the only ceiling.",
+                f"warning: no LiteLLM pricing data for {model!r} and no "
+                f"DOCKET_PRICE_INPUT_PER_1M / _OUTPUT_PER_1M set — cost budget cannot be "
+                f"enforced; --max-steps/max_turns is the only ceiling.",
                 file=sys.stderr,
             )
         return 0.0
@@ -168,6 +213,32 @@ def demo() -> None:
 
     assert estimate_cost("anthropic/claude-sonnet-4-5-20250929", _U()) > 0
     assert estimate_cost("totally-made-up-xyz", _U()) == 0.0
+
+    # Manual per-1M rates rescue an unpriced model (a custom Azure deployment name is
+    # arbitrary text, so LiteLLM will never know it) — without which the budget gate
+    # is a silent no-op.
+    saved = {k: os.environ.pop(k, None)
+             for k in ("DOCKET_PRICE_INPUT_PER_1M", "DOCKET_PRICE_OUTPUT_PER_1M")}
+    try:
+        assert manual_rates() is None
+        os.environ["DOCKET_PRICE_INPUT_PER_1M"] = "0.28"
+        assert manual_rates() is None, "one-sided pricing must be refused, not half-applied"
+        os.environ["DOCKET_PRICE_OUTPUT_PER_1M"] = "0.42"
+        assert manual_rates() == (0.28, 0.42)
+        # 1000 in @ $0.28/M + 500 out @ $0.42/M = 0.00028 + 0.00021
+        got = estimate_cost("totally-made-up-xyz", _U())
+        assert abs(got - 0.00049) < 1e-9, got
+        # A real LiteLLM price still wins over the manual override.
+        assert estimate_cost("anthropic/claude-sonnet-4-5-20250929", _U()) != got
+
+        os.environ["DOCKET_PRICE_INPUT_PER_1M"] = "not-a-number"
+        assert manual_rates() is None  # garbage is ignored, never crashes a scan
+    finally:
+        for key, value in saved.items():
+            if value is not None:
+                os.environ[key] = value
+            else:
+                os.environ.pop(key, None)
     assert estimate_cost("anthropic/claude-sonnet-4-5-20250929", None) == 0.0
     reset_report_state()
     print("core.hooks: ok")
