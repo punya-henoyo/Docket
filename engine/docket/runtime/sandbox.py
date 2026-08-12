@@ -92,17 +92,26 @@ class Sandbox:
     """One container per scan run. Fresh each time, so no cross-run state bleed
     (stale cookies, a browser tab left open, a previous run's proxy flows)."""
 
-    def __init__(self, run_dir: Path, *, image: str = DEFAULT_IMAGE, name: str | None = None) -> None:
+    def __init__(
+        self, run_dir: Path, *, image: str = DEFAULT_IMAGE, name: str | None = None,
+        source_dir: Path | None = None,
+    ) -> None:
         self.run_dir = Path(run_dir).resolve()
         self.image = image
         self.name = name or f"docket-{uuid.uuid4().hex[:8]}"
         self.port: int | None = None
+        # White-box source for the trivy/semgrep scanners (docket/tools/scanners/) —
+        # read-only, since a source-aware scan has no business writing into a repo.
+        self.source_dir = Path(source_dir).resolve() if source_dir else None
 
     # -- lifecycle ---------------------------------------------------------------
 
     def start(self, *, health_timeout: float = 30.0) -> "Sandbox":
         self.run_dir.mkdir(parents=True, exist_ok=True)
         build_image(self.image)
+        mounts = ["-v", f"{self.run_dir}:/work/run"]
+        if self.source_dir is not None:
+            mounts += ["-v", f"{self.source_dir}:/work/source:ro"]
         _docker(
             "run", "-d",
             "--name", self.name,
@@ -110,7 +119,7 @@ class Sandbox:
             # Let Docker pick the host port (and bind it to loopback only) so two runs
             # can coexist instead of fighting over a hardcoded one.
             "-p", f"127.0.0.1::{SHIM_PORT}",
-            "-v", f"{self.run_dir}:/work/run",
+            *mounts,
             "-e", "DOCKET_RUN_DIR=/work/run",
             self.image,
             timeout=120,

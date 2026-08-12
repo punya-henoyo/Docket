@@ -42,6 +42,13 @@ class ScanContext:
     # model_override(role) instead of building a real LitellmModel — lets a mock
     # harness script every spawned agent's decisions without touching production code.
     model_override: Callable[[str], Model] | None = None
+    # Where the finish tool parks its result, so reading it never depends on how the
+    # SDK chose to shape `final_output`. Agent.output_type used to carry that job, but
+    # declaring it makes the SDK send response_format=json_schema, and some providers
+    # (confirmed: DeepSeek V4 Pro on Azure AI Foundry) then stop emitting tool calls
+    # entirely — the agent loop spins until MaxTurnsExceeded having done nothing. See
+    # factory._finish_tool_use_behavior.
+    final_result: dict | None = None
 
 
 # Errors that mean "this run is over", not "the network hiccuped". Retrying any of
@@ -100,11 +107,16 @@ async def run_agent_loop(
                 hooks=BudgetHooks(max_turns=max_turns), session=session,
                 run_config=run_config,
             )
-            output = result.final_output
+            # context.final_result first: the finish tool parks the real dict there,
+            # which survives regardless of how the SDK shapes final_output. Without
+            # an Agent.output_type (see factory.build_agent for why declaring one
+            # breaks tool calling on some providers) final_output arrives stringified.
+            output = context.final_result
             if not isinstance(output, dict):
-                # tool_use_behavior + Agent.output_type guarantee the run only ends
-                # via finish_scan/agent_finish with a dict — this is a defensive
-                # fallback, not the expected path.
+                output = result.final_output
+            if not isinstance(output, dict):
+                # The finish-tool gate should make this unreachable; treat a run that
+                # ended some other way as failed rather than silently "successful".
                 output = {"summary": str(output), "findings": [], "success": False}
             return output
         except _TERMINAL_EXCEPTIONS as exc:

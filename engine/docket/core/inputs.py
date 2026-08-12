@@ -27,10 +27,24 @@ def build_model_settings(
     max_tokens: int | None = None,
     reasoning_effort: str | None = "medium",
     parallel_tool_calls: bool = True,
+    tool_choice: str | None = "required",
 ) -> ModelSettings:
     """Only set fields the model actually supports — asking a non-reasoning model for
-    a reasoning config is a request error, not a graceful no-op."""
+    a reasoning config is a request error, not a graceful no-op.
+
+    `tool_choice="required"` is load-bearing, not tuning. Agent.output_type is
+    AgentFinalOutput, so the SDK ends a run the moment the model emits ANY message
+    matching that schema — before the finish-tool gate in factory.py is consulted.
+    The first live-model run hit this on turn one: root replied with a plain
+    {"summary": "...I need to spawn three specialists...", "findings": [], "success":
+    true} narrating its plan, and the scan "finished" having spawned nobody and
+    tested nothing. Forcing a tool call every turn removes the bare-message exit, so
+    finish_scan/agent_finish become the only way to stop. This is the README's
+    "agents can stop without a finish tool" limit, closed.
+    """
     settings: dict[str, Any] = {"parallel_tool_calls": parallel_tool_calls}
+    if tool_choice is not None:
+        settings["tool_choice"] = tool_choice
     if temperature is not None:
         settings["temperature"] = temperature
     if max_tokens is not None:
@@ -65,6 +79,12 @@ def demo() -> None:
     assert claude.temperature == 0.2 and claude.max_tokens == 4096
     assert claude.reasoning is not None                # reasoning-capable
     assert claude.prompt_cache_retention == "in_memory"  # caching-capable
+
+    # The bare-message exit must be closed by DEFAULT, on every model — a run that
+    # can stop without calling a finish tool reports "success" having done nothing.
+    assert claude.tool_choice == "required", claude.tool_choice
+    assert build_model_settings("openai/DeepSeek-V4-Pro").tool_choice == "required"
+    assert build_model_settings("x/y", tool_choice=None).tool_choice is None
 
     legacy = build_model_settings("openai/gpt-3.5-turbo")
     assert legacy.reasoning is None, "non-reasoning model must not get a reasoning config"

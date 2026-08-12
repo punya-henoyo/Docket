@@ -1,7 +1,8 @@
-.PHONY: help install check test test-fast image clean lint
+.PHONY: help install check test test-fast image clean lint console
 
 help:
 	@echo "install    install dependencies (uv sync)"
+	@echo "console    build the web console (needs Node)"
 	@echo "check      run every module self-check"
 	@echo "test       run the full test suite (needs Docker)"
 	@echo "test-fast  run only tests that don't need Docker"
@@ -11,6 +12,11 @@ help:
 
 install:
 	uv sync
+
+# The console is a Vite/React app; connect.py serves its build output from
+# frontend/dist. Needs Node. `docket connect` prints a build hint if dist/ is absent.
+console:
+	cd frontend && npm install && npm run build
 
 image:
 	docker build -f containers/Dockerfile -t docket-sandbox:latest .
@@ -28,8 +34,10 @@ check:
 	  docket.tools.reporting.tool docket.tools.notes.tools docket.tools.todo.tools \
 	  docket.tools.thinking.tool docket.tools.respond.tool docket.tools.web_search.tool \
 	  docket.tools.load_skill.tool \
+	  docket.tools.scanners.nuclei docket.tools.scanners.trivy docket.tools.scanners.semgrep \
 	  docket.runtime.sdk_session \
 	  docket.interface.utils docket.interface.environment docket.interface.scan_setup \
+	  docket.interface.connect \
 	  docket.interface.cli_args docket.interface.interactive docket.interface.update_check \
 	  docket.interface.tui.backend.protocol docket.interface.tui.backend.projection \
 	  docket.interface.tui.backend.messages docket.interface.tui.live_view docket.interface.tui.runtime \
@@ -61,6 +69,6 @@ lint:
 	fi
 
 clean:
-	rm -rf docket_runs
+	rm -rf docket_runs frontend/dist
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +
 	find . -name '*.pyc' -delete

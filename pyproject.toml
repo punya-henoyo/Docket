@@ -11,6 +11,12 @@ dependencies = [
     "textual>=8.2.8",
 ]
 
+[project.optional-dependencies]
+# Real token counting for pre-flight context sizing (llm/context_budget.py). Optional
+# because the character fallback keeps a scan running without it; worth installing
+# because that fallback is ~40% off on the JSON/HTTP an agent conversation is made of.
+tokenizer = ["tokenizers>=0.20"]
+
 [project.scripts]
 docket = "docket.interface.main:main"
 

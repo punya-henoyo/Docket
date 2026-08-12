@@ -31,12 +31,14 @@ def run_scan_in_thread(setup, config: Config, store: FindingStore, max_turns: in
             holder.result = run_scan(
                 target_url=setup.target,
                 instruction=setup.instruction,
+                whitebox_path=setup.source_path,
                 on_finding=store.add,
                 config=config,
                 run_name=setup.run_name,
                 use_sandbox=setup.use_sandbox,
                 max_turns=max_turns,
                 store=store,
+                static_only=setup.static_only,
             )
         except BaseException as exc:  # surfaced to the caller after the UI closes
             holder.error = exc

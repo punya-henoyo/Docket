@@ -16,3 +16,7 @@ containers/**/*.log
 
 # OS
 .DS_Store
+
+# console build
+node_modules/
+frontend/dist/
