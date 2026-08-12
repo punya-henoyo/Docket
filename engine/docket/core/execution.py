@@ -38,6 +38,10 @@ class ScanContext:
     # docket/agents/factory.py; running LLM-authored shell commands on the host is
     # exactly what the sandbox exists to prevent.
     sandbox: Any | None = None
+    # Files this agent has read. Counted so read_source can tell the agent how much
+    # of its reading budget is gone — see tools/source/tools.py. A plain int rather
+    # than anything cleverer: it is per-agent, single-threaded, and dies with the run.
+    reads: int = 0
     # Test-only hook: if set, create_agent (docket/tools/agents_graph/tools.py) uses
     # model_override(role) instead of building a real LitellmModel — lets a mock
     # harness script every spawned agent's decisions without touching production code.

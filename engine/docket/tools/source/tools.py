@@ -28,6 +28,33 @@ MAX_MATCHES = 60
 MAX_FILES = 200
 
 
+# Reading budget, enforced by TELLING the agent, not by refusing.
+#
+# Measured across four live runs: recon read 26-40 files per run, hit its turn ceiling
+# every single time, and ignored every prompt instruction about when to stop. The
+# reason is mechanical — turn warnings go to logger.warning (core/hooks.py), which the
+# operator sees and the model never does. A tool RESULT, by contrast, lands directly in
+# the conversation the model reads.
+#
+# So the budget is reported here, where it cannot be missed. Refusing the read outright
+# would be worse: an agent mid-way through mapping auth needs one more file, and a hard
+# stop loses the map. It is told, escalating, and the salvage turn in core/execution.py
+# remains the backstop for an agent that ignores even this.
+SOFT_READ_BUDGET = 14
+HARD_READ_BUDGET = 20
+
+
+def _budget_note(reads: int) -> str | None:
+    if reads >= HARD_READ_BUDGET:
+        return (f"BUDGET SPENT — {reads} files read. Stop reading NOW and call your "
+                "finish tool with what you have. Further reads risk ending the run "
+                "with no result at all, losing everything above.")
+    if reads >= SOFT_READ_BUDGET:
+        return (f"{reads} files read of ~{HARD_READ_BUDGET} budgeted. Start closing: "
+                "read only what you still need to finish, then call your finish tool.")
+    return None
+
+
 def _confine(path: str) -> str:
     """Absolute path under SOURCE_ROOT, or raise. Rejects traversal before it reaches
     the container rather than hoping the shim notices."""
@@ -90,14 +117,20 @@ async def read_source(
 
     body = result.get("stdout", "")
     numbered = [f"{start + i}\t{line}" for i, line in enumerate(body.splitlines())]
-    return {
+    ctx.context.reads += 1
+    payload = {
         "ok": True,
         "path": path,
         "start_line": start,
         "end_line": start + max(0, len(numbered) - 1),
         "text": "\n".join(numbered),
         "truncated": bool(result.get("truncated")),
+        "files_read": ctx.context.reads,
     }
+    note = _budget_note(ctx.context.reads)
+    if note:
+        payload["budget"] = note
+    return payload
 
 
 @function_tool
@@ -208,6 +241,22 @@ def demo() -> None:
     assert normalise_glob("*.py") == "*.py"      # already correct, left alone
     assert normalise_glob("") == "*"
     assert normalise_glob("**/") == "*"
+    # ── read budget ─────────────────────────────────────────────────────────
+    # Silent while there is room: a budget line on read 3 is noise the agent learns
+    # to skip, which is exactly how it would learn to skip the one that matters.
+    assert _budget_note(1) is None
+    assert _budget_note(SOFT_READ_BUDGET - 1) is None
+
+    soft = _budget_note(SOFT_READ_BUDGET)
+    assert soft and "Start closing" in soft, soft
+    hard = _budget_note(HARD_READ_BUDGET)
+    assert hard and "Stop reading NOW" in hard, hard
+    # The hard note must say what is LOST by continuing. "You are over budget" is
+    # ignorable; "the run ends with no result at all" is the thing that actually
+    # happened on a real repository before the salvage turn existed.
+    assert "no result at all" in hard
+    assert _budget_note(HARD_READ_BUDGET + 30).startswith("BUDGET SPENT")
+
     print("tools.source: ok")
 
 

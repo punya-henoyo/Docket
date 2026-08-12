@@ -144,11 +144,11 @@ What matters most:
   built dynamically at runtime, config you cannot see. A stated gap is useful; a
   hidden one makes the map look more complete than it is.
 
-**Budget your reading, and record before you run out.** You get roughly 24 turns. You
-are not told your turn count as you go, so count your own tool calls: after about
-FIFTEEN reads, stop reading and record what you have, whatever is left unread. A
-partial map that exists beats a complete map you never wrote. Say what you did not
-reach in `notes` — an admitted gap is useful, a silent one is not.
+**Budget your reading.** Every `read_source` result carries `files_read`, and once you
+are near the ceiling it carries a `budget` line telling you to close. Act on it: stop
+reading, record what you have, and say in `notes` what you did not reach. A partial map
+that exists beats a complete map you never wrote, and an admitted gap is useful where a
+silent one is not.
 
 Be efficient, and know when you are done. Read handlers and the auth path closely;
 skim everything else. Measured: a 60-line app maps in 6 turns for $0.06, while
