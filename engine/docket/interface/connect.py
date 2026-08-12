@@ -99,6 +99,28 @@ MAX_TARBALL_BYTES = 512 * 1024 * 1024
 # enforces nothing. Unpriced + unbounded count is genuinely unbounded spend.
 
 
+# A scan in one of these has not finished. Used both to decide whether to refresh
+# usage on read and to answer "is anything running", so the two can never disagree.
+LIVE_STATUSES = ("queued", "fetching", "scanning")
+
+
+def active_scans() -> list[dict[str, Any]]:
+    """Scans still running, newest first.
+
+    Exists so the console can find a live scan it has lost track of. The browser held
+    the only reference to a running scan in React state, so opening a historical run
+    replaced it and the scan became unreachable — still running, still spending, with
+    no way back to it. A reload or a second tab had the same problem.
+    """
+    with SESSION.lock:
+        return [
+            {"id": scan_id, "repo": state.get("repo"), "ref": state.get("ref"),
+             "status": state.get("status"), "started_at": state.get("started_at")}
+            for scan_id, state in SESSION.scans.items()
+            if state.get("status") in LIVE_STATUSES
+        ]
+
+
 def _merge_live_usage(state: dict[str, Any]) -> dict[str, Any]:
     """Refresh a scan state's per-agent turns and cost from the usage ledger.
 
@@ -771,15 +793,15 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self._auth_callback(query)
             elif path == "/api/repos":
                 self._repos()
+            elif path == "/api/scans/active":
+                self._json(200, {"scans": active_scans()})
             elif path.startswith("/api/scan/"):
                 scan_id = path.rsplit("/", 1)[-1]
                 with SESSION.lock:
                     state = SESSION.scans.get(scan_id)
                     # Refreshed inside the lock: a live scan mutates this dict from
                     # its own thread while the handler serialises it.
-                    if state is not None and state.get("status") not in (
-                        "done", "error", "cancelled"
-                    ):
+                    if state is not None and state.get("status") in LIVE_STATUSES:
                         _merge_live_usage(state)
                     payload = dict(state) if state else None
                 self._json(200 if payload else 404, payload or {"error": "unknown scan"})
@@ -1206,6 +1228,33 @@ def demo() -> None:
         # A child reserve larger than the whole scan budget would let one agent
         # consume more than the operator allowed for everything.
         assert _capped.max_child_cost_usd <= _capped.max_cost_usd
+
+        # ── a running scan must always be findable ────────────────────────────
+        # The console held the only reference to a live scan in browser state, so
+        # opening a historical run replaced it and the scan became unreachable while
+        # still running and still spending.
+        assert active_scans() == []
+        SESSION.scans["live1"] = new_scan_state("live1", "o/r")
+        SESSION.scans["live1"]["status"] = "scanning"
+        SESSION.scans["old1"] = new_scan_state("old1", "o/r")
+        SESSION.scans["old1"]["status"] = "done"
+        try:
+            listed = json.loads(
+                urllib.request.urlopen(base + "/api/scans/active", timeout=5).read()
+            )["scans"]
+            assert [s["id"] for s in listed] == ["live1"], listed
+            assert listed[0]["repo"] == "o/r"
+            # Every non-terminal status counts, or a scan stuck in "queued" would be
+            # just as unreachable as before.
+            for status in LIVE_STATUSES:
+                SESSION.scans["live1"]["status"] = status
+                assert len(active_scans()) == 1, status
+            for status in ("done", "error", "cancelled"):
+                SESSION.scans["live1"]["status"] = status
+                assert active_scans() == [], status
+        finally:
+            SESSION.scans.pop("live1", None)
+            SESSION.scans.pop("old1", None)
 
         runs = json.loads(urllib.request.urlopen(base + "/api/runs", timeout=5).read())
         assert isinstance(runs.get("runs"), list), runs

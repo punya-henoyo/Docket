@@ -60,6 +60,13 @@ export const cancelScan = (id?: string) =>
     body: JSON.stringify(id ? { id } : {}),
   });
 
+/** Scans still running on the server. The console's only reference to a live scan
+ *  used to be React state, so opening a historical run lost it and a reload lost it. */
+export const activeScans = () =>
+  req<{ scans: { id: string; repo: string; ref: string | null; status: string }[] }>(
+    "/api/scans/active",
+  );
+
 export const startScan = (repo: string, ref?: string, triageMax = 0, recon = false,
                           budgetUsd = 0) =>
   req<{ id: string; status: string }>("/api/scan", {

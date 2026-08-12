@@ -42,6 +42,18 @@ export default function App() {
   // ends polling for good: the catch never calls setScan, so the effect below
   // never re-runs, and the UI freezes while the scan carries on server-side.
   const [pollTick, setPollTick] = useState(0);
+  // The id of a scan that is RUNNING, independent of whatever is being displayed.
+  // Kept in sessionStorage so it survives a reload and a second tab, because losing
+  // it means a scan keeps running and spending with no way back to it.
+  const [liveId, setLiveId] = useState<string | null>(
+    () => sessionStorage.getItem("docket.liveId"),
+  );
+
+  const rememberLive = useCallback((id: string | null) => {
+    setLiveId(id);
+    if (id) sessionStorage.setItem("docket.liveId", id);
+    else sessionStorage.removeItem("docket.liveId");
+  }, []);
   const [cweFilter, setCweFilter] = useState<string | null>(null);
   const [verdictFilter, setVerdictFilter] = useState<Verdict | null>(null);
   const prevIds = useRef<Set<string>>(new Set());
@@ -56,6 +68,23 @@ export default function App() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  // A scan may be running that this browser has never seen: after a reload, in a
+  // second tab, or because the previous view replaced it with history. Ask the server
+  // rather than trusting local state, which is what went missing in the first place.
+  useEffect(() => {
+    let alive = true;
+    api.activeScans()
+      .then(({ scans }) => {
+        if (!alive) return;
+        if (scans.length) rememberLive(scans[0].id);
+        else if (sessionStorage.getItem("docket.liveId")) rememberLive(null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [rememberLive]);
 
   // Boot: session + run history. A failure here means the backend is not running,
   // which every view needs to know before it renders anything.
@@ -143,8 +172,10 @@ export default function App() {
         setScanError(null);
         // A cancelled scan writes a partial report too, so the run list needs
         // refreshing either way.
-        if (next.status === "done" || next.status === "cancelled") {
-          api.getRuns().then(setRuns).catch(() => {});
+        if (next.status === "done" || next.status === "cancelled" ||
+            next.status === "error") {
+          if (next.id === liveId) rememberLive(null);
+          if (next.status !== "error") api.getRuns().then(setRuns).catch(() => {});
         }
       } catch (err) {
         setScanError(err instanceof ApiError ? err.message : String(err));
@@ -152,7 +183,7 @@ export default function App() {
       }
     }, 1500);
     return () => clearTimeout(timer);
-  }, [scan, pollTick]);
+  }, [scan, pollTick, liveId, rememberLive]);
 
   const runScan = useCallback(
     async (repo: string, ref?: string, triageMax = 0, recon = false,
@@ -165,6 +196,7 @@ export default function App() {
       setNewestId(undefined);
       try {
         const { id } = await api.startScan(repo, ref, triageMax, recon, budgetUsd);
+        rememberLive(id);
         setScan({
           id,
           repo,
@@ -195,6 +227,22 @@ export default function App() {
     for (const f of findings) acc[f.severity] = (acc[f.severity] ?? 0) + 1;
     return acc;
   }, [findings]);
+
+  /** Return to the running scan. Separate from openRun on purpose: openRun replaces
+   *  the displayed scan with history, which is exactly what used to strand this one. */
+  const resumeLive = useCallback(async () => {
+    if (!liveId) return;
+    setScanError(null);
+    setSelected(null);
+    try {
+      setScan(await api.getScan(liveId));
+      go("scan");
+    } catch {
+      // The server no longer knows this scan — it finished and was evicted, or the
+      // console restarted. Forget it rather than leaving a button that does nothing.
+      rememberLive(null);
+    }
+  }, [liveId, go, rememberLive]);
 
   const openRun = useCallback(
     async (runName: string) => {
@@ -235,10 +283,18 @@ export default function App() {
             key={v.id}
             className="nav"
             aria-current={view === v.id ? "page" : undefined}
-            onClick={() => go(v.id)}
+            onClick={() => {
+              // Clicking Scan while a run is live returns to THAT run, not to
+              // whatever historical scan happens to be loaded. Losing your way back
+              // to a running scan is how one ends up spending unwatched.
+              if (v.id === "scan" && liveId && scan?.id !== liveId) resumeLive();
+              else go(v.id);
+            }}
           >
             {v.label}
-            {v.id === "scan" && scanning && <span className="live">● live</span>}
+            {v.id === "scan" && (scanning || liveId) && (
+              <span className="live">● live</span>
+            )}
             {v.id === "findings" && findings.length > 0 && (
               <span className="count">{findings.length}</span>
             )}
@@ -250,6 +306,24 @@ export default function App() {
       </nav>
 
       <main className="main">
+        {liveId && scan?.id !== liveId && (
+          <div
+            className="note"
+            style={{
+              display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+              border: "1px solid var(--ok)", borderRadius: "var(--r)",
+              padding: "10px 14px", color: "var(--ink-2)",
+              background: "color-mix(in srgb, var(--ok) 8%, transparent)",
+            }}
+          >
+            <span className="live">●</span>
+            A scan is still running. You are looking at a different run.
+            <button className="btn primary" style={{ marginLeft: "auto" }}
+                    onClick={resumeLive}>
+              Back to the live scan
+            </button>
+          </div>
+        )}
         {bootError ? (
           <>
             <div className="page-head">
