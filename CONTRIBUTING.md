@@ -28,7 +28,7 @@ Prove a new check catches the thing it exists to catch before you trust it.
 
 The test target is `tests/fixtures/target_app.py`: self-contained, intentionally vulnerable,
 loopback only. CI runs `make check` and `make test-fast` on every push, and builds the
-sandbox image when it or the package changes — see [`.github/README.md`](.github/README.md)
+sandbox image when it or the package changes — see [`.github/workflows.md`](.github/workflows.md)
 for why the container-backed tests are local-only, and why there is no lint job yet.
 
 ## Adding a tool
