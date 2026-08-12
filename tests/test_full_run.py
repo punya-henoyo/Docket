@@ -251,7 +251,13 @@ def test_full_run_produces_three_validated_findings_and_sarif() -> None:
         assert expected in text, text
     print(text)
 
-    shutil.rmtree(directory, ignore_errors=True)
+    # Kept deliberately opt-in: this run directory is the only source of findings with
+    # real, tool-derived PoC evidence that needs no API key, which makes it the demo
+    # dataset for app/. Tests still clean up by default.
+    if not os.environ.get("DOCKET_KEEP_RUN"):
+        shutil.rmtree(directory, ignore_errors=True)
+    else:
+        print(f"\nkept {directory} (DOCKET_KEEP_RUN)")
 
 
 if __name__ == "__main__":

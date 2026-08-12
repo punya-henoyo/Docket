@@ -11,6 +11,14 @@ dependencies = [
     "textual>=8.2.8",
 ]
 
+# The demo app in app/ is not part of the tool. Kept an optional extra so installing
+# docket does not drag a web framework in: `uv sync --extra app`.
+[project.optional-dependencies]
+app = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+]
+
 [project.scripts]
 docket = "docket.interface.main:main"
 
