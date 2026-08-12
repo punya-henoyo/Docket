@@ -52,7 +52,7 @@ export function TriagePanel({
     <Panel
       title="Triage"
       action={
-        <span className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
+        <span className="note" style={{ fontSize: 12 }}>
           {triaged.length} of {findings.length} judged
         </span>
       }
@@ -86,13 +86,13 @@ export function TriagePanel({
                   border: 0,
                   borderRadius: 4,
                   padding: "4px 6px",
-                  font: "11px var(--mono)",
+                  font: "500 12.5px var(--sans)",
                   color: c.n ? "var(--ink-2)" : "var(--ink-3)",
                   cursor: c.n ? "pointer" : "default",
                   textAlign: "left",
                 }}
               >
-                <span style={{ width: 8, height: 8, borderRadius: 2, background: c.colour, flex: "none", opacity: c.n ? 1 : 0.3 }} />
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: c.colour, flex: "none", opacity: c.n ? 1 : 0.3 }} />
                 <span>{c.label}</span>
                 <span style={{ color: "var(--ink-3)" }}>{c.blurb}</span>
                 <span style={{ marginLeft: "auto", fontVariantNumeric: "tabular-nums", color: "var(--ink)" }}>
@@ -117,7 +117,7 @@ export function TriagePanel({
 
       {/* Spend sits with triage because triage is the only thing here that spends. */}
       <div style={{ borderTop: "1px dashed rgba(255,255,255,.2)", paddingTop: 9, display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", font: "11px var(--mono)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", font: "500 12.5px var(--sans)" }}>
           <span className="eyebrow">Spend</span>
           <span style={{ color: tight ? "var(--high)" : "var(--ink-2)", fontVariantNumeric: "tabular-nums" }}>
             ${spend.toFixed(4)}

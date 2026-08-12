@@ -442,7 +442,13 @@ def list_runs() -> list[dict[str, Any]]:
             "generated_at": data.get("generated_at"),
             "finding_count": data.get("finding_count", 0),
             "severity_counts": data.get("severity_counts", {}),
-            "cost_usd": data.get("cost_usd", 0.0),
+            # usage.totals is where the writer records spend. The top-level cost_usd
+            # key exists but is always 0.0, so reading it made every historical run
+            # look free and the cost trend a flat line at zero.
+            "cost_usd": round(
+                ((data.get("usage") or {}).get("totals") or {}).get(
+                    "cost_usd", data.get("cost_usd", 0.0)),
+                4),
             "mtime": report.stat().st_mtime,
         })
     runs.sort(key=lambda r: r["mtime"], reverse=True)
@@ -836,6 +842,8 @@ def demo() -> None:
                 "usage": {"totals": {"input_tokens": 35773, "output_tokens": 2368,
                                      "cost_usd": 0.077928}},
             }))
+            listed = list_runs()
+            assert len(listed) == 1 and listed[0]["cost_usd"] == 0.0779, listed
             code, run = load_run("connect-1")
             assert code == 200, (code, run)
             assert run["repo"] == "o/r" and run["ref"] == "main", run

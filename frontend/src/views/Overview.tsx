@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import type { Finding, RunSummary, ScanState, Severity } from "../types";
 import { SEVERITIES } from "../types";
 import { cweLabel } from "../cwe";
+import { AreaChart, SeverityDonut, StackedRuns } from "../components/charts";
 import { Empty, findingLocation, Panel, ruleLeaf, SevTag } from "../components/ui";
 
 const SEV_COLOR: Record<Severity, string> = {
@@ -12,16 +13,19 @@ const SEV_COLOR: Record<Severity, string> = {
   info: "var(--info)",
 };
 
-/** The executive view.
+const shortDate = (iso: string | null) =>
+  iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+
+/** The security dashboard.
  *
- *  The number a security lead has to act on is NOT "48 findings" — that is a scanner's
- *  output volume, and it says nothing about risk. It is "how many can an attacker
- *  actually reach", and after that "how much of the codebase did we even look at".
- *  Both are here and the raw count is deliberately secondary.
+ *  The headline number is REACHABLE findings, not raw finding count. A scanner's output
+ *  volume says nothing about risk: 48 matches with 24 unreachable is a different morning
+ *  than 48 matches all reachable, and only one of those numbers survives being read out
+ *  in a meeting.
  *
- *  Nothing on this page is invented. Every figure below comes from a real scan, and
- *  where a number is unknown it says so rather than showing a zero that reads as good
- *  news. */
+ *  Every tile here is wired to something docket measured. Where a number is unknown the
+ *  tile says so rather than rendering a zero, because on a security dashboard a
+ *  confident zero is worse than a blank. */
 export function Overview({
   scan,
   runs,
@@ -50,19 +54,39 @@ export function Overview({
     return acc;
   }, [findings]);
 
+  // One row per repository, worst first. Runs are per-repo, so the latest run for each
+  // repo IS that repo's current state; summing every historical run would count a
+  // finding once per scan and inflate a frequently-scanned repo.
+  const assets = useMemo(() => {
+    const latest = new Map<string, RunSummary>();
+    for (const r of runs) {
+      const key = (r.target ?? r.run_name).replace(/^github:/, "").split("@")[0];
+      if (!latest.has(key)) latest.set(key, r); // runs arrive newest-first
+    }
+    return [...latest.entries()]
+      .map(([repo, r]) => ({ repo, counts: r.severity_counts ?? {}, total: r.finding_count,
+                             run: r.run_name }))
+      .sort((a, b) =>
+        (b.counts.critical ?? 0) - (a.counts.critical ?? 0) ||
+        (b.counts.high ?? 0) - (a.counts.high ?? 0) ||
+        b.total - a.total)
+      .slice(0, 6);
+  }, [runs]);
+
   // Worst reachable first — that IS the work queue. Falls back to raw severity when
-  // nothing has been triaged, with the page saying so.
+  // nothing has been triaged, with the panel title saying which it is showing.
   const top = [...(reachable.length ? reachable : findings)]
     .sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity))
-    .slice(0, 6);
+    .slice(0, 5);
 
   const coverage = scan?.coverage?.semgrep;
-  const trend = [...runs].reverse().map((r) => r.finding_count);
+  const history = [...runs].reverse(); // oldest first, the direction a trend reads
+  const spend = runs.reduce((sum, r) => sum + (r.cost_usd ?? 0), 0);
 
   if (!scan) {
     return (
       <>
-        <div className="page-head"><h1>Overview</h1></div>
+        <div className="page-head"><h1>Security dashboard</h1></div>
         <Panel>
           <Empty>
             <div>No scan yet.</div>
@@ -76,159 +100,49 @@ export function Overview({
   return (
     <>
       <div className="page-head">
-        <h1>Overview</h1>
+        <h1>Security dashboard</h1>
         <div className="head-actions">
           <span className="chip">{(scan.repo || "").replace(/^github:/, "")}</span>
-          {scan.ref && <span className="chip">{scan.ref}</span>}
+          {scan.ref && <span className="chip mono">{scan.ref}</span>}
+          <button className="btn primary" onClick={onGoRepos}>New scan</button>
         </div>
       </div>
 
-      {/* ── the headline: what is actually actionable ─────────────────── */}
-      <div className="split">
-        <Panel title="Needs attention">
-          {triaged.length === 0 ? (
-            <Empty>
-              <div style={{ maxWidth: "40ch" }}>
-                {findings.length} finding(s), none triaged. Turn on <b>AI triage</b> to
-                separate what an attacker can reach from what they cannot.
-              </div>
-            </Empty>
-          ) : (
-            <>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-                <span style={{ font: "600 54px/1 var(--sans)", color: "var(--crit)",
-                               fontVariantNumeric: "tabular-nums" }}>
-                  {reachable.length}
-                </span>
-                <span className="note" style={{ maxWidth: "22ch" }}>
-                  reachable by untrusted input, of {findings.length} reported
-                </span>
-              </div>
-
-              {/* The funnel is the story: volume in, decisions out. */}
-              <div style={{ display: "flex", height: 10, borderRadius: 2,
-                            overflow: "hidden", background: "var(--wash)", marginTop: 12 }}>
-                {[
-                  [reachable.length, "var(--crit)", "reachable"],
-                  [unknown.length, "var(--ink-3)", "uncertain"],
-                  [ruledOut.length, "var(--ok)", "ruled out"],
-                  [untriaged, "var(--line-2)", "not triaged"],
-                ].map(([n, c, label]) =>
-                  (n as number) > 0 ? (
-                    <span key={label as string} title={`${n} ${label}`}
-                          style={{ flex: n as number, background: c as string }} />
-                  ) : null,
-                )}
-              </div>
-              <div className="note" style={{ marginTop: 6, lineHeight: 1.9 }}>
-                <b style={{ color: "var(--crit)" }}>{reachable.length}</b> reachable ·{" "}
-                <b style={{ color: "var(--ink-3)" }}>{unknown.length}</b> uncertain ·{" "}
-                <b style={{ color: "var(--ok)" }}>{ruledOut.length}</b> ruled out
-                {untriaged > 0 && <> · {untriaged} not triaged</>}
-              </div>
-              {ruledOut.length > 0 && (
-                <div className="note" style={{ color: "var(--ink-2)" }}>
-                  An agent read the source and ruled out {ruledOut.length} finding(s) that
-                  would otherwise sit in someone's queue.
-                </div>
-              )}
-              <button className="btn primary" style={{ alignSelf: "flex-start" }}
-                      onClick={onGoFindings}>
-                Review findings
-              </button>
-            </>
-          )}
-        </Panel>
-
-        <div className="stack">
-          <div className="kpis">
-            <Kpi label="Reported" value={findings.length} />
-            <Kpi label="Critical" value={counts.critical ?? 0} tone="var(--crit)" />
-            <Kpi label="High" value={counts.high ?? 0} tone="var(--high)" />
-            <Kpi label="Entry points"
-                 value={scan.surface?.entry_points?.length ?? "—"} />
-            <Kpi label="AI spend"
-                 value={scan.cost_usd != null ? `$${scan.cost_usd.toFixed(2)}` : "—"} />
-          </div>
-
-          <div className="cols">
-            <Panel title="Severity">
-              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                {SEVERITIES.filter((s) => counts[s]).map((s) => (
-                  <div key={s}>
-                    <div style={{ display: "flex", justifyContent: "space-between",
-                                  font: "11px var(--mono)", color: "var(--ink-2)" }}>
-                      <SevTag severity={s} />
-                      <span>{counts[s]}</span>
-                    </div>
-                    <div style={{ height: 6, borderRadius: 2, background: "var(--wash)",
-                                  marginTop: 4 }}>
-                      <div style={{ width: `${(counts[s]! / findings.length) * 100}%`,
-                                    height: "100%", borderRadius: 2,
-                                    background: SEV_COLOR[s] }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Panel>
-
-            {/* Coverage sits on the executive page on purpose: "0 findings" and
-                "nothing was analysed" are the same number, and only one is good news. */}
-            <Panel title="What was examined">
-              {coverage?.files_scanned != null ? (
-                <div className="note" style={{ color: "var(--ink-2)", lineHeight: 2 }}>
-                  <div><b style={{ color: "var(--ink)" }}>
-                    {coverage.files_scanned.toLocaleString()}</b> files analysed</div>
-                  {coverage.rules_fired?.length ? (
-                    <div>languages: {coverage.rules_fired.join(", ")}</div>
-                  ) : null}
-                  {scan.coverage?.trivy?.manifest_count ? (
-                    <div>{scan.coverage.trivy.manifest_count} dependency manifest(s)</div>
-                  ) : null}
-                  {coverage.error_count ? (
-                    <div className="note bad">
-                      {coverage.error_count} file(s) could not be analysed — a gap, not a
-                      clean pass.
-                    </div>
-                  ) : null}
-                  <div style={{ color: "var(--ink-3)" }}>
-                    No live target was tested, so nothing runtime-only was covered.
-                  </div>
-                </div>
-              ) : (
-                <div className="note">
-                  Not recorded for this run. Treat the count as a lower bound.
-                </div>
-              )}
-            </Panel>
-          </div>
-        </div>
+      <div className="kpis">
+        <Kpi label="Reachable" value={triaged.length ? reachable.length : "—"}
+             tone="var(--crit)"
+             sub={triaged.length ? `of ${findings.length}` : "not triaged"} />
+        <Kpi label="Findings" value={findings.length}
+             sub={counts.critical ? `${counts.critical} critical` : undefined}
+             subTone="var(--crit)" />
+        <Kpi label="High severity" value={(counts.critical ?? 0) + (counts.high ?? 0)}
+             tone="var(--high)" />
+        <Kpi label="Scans" value={runs.length} />
+        <Kpi label="AI spend" value={`$${spend.toFixed(2)}`} sub="all runs" />
       </div>
 
-      <div className="cols">
+      <div className="trio">
+        {/* ── the work queue ──────────────────────────────────────────── */}
         <Panel
-          title={reachable.length ? "Fix these first" : "Highest severity"}
-          action={<button className="btn sm" onClick={onGoFindings}>view all</button>}
+          title={reachable.length ? "Fix these first" : "Top issues"}
+          action={<button className="btn ghost" onClick={onGoFindings}>View all →</button>}
         >
           {top.length === 0 ? (
             <Empty>Nothing reported.</Empty>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div className="rows">
               {top.map((f) => (
-                <button key={f.id} onClick={() => onSelectFinding(f)}
-                  style={{ display: "flex", justifyContent: "space-between", gap: 10,
-                           alignItems: "center", background: "none", border: 0,
-                           borderBottom: "1px dashed rgba(255,255,255,.15)",
-                           padding: "6px 0", cursor: "pointer", textAlign: "left",
-                           font: "11.5px var(--mono)" }}>
-                  <span style={{ minWidth: 0 }}>
-                    <span style={{ display: "block", color: "var(--ink)" }}>
+                <button key={f.id} onClick={() => onSelectFinding(f)}>
+                  <span style={{ minWidth: 0, flex: 1 }}>
+                    <span style={{ display: "block", fontSize: 13.5,
+                                   overflow: "hidden", textOverflow: "ellipsis",
+                                   whiteSpace: "nowrap" }}>
                       {ruleLeaf(f.rule_id)}
                     </span>
-                    <span style={{ color: "var(--ink-3)", fontSize: 10.5,
-                                   wordBreak: "break-all" }}>
-                      {findingLocation(f)}
-                      {f.cwe ? ` · ${cweLabel(f.cwe)}` : ""}
+                    <span className="path" style={{ display: "block", fontSize: 11.5,
+                                   overflow: "hidden", textOverflow: "ellipsis",
+                                   whiteSpace: "nowrap", wordBreak: "normal" }}>
+                      {findingLocation(f)}{f.cwe ? ` · ${cweLabel(f.cwe)}` : ""}
                     </span>
                   </span>
                   <SevTag severity={f.severity} />
@@ -243,54 +157,190 @@ export function Overview({
           )}
         </Panel>
 
-        <Panel title="History" action={
-          <span className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
-            {runs.length} run(s)
-          </span>
-        }>
-          {trend.length < 2 ? (
-            <div className="note">Needs at least two runs to show a trend.</div>
+        {/* ── posture across every repo, not just this run ─────────────── */}
+        <Panel
+          title="Top affected repositories"
+          action={<span className="note" style={{ fontSize: 12 }}>latest scan each</span>}
+        >
+          {assets.length === 0 ? (
+            <Empty>No runs yet.</Empty>
+          ) : (
+            <div className="rows">
+              {assets.map((a) => (
+                <button key={a.repo} onClick={() => onOpenRun(a.run)}
+                        title={`Open the latest scan of ${a.repo}`}>
+                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden",
+                                 textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                 fontSize: 13.5 }}>
+                    {a.repo}
+                  </span>
+                  <span style={{ display: "flex", gap: 10, flex: "none" }}>
+                    {SEVERITIES.filter((s) => a.counts[s]).slice(0, 4).map((s) => (
+                      <span key={s} title={`${a.counts[s]} ${s}`}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 4,
+                                     font: "500 12px var(--sans)", color: "var(--ink-2)" }}>
+                        <span style={{ width: 7, height: 7, borderRadius: "50%",
+                                       background: SEV_COLOR[s] }} />
+                        <span className="num">{a.counts[s]}</span>
+                      </span>
+                    ))}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Severity breakdown">
+          <div style={{ padding: "10px 0 4px" }}>
+            <SeverityDonut counts={counts} />
+          </div>
+        </Panel>
+      </div>
+
+      <div className="trio">
+        {/* ── the funnel: volume in, decisions out ─────────────────────── */}
+        <Panel title="Triage outcome">
+          {triaged.length === 0 ? (
+            <Empty>
+              <div style={{ maxWidth: "34ch" }}>
+                {findings.length} finding(s), none triaged. Turn on <b>AI triage</b> to
+                separate what an attacker can reach from what they cannot.
+              </div>
+            </Empty>
           ) : (
             <>
-              <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 70 }}>
-                {trend.slice(-16).map((v, i, arr) => (
-                  <div key={i} title={`${v} finding(s)`}
-                    style={{ flex: 1, minWidth: 3,
-                             height: `${Math.max((v / Math.max(...trend, 1)) * 100, 3)}%`,
-                             background: i === arr.length - 1
-                               ? "var(--ink)" : "rgba(255,255,255,.25)",
-                             borderRadius: 1 }} />
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                <span className="num" style={{ font: "600 34px/1 var(--sans)",
+                                               color: "var(--crit)" }}>
+                  {reachable.length}
+                </span>
+                <span className="note" style={{ maxWidth: "20ch" }}>
+                  reachable by untrusted input
+                </span>
+              </div>
+              <div style={{ display: "flex", height: 10, borderRadius: 5,
+                            overflow: "hidden", background: "var(--raised)" }}>
+                {([
+                  [reachable.length, "var(--crit)", "reachable"],
+                  [unknown.length, "var(--med)", "uncertain"],
+                  [ruledOut.length, "var(--ok)", "ruled out"],
+                  [untriaged, "var(--line-2)", "not triaged"],
+                ] as const).map(([n, c, label]) =>
+                  n > 0 ? <span key={label} title={`${n} ${label}`}
+                                style={{ flex: n, background: c }} /> : null,
+                )}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px" }}>
+                {([
+                  [reachable.length, "var(--crit)", "reachable"],
+                  [unknown.length, "var(--med)", "uncertain"],
+                  [ruledOut.length, "var(--ok)", "ruled out"],
+                  [untriaged, "var(--line-2)", "not triaged"],
+                ] as const).map(([n, c, label]) => (
+                  <span key={label} style={{ display: "inline-flex", alignItems: "center",
+                                             gap: 6, font: "500 12.5px var(--sans)",
+                                             color: "var(--ink-2)" }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: c }} />
+                    {label} <span className="num" style={{ color: "var(--ink)" }}>{n}</span>
+                  </span>
                 ))}
               </div>
-              <div className="note">
-                Findings per run, oldest to newest. Counts move with scanner
-                configuration as well as with code, so read the shape, not the exact
-                delta.
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 3,
-                            borderTop: "1px dashed rgba(255,255,255,.2)", paddingTop: 8 }}>
-                {runs.slice(0, 5).map((r) => (
-                  <button key={r.run_name} onClick={() => onOpenRun(r.run_name)}
-                    title={`Open ${r.target ?? r.run_name}`}
-                    style={{ display: "flex", gap: 8, background:
-                               scan?.id === r.run_name ? "var(--wash)" : "none",
-                             border: 0, borderRadius: 4, padding: "4px 6px",
-                             cursor: "pointer", font: "11px var(--mono)",
-                             color: "var(--ink-2)", textAlign: "left" }}>
-                    <span style={{ color: "var(--ink-3)" }}>
-                      {(r.generated_at ?? "").slice(5, 16).replace("T", " ")}
-                    </span>
-                    <span style={{ minWidth: 0, overflow: "hidden",
-                                   textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {(r.target ?? r.run_name).replace(/^github:/, "")}
-                    </span>
-                    <span style={{ marginLeft: "auto", color: "var(--ink-3)" }}>
-                      {r.finding_count}
-                    </span>
-                  </button>
-                ))}
-              </div>
+              {ruledOut.length > 0 && (
+                <div className="note">
+                  An agent read the source and ruled out {ruledOut.length} finding(s) that
+                  would otherwise sit in someone's queue.
+                </div>
+              )}
             </>
+          )}
+        </Panel>
+
+        <Panel
+          title="Findings over time"
+          action={<span className="note" style={{ fontSize: 12 }}>{runs.length} run(s)</span>}
+        >
+          <StackedRuns
+            runs={history.map((r) => ({
+              counts: r.severity_counts ?? {},
+              total: r.finding_count,
+              label: shortDate(r.generated_at),
+            }))}
+          />
+          <div className="note">
+            One column per scan, stacked by severity. Counts move with scanner
+            configuration as well as with code, so read the shape, not the exact delta.
+          </div>
+        </Panel>
+
+        <Panel
+          title="Cost per scan"
+          action={<span className="num note" style={{ fontSize: 12 }}>${spend.toFixed(2)} total</span>}
+        >
+          <AreaChart
+            values={history.map((r) => r.cost_usd ?? 0)}
+            labels={history.map((r) => shortDate(r.generated_at))}
+            format={(v) => `$${v.toFixed(2)}`}
+          />
+          <div className="note">
+            Only the AI phases spend: triage and recon. A scanner-only run costs nothing.
+          </div>
+        </Panel>
+      </div>
+
+      {/* Coverage sits on the executive page on purpose: "0 findings" and "nothing was
+          analysed" are the same number, and only one is good news. */}
+      <div className="cols">
+        <Panel title="What was examined" action={<span className="chip">this run</span>}>
+          {coverage?.files_scanned != null ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "14px 34px" }}>
+              <Fact label="Files analysed" value={coverage.files_scanned.toLocaleString()} />
+              <Fact label="Languages matched"
+                    value={coverage.rules_fired?.join(", ") || "none"} />
+              <Fact label="Dependency manifests"
+                    value={scan.coverage?.trivy?.manifest_count ?? 0} />
+              <Fact label="Entry points mapped"
+                    value={scan.surface?.entry_points?.length ?? "—"} />
+              <Fact label="Could not be analysed" value={coverage.error_count ?? 0}
+                    tone={coverage.error_count ? "var(--high)" : undefined} />
+            </div>
+          ) : (
+            <div className="note">
+              Not recorded for this run. Treat the finding count as a lower bound.
+            </div>
+          )}
+          <div className="note">
+            No live target was tested, so nothing runtime-only was covered.
+            {coverage?.error_count
+              ? ` ${coverage.error_count} file(s) could not be analysed — those are coverage holes, not clean passes.`
+              : ""}
+          </div>
+        </Panel>
+
+        <Panel title="Recent scans">
+          {runs.length === 0 ? (
+            <Empty>No runs yet.</Empty>
+          ) : (
+            <div className="rows">
+              {runs.slice(0, 5).map((r) => (
+                <button key={r.run_name} onClick={() => onOpenRun(r.run_name)}
+                        aria-selected={scan.id === r.run_name}
+                        style={scan.id === r.run_name ? { background: "var(--wash)" } : undefined}>
+                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden",
+                                 textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                 fontSize: 13.5 }}>
+                    {(r.target ?? r.run_name).replace(/^github:/, "")}
+                  </span>
+                  <span className="note" style={{ fontSize: 12, flex: "none" }}>
+                    {shortDate(r.generated_at)}
+                  </span>
+                  <span className="num" style={{ flex: "none", minWidth: 26,
+                                                 textAlign: "right", fontSize: 13.5 }}>
+                    {r.finding_count}
+                  </span>
+                </button>
+              ))}
+            </div>
           )}
         </Panel>
       </div>
@@ -298,11 +348,26 @@ export function Overview({
   );
 }
 
-function Kpi({ label, value, tone }: { label: string; value: number | string; tone?: string }) {
+function Kpi({ label, value, tone, sub, subTone }: {
+  label: string; value: number | string; tone?: string;
+  sub?: string; subTone?: string;
+}) {
   return (
     <div>
       <div className="eyebrow">{label}</div>
-      <div className="v" style={tone && value !== 0 ? { color: tone } : undefined}>
+      <div className="v" style={tone && value !== 0 && value !== "—" ? { color: tone } : undefined}>
+        {value}
+        {sub && <small style={subTone && value !== 0 ? { color: subTone } : undefined}>{sub}</small>}
+      </div>
+    </div>
+  );
+}
+
+function Fact({ label, value, tone }: { label: string; value: number | string; tone?: string }) {
+  return (
+    <div>
+      <div className="eyebrow" style={{ fontSize: 11.5 }}>{label}</div>
+      <div className="num" style={{ font: "600 17px var(--sans)", marginTop: 3, color: tone }}>
         {value}
       </div>
     </div>
