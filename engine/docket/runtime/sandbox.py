@@ -179,8 +179,17 @@ class Sandbox:
             self.image,
             timeout=120,
         )
-        self.port = self._read_port()
-        self._await_health(health_timeout)
+        # Past this point the container EXISTS. Anything that fails from here must
+        # take it down: a container created and then abandoned survives until the
+        # process exits, and a watcher that retries a failing scan leaks one per
+        # attempt. Measured: a nine-minute-old container from a scan that died on the
+        # port lookup, still holding memory while the retry contended with it.
+        try:
+            self.port = self._read_port()
+            self._await_health(health_timeout)
+        except BaseException:
+            self.stop()
+            raise
         return self
 
     def _read_port(self, *, attempts: int = 12, gap: float = 0.5) -> int:
