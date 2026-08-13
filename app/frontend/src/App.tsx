@@ -1,22 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
 import { ApiError } from "./api";
-import type { Finding, Repo, RunSummary, ScanState, Session, Severity, Verdict } from "./types";
+import type {
+  Finding, Repo, RunSummary, ScanState, Session, Severity, Verdict, WatchState,
+} from "./types";
 import { Overview } from "./views/Overview";
 import { Scan } from "./views/Scan";
 import { Surface } from "./views/Surface";
 import { Findings } from "./views/Findings";
 import { Repositories } from "./views/Repositories";
 import { Integrations } from "./views/Integrations";
+import { PullRequests } from "./views/PullRequests";
 import { useHashRoute } from "./hooks/useHashRoute";
 
-type View = "overview" | "scan" | "surface" | "findings" | "repos" | "integrations";
+type View =
+  | "overview" | "scan" | "pulls" | "surface" | "findings" | "repos" | "integrations";
 
 // Ordered by who asks the question: posture first (a security lead), then the live
 // run, then the map, then the detail an engineer works from.
 const VIEWS: { id: View; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "scan", label: "Scan" },
+  { id: "pulls", label: "Pull requests" },
   { id: "surface", label: "Attack surface" },
   { id: "findings", label: "Findings" },
   { id: "repos", label: "Repositories" },
@@ -44,6 +49,9 @@ export default function App() {
   // The id of a scan that is RUNNING, independent of whatever is being displayed.
   // Kept in sessionStorage so it survives a reload and a second tab, because losing
   // it means a scan keeps running and spending with no way back to it.
+  const [watch, setWatch] = useState<WatchState | null>(null);
+  const [watchBusy, setWatchBusy] = useState(false);
+  const [watchError, setWatchError] = useState<string | null>(null);
   const [liveId, setLiveId] = useState<string | null>(
     () => sessionStorage.getItem("docket.liveId"),
   );
@@ -73,6 +81,20 @@ export default function App() {
       alive = false;
     };
   }, [rememberLive]);
+
+  // The watcher runs on the server, so the console asks rather than assumes. Polled
+  // faster than the watcher itself polls GitHub: the countdown and "checked 8s ago"
+  // are only honest if this is more frequent than what it is reporting on.
+  useEffect(() => {
+    let alive = true;
+    const pull = () =>
+      api.github.getWatch()
+        .then((w) => { if (alive) setWatch(w); })
+        .catch(() => {});
+    pull();
+    const id = setInterval(pull, 5000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
 
   // Boot: session + run history. A failure here means the backend is not running,
   // which every view needs to know before it renders anything.
@@ -232,6 +254,21 @@ export default function App() {
     }
   }, [liveId, go, rememberLive]);
 
+  const applyWatch = useCallback(async (repos: string[]) => {
+    setWatchBusy(true);
+    setWatchError(null);
+    try {
+      setWatch(await api.github.setWatch(
+        repos.length ? { enabled: true, repos, interval_sec: 30, triage_max: 5 }
+                     : { enabled: false },
+      ));
+    } catch (err) {
+      setWatchError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWatchBusy(false);
+    }
+  }, []);
+
   const openRun = useCallback(
     async (runName: string) => {
       setScanError(null);
@@ -282,6 +319,9 @@ export default function App() {
             {v.label}
             {v.id === "scan" && (scanning || liveId) && (
               <span className="live">● live</span>
+            )}
+            {v.id === "pulls" && watch?.enabled && (
+              <span className="live">● on</span>
             )}
             {v.id === "findings" && findings.length > 0 && (
               <span className="count">{findings.length}</span>
@@ -351,6 +391,14 @@ export default function App() {
             onVerdictSelect={setVerdictFilter}
             onGoRepos={() => go("repos")}
           />
+        ) : view === "pulls" ? (
+          <PullRequests
+            watch={watch}
+            onStop={() => applyWatch([])}
+            onGoRepos={() => go("repos")}
+            busy={watchBusy}
+            error={watchError}
+          />
         ) : view === "surface" ? (
           <Surface scan={scan} onGoRepos={() => go("repos")} />
         ) : view === "findings" ? (
@@ -372,6 +420,9 @@ export default function App() {
             error={reposError}
             onReload={loadRepos}
             onScan={runScan}
+            watch={watch}
+            onWatch={applyWatch}
+            watchBusy={watchBusy}
             scanning={scanning}
             activeRepo={scan?.repo}
             onGoIntegrations={() => go("integrations")}

@@ -72,6 +72,39 @@ export interface Finding {
 
 /** `partial` means recon ran out of turns and recorded what it had on a salvage turn.
  *  Everything present is real; what is absent was never looked at. */
+/** One pull-request verdict from the watcher. `exit_code` follows the CI convention:
+ *  0 clean, 1 could not tell, 2 something blocks the merge. */
+export interface PrResult {
+  repo: string;
+  number: number;
+  title: string;
+  head_sha: string;
+  base_ref: string;
+  at: number;
+  error: string | null;
+  exit_code: number | null;
+  reason: string;
+  new: number;
+  reachable: number;
+  fixed: number;
+  trustworthy: boolean;
+  posted: Record<string, string>;
+  findings: {
+    rule_id?: string; title?: string; severity?: string;
+    discovered_by?: string; where?: string; verdict?: string;
+  }[];
+}
+
+export interface WatchState {
+  enabled: boolean;
+  repos: string[];
+  interval_sec: number;
+  last_poll: number | null;
+  next_poll: number | null;
+  error: string | null;
+  results: PrResult[];
+}
+
 export interface EntryPoint {
   method?: string;
   path?: string;

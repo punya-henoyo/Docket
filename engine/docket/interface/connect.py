@@ -123,6 +123,181 @@ def active_scans() -> list[dict[str, Any]]:
         ]
 
 
+# Verdicts kept in memory for the console. Enough to demonstrate a watcher running
+# for hours without growing without bound; the durable record is report.json on disk.
+MAX_WATCH_RESULTS = 50
+
+
+def watch_state() -> dict[str, Any]:
+    """A JSON-safe snapshot of the watcher for the console."""
+    with SESSION.lock:
+        state = dict(SESSION.watch)
+        state["results"] = list(state.get("results") or [])
+    return state
+
+
+def record_watch_result(ref: Any, verdict: dict[str, Any], posted: dict[str, str],
+                        error: str | None = None) -> None:
+    """Prepend one pull-request verdict to what the console shows."""
+    entry = {
+        "repo": getattr(ref, "repo", "?"),
+        "number": getattr(ref, "number", 0),
+        "title": getattr(ref, "title", ""),
+        "head_sha": (getattr(ref, "head_sha", "") or "")[:7],
+        "base_ref": getattr(ref, "base_ref", ""),
+        "at": time.time(),
+        "error": error,
+        "exit_code": verdict.get("exit_code"),
+        "reason": verdict.get("reason", ""),
+        "new": len(verdict.get("new") or []),
+        "reachable": len(verdict.get("new_reachable") or []),
+        "fixed": len(verdict.get("fixed") or []),
+        "trustworthy": verdict.get("trustworthy", False),
+        "posted": posted,
+        # Enough of each finding to render a row without holding the whole report.
+        "findings": [
+            {"rule_id": f.get("rule_id"), "title": f.get("title"),
+             "severity": f.get("severity"), "discovered_by": f.get("discovered_by"),
+             "where": str((f.get("location") or {}).get("source_file") or "")
+                      .replace("/work/source/", ""),
+             "verdict": (f.get("triage") or {}).get("verdict")}
+            for f in (verdict.get("new") or [])[:12]
+        ],
+    }
+    with SESSION.lock:
+        results = SESSION.watch.setdefault("results", [])
+        results.insert(0, entry)
+        del results[MAX_WATCH_RESULTS:]
+
+
+_WATCH_THREAD: threading.Thread | None = None
+_WATCH_STOP = threading.Event()
+
+
+def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
+                 budget_usd: float | None = None, only: list | None = None
+                 ) -> dict[str, Any] | None:
+    """Fetch a commit and scan it, returning report.json. Used for both sides of a diff.
+
+    A pull request scan is a normal scan with two differences: it is pinned to a
+    commit rather than a branch, and semgrep is scoped to the changed files.
+    """
+    from docket.core.paths import run_path
+    from docket.core.runner import run_scan
+    from docket.report.dedupe import FindingStore
+    from docket.report.writer import write_report
+
+    token = SESSION.token
+    if not token:
+        raise RuntimeError("GitHub is not connected")
+
+    workdir = Path(tempfile.mkdtemp(prefix="docket-pr-"))
+    run_name = f"pr-{repo.replace('/', '-')}-{sha[:7]}"
+    store = FindingStore()
+    try:
+        source = fetch_source(repo, token, workdir, sha)
+        result = run_scan(
+            target_url=None, whitebox_path=str(source), run_name=run_name,
+            use_sandbox=True, store=store, static_only=True,
+            triage_max=triage_max, recon=False, scope_paths=paths,
+            budget_usd=budget_usd, on_finding=None,
+        )
+        out_dir = run_path(run_name)
+        write_report(store, out_dir, run_name=run_name,
+                     target=f"github:{repo}@{sha}",
+                     coverage=read_coverage(out_dir / "sandbox"),
+                     summary=result.summary, cost_usd=result.cost_usd,
+                     agents_spawned=result.agents_spawned, success=result.success)
+        return json.loads((out_dir / "report.json").read_text())
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _post_for_pr(ref: Any, verdict: dict[str, Any]) -> dict[str, str]:
+    if not SESSION.token:
+        return {"status": "skipped: not connected"}
+    return post_pr_result(
+        ref.repo, SESSION.token, pr_number=ref.number, head_sha=ref.head_sha,
+        verdict=verdict, run_url=None,
+    )
+
+
+def _watch_loop() -> None:
+    """Poll watched repositories until stopped. Runs on its own thread."""
+    from docket.core.paths import runs_root
+    from docket.core.pr_service import BaselineCache, scan_pull_request, watch_forever
+    from docket.core.pr_watcher import SeenStore
+
+    baselines = BaselineCache()
+    seen = SeenStore(runs_root() / ".pr-seen.json")
+
+    def list_pulls(repo: str):
+        payload = _api(f"/repos/{repo}/pulls?state=open&per_page=50", SESSION.token)
+        return payload, {}
+
+    def handle(ref):
+        outcome = scan_pull_request(
+            ref, token=SESSION.token or "", fetch_files=changed_files,
+            scan=_scan_for_pr, baselines=baselines, post=_post_for_pr,
+            triage_max=int(SESSION.watch.get("triage_max") or 5),
+        )
+        record_watch_result(ref, outcome.verdict, outcome.posted, outcome.error)
+        return outcome
+
+    def tick() -> None:
+        with SESSION.lock:
+            SESSION.watch["last_poll"] = time.time()
+            SESSION.watch["next_poll"] = time.time() + SESSION.watch.get("interval_sec", 30)
+
+    def sleeper(seconds: float) -> None:
+        tick()
+        # Event.wait rather than sleep: a Stop must take effect now, not in 30s.
+        _WATCH_STOP.wait(seconds)
+
+    try:
+        while not _WATCH_STOP.is_set():
+            repos = list(SESSION.watch.get("repos") or [])
+            if not repos:
+                _WATCH_STOP.wait(5)
+                continue
+            watch_forever(
+                repos, list_pulls=list_pulls, handle=handle, seen=seen,
+                interval_sec=int(SESSION.watch.get("interval_sec") or 30),
+                should_stop=_WATCH_STOP.is_set, sleep=sleeper,
+            )
+    except Exception as exc:  # noqa: BLE001 — a dead thread must say why
+        logger.warning("pull-request watcher stopped: %s", exc)
+        with SESSION.lock:
+            SESSION.watch["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        with SESSION.lock:
+            SESSION.watch["enabled"] = False
+            SESSION.watch["next_poll"] = None
+
+
+def start_watching(repos: list[str], interval_sec: int = 30) -> dict[str, Any]:
+    global _WATCH_THREAD
+    with SESSION.lock:
+        SESSION.watch.update({
+            "enabled": True, "repos": repos, "error": None,
+            "interval_sec": max(10, int(interval_sec)),
+        })
+    if _WATCH_THREAD is None or not _WATCH_THREAD.is_alive():
+        _WATCH_STOP.clear()
+        _WATCH_THREAD = threading.Thread(target=_watch_loop, name="docket-pr-watch",
+                                         daemon=True)
+        _WATCH_THREAD.start()
+    return watch_state()
+
+
+def stop_watching() -> dict[str, Any]:
+    _WATCH_STOP.set()
+    with SESSION.lock:
+        SESSION.watch["enabled"] = False
+        SESSION.watch["next_poll"] = None
+    return watch_state()
+
+
 def _merge_live_usage(state: dict[str, Any]) -> dict[str, Any]:
     """Refresh a scan state's per-agent turns and cost from the usage ledger.
 
@@ -160,6 +335,18 @@ class Session:
     # Kept out of `scans` deliberately: that dict is serialised straight to the
     # browser and a threading.Event is not JSON.
     cancels: dict[str, Any] = field(default_factory=dict)
+    # The pull-request watcher: which repositories it polls, and what it has found.
+    # Not persisted with the scans dict because a verdict outlives the scan that
+    # produced it — it is the record the operator actually reads.
+    watch: dict[str, Any] = field(default_factory=lambda: {
+        "enabled": False,
+        "repos": [],
+        "interval_sec": 30,
+        "last_poll": None,
+        "next_poll": None,
+        "error": None,
+        "results": [],      # newest first
+    })
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -949,6 +1136,8 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self._auth_callback(query)
             elif path == "/api/repos":
                 self._repos()
+            elif path == "/api/watch":
+                self._json(200, watch_state())
             elif path == "/api/scans/active":
                 self._json(200, {"scans": active_scans()})
             elif path.startswith("/api/scan/"):
@@ -972,6 +1161,9 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             post_path = urllib.parse.urlparse(self.path).path
             if post_path == "/api/scan/cancel":
                 self._cancel_scan()
+                return
+            if post_path == "/api/watch":
+                self._set_watch()
                 return
             if post_path != "/api/scan":
                 self._send(404, b"not found", "text/plain")
@@ -1046,6 +1238,39 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 name=f"docket-scan-{scan_id}", daemon=True,
             ).start()
             self._json(202, {"id": scan_id, "status": "queued"})
+
+        def _set_watch(self) -> None:
+            """Start or stop the pull-request watcher."""
+            if SESSION.token is None:
+                self._json(401, {"error": "not connected to GitHub"})
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._json(400, {"error": "body must be JSON"})
+                return
+
+            if not body.get("enabled"):
+                self._json(200, stop_watching())
+                return
+
+            repos = [r for r in (body.get("repos") or []) if isinstance(r, str)]
+            bad = [r for r in repos if not _FULL_NAME.match(r)]
+            if bad:
+                self._json(400, {"error": f"not a repository name: {bad[0]}"})
+                return
+            if not repos:
+                self._json(400, {"error": "pick at least one repository to watch"})
+                return
+            try:
+                interval = int(body.get("interval_sec") or 30)
+            except (TypeError, ValueError):
+                self._json(400, {"error": "interval_sec must be a whole number"})
+                return
+            with SESSION.lock:
+                SESSION.watch["triage_max"] = max(0, int(body.get("triage_max") or 5))
+            self._json(200, start_watching(repos, interval))
 
         def _cancel_scan(self) -> None:
             """Ask the running scan to stop at its next checkpoint.

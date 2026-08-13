@@ -1,6 +1,6 @@
 /** GitHub connect: session, repo picking, repo-scan lifecycle.
  *  Served by engine/docket/interface/connect.py. */
-import type { Repo, ScanState, Session } from "../types";
+import type { Repo, ScanState, Session, WatchState } from "../types";
 import { postJson, req } from "./client";
 
 export const getSession = () => req<Session>("/api/session");
@@ -41,5 +41,12 @@ export const startRepoScan = (repo: string, ref?: string, triageMax = 0,
     ...(recon ? { recon: true } : {}),
     ...(budgetUsd > 0 ? { budget_usd: budgetUsd } : {}),
   });
+
+/** The pull-request watcher: which repositories it polls and what it has found. */
+export const getWatch = () => req<WatchState>("/api/watch");
+
+export const setWatch = (body: {
+  enabled: boolean; repos?: string[]; interval_sec?: number; triage_max?: number;
+}) => postJson<WatchState>("/api/watch", body);
 
 export const AUTH_START = "/auth/start";

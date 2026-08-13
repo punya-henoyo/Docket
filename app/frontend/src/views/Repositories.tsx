@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Repo, Session } from "../types";
+import type { Repo, Session, WatchState } from "../types";
 import { Empty, Panel } from "../components/ui";
 
 export function Repositories({
@@ -8,6 +8,9 @@ export function Repositories({
   error,
   onReload,
   onScan,
+  watch,
+  onWatch,
+  watchBusy,
   scanning,
   activeRepo,
   onGoIntegrations,
@@ -18,6 +21,9 @@ export function Repositories({
   onReload: () => void;
   onScan: (repo: string, ref?: string, triageMax?: number, recon?: boolean,
            budgetUsd?: number) => void;
+  watch: WatchState | null;
+  onWatch: (repos: string[]) => void;
+  watchBusy: boolean;
   scanning: boolean;
   activeRepo?: string;
   onGoIntegrations: () => void;
@@ -34,6 +40,9 @@ export function Repositories({
   // A dollar ceiling for the whole scan. 0 means "use the server's
   // DOCKET_MAX_COST_USD", so an operator who does not care is not forced to pick.
   const [budget, setBudget] = useState(0);
+  // Repositories queued for the pull-request watcher. Separate from the scan
+  // controls above because watching is a standing arrangement, not one action.
+  const [toWatch, setToWatch] = useState<string[]>([]);
 
 const APPROX_USD_PER_FINDING = 0.033;
 
@@ -153,6 +162,32 @@ const APPROX_USD_PER_FINDING = 0.033;
           )
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(toWatch.length > 0 || watch?.enabled) && (
+              <div
+                style={{
+                  display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+                  padding: "11px 13px", borderRadius: "var(--r-sm)",
+                  border: "1px solid var(--ok)",
+                  background: "color-mix(in srgb, var(--ok) 8%, transparent)",
+                }}
+              >
+                <span style={{ font: "500 13px var(--sans)" }}>
+                  {watch?.enabled
+                    ? `Watching ${watch.repos.length} repository(s) — every pull request is checked as it is pushed.`
+                    : `${toWatch.length} selected. Watching checks every pull request and posts a commit status.`}
+                </span>
+                <button
+                  className="btn primary"
+                  style={{ marginLeft: "auto" }}
+                  disabled={watchBusy || (!watch?.enabled && toWatch.length === 0)}
+                  onClick={() => onWatch(watch?.enabled ? [] : toWatch)}
+                >
+                  {watchBusy
+                    ? "…"
+                    : watch?.enabled ? "Stop watching" : "Start watching"}
+                </button>
+              </div>
+            )}
             {shown.map((repo) => (
               <div className="repo-row" key={repo.full_name}>
                 <span style={{ minWidth: 0, wordBreak: "break-all" }}>{repo.full_name}</span>
@@ -178,6 +213,29 @@ const APPROX_USD_PER_FINDING = 0.033;
                 >
                   {scanning && activeRepo === repo.full_name ? "scanning…" : "scan"}
                 </button>
+                <label
+                  className="btn sm"
+                  title="Check every pull request on this repository as it is pushed, and post a commit status you can require in branch protection."
+                  style={{ display: "flex", alignItems: "center", gap: 6,
+                           cursor: "pointer",
+                           color: toWatch.includes(repo.full_name)
+                             ? "var(--ok)" : undefined,
+                           borderColor: toWatch.includes(repo.full_name)
+                             ? "var(--ok)" : undefined }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={toWatch.includes(repo.full_name)}
+                    onChange={(e) =>
+                      setToWatch((prev) =>
+                        e.target.checked
+                          ? [...prev, repo.full_name]
+                          : prev.filter((r) => r !== repo.full_name))
+                    }
+                    style={{ margin: 0, accentColor: "var(--ok)" }}
+                  />
+                  watch
+                </label>
               </div>
             ))}
           </div>
