@@ -274,18 +274,30 @@ def attempt_autofix(ref: Any, verdict: dict[str, Any]) -> dict[str, Any]:
     from docket.core.remediation import attempt_fix
     from docket.core.runner import run_scan
     from docket.report.dedupe import FindingStore
-    from docket.report.diff import DETERMINISTIC_SOURCES
-
     token = SESSION.token
     if not token:
         return {"opened": False, "note": "GitHub is not connected"}
 
-    fixable = [f for f in (verdict.get("new") or [])
-               if str(f.get("discovered_by", "")) in DETERMINISTIC_SOURCES]
+    # Filtered on SHAPE, not on which tool found it. The first version excluded
+    # everything from recon on the theory that agent candidates are design issues —
+    # but on vulnshop#20 recon found a one-line SQL injection that semgrep missed
+    # entirely, and the filter refused to fix the one thing it could have.
+    #
+    # What actually matters is whether there is a single line to replace: a finding
+    # citing "app.py:66" with the matched code is patchable whoever found it, and one
+    # citing "app.py:29-58" is a design decision whoever found it.
+    def patchable(finding: dict[str, Any]) -> bool:
+        source = str((finding.get("location") or {}).get("source_file") or "")
+        anchor = source.rsplit(":", 1)[-1] if ":" in source else ""
+        if not anchor.isdigit():
+            return False        # a range or no line: not a single-line change
+        return bool(str((finding.get("poc") or {}).get("request") or "").strip())
+
+    fixable = [f for f in (verdict.get("new") or []) if patchable(f)]
     if not fixable:
         return {"opened": False,
-                "note": "nothing a patch can address — the new findings are design "
-                        "issues, not single lines"}
+                "note": "no finding has a single line to replace — these are design "
+                        "issues, and a patch would be guessing at architecture"}
 
     workdir = Path(tempfile.mkdtemp(prefix="docket-fix-"))
     try:
