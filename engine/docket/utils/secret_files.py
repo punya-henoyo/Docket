@@ -14,10 +14,29 @@ REDACTED = "[REDACTED]"
 
 _PATTERNS = [
     re.compile(r"\b(sk-ant-[A-Za-z0-9_\-]{8,})"),          # Anthropic
-    re.compile(r"\b(sk-[A-Za-z0-9]{20,})"),                 # OpenAI-style
-    re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{16,})"),          # GitHub
+    # `[A-Za-z0-9]` NOT `[A-Za-z0-9_\-]` was a live leak: OpenAI's current project keys
+    # are `sk-proj-...`, and the character class ended at the hyphen four chars in, so the
+    # {20,} quantifier never reached. Verified before the fix — sk-proj-, github_pat_,
+    # glpat- and AIza all passed through in full. That matters more here than anywhere
+    # else in the codebase: p/default includes secret rules, tools/scanners/semgrep.py:138
+    # puts the VERBATIM matched source line into poc.request, and report/sarif.py:103
+    # copies it into the alert message. So an unredacted key does not merely sit in a
+    # local file, it is published wherever findings are published.
+    re.compile(r"\b(sk-[A-Za-z0-9_\-]{20,})"),              # OpenAI, incl. sk-proj-
+    re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{16,})"),          # GitHub classic PAT / OAuth
+    re.compile(r"\b(github_pat_[A-Za-z0-9_]{20,})"),        # GitHub fine-grained PAT
+    re.compile(r"\b(glpat-[A-Za-z0-9_\-]{16,})"),           # GitLab PAT
+    re.compile(r"\b(AIza[0-9A-Za-z_\-]{35})\b"),            # Google API key
+    re.compile(r"\b(xox[baprs]-[A-Za-z0-9\-]{10,})"),       # Slack
+    re.compile(r"\b((?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,})"),   # Stripe
+    re.compile(r"\b(npm_[A-Za-z0-9]{30,})"),                # npm
+    re.compile(r"\b(hf_[A-Za-z0-9]{30,})"),                 # Hugging Face
     re.compile(r"\b(tvly-[A-Za-z0-9_\-]{8,})"),             # Tavily
-    re.compile(r"\b(AKIA[0-9A-Z]{16})\b"),                  # AWS access key id
+    re.compile(r"\b((?:AKIA|ASIA)[0-9A-Z]{16})\b"),         # AWS access key / session id
+    # A private key is the one case where the MARKER is the secret's giveaway and the body
+    # is multi-line, so it needs DOTALL and its own pattern rather than a token shape.
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+               re.DOTALL),
     re.compile(r"(?i)\b(bearer)\s+([A-Za-z0-9._\-]{12,})"), # bearer tokens
     # Session cookies were the gap here: a captured `Cookie: session=abc123` is a
     # credential every bit as usable as a bearer token, and it survived every pattern
@@ -110,9 +129,42 @@ def demo() -> None:
     # The header NAME survives, so a redacted PoC still shows what to substitute.
     assert "Authorization" in redact("Authorization: Bearer abcdef1234567890")
     assert "Cookie" in redact("Cookie: session=abc123def456")
+    # Every format that was verified LEAKING before this table existed. The first four
+    # passed through in full: the OpenAI pattern's character class ended at the hyphen, and
+    # the other three had no pattern at all. Regression-guarded per vendor rather than by
+    # one broad rule, because over-redaction gutting a findings report is a real cost.
+    for secret in (
+        "sk-proj-AbCdEf1234567890AbCdEfGhIj",          # was LEAKING
+        "github_pat_11ABCDEFG0abcdefghijklmn",         # was LEAKING
+        "glpat-AbCdEf1234567890AbCd",                  # was LEAKING
+        "AIzaSyAbCdEf1234567890AbCdEfGhIjKlMnOpQ",     # was LEAKING (AIza + 35)
+        "ghs_AbCdEf1234567890AbCdEf",
+        "sk-ant-api03-AbCdEf1234567890",
+        "xoxb-1234567890-AbCdEfGhIjKl",
+        "sk_live_AbCdEf1234567890AbCd",
+        "npm_AbCdEf1234567890AbCdEf1234567890Ab",
+        "hf_AbCdEf1234567890AbCdEf1234567890Ab",
+        "ASIAIOSFODNN7EXAMPLE",
+    ):
+        assert secret not in redact(f"key = {secret}"), secret
+    # Multi-line, so the body must go with the marker, not just the header line.
+    pem = ("-----BEGIN RSA PRIVATE KEY-----\n"
+           "MIIEowIBAAKCAQEAsecretkeymaterialhere\n"
+           "-----END RSA PRIVATE KEY-----")
+    assert "secretkeymaterialhere" not in redact(pem)
+
     # Ordinary text is untouched — over-redaction would gut a report.
     assert redact("GET /login returned 401") == "GET /login returned 401"
     assert redact("") == ""
+    # Things that LOOK secret-shaped and must survive, or every static finding whose
+    # snippet contains a hash or an identifier comes out unreadable.
+    for benign in (
+        "def sk_helper(request):",
+        "sha256 = 'a3f5b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5'",
+        "uuid = '550e8400-e29b-41d4-a716-446655440000'",
+        "import skimage",
+    ):
+        assert redact(benign) == benign, benign
 
     # --- redact_document: whole-document coverage that cannot break the encoding ------
     import json as _json

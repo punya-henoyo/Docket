@@ -113,6 +113,13 @@ class ScanResult:
     agents_spawned: int = 1
     leads: list = field(default_factory=list)
     triage: object | None = None
+    # `success` alone cannot answer "did this run finish?", which is the only question a
+    # CI gate actually needs. A budget-exhausted or cancelled run still returns
+    # success=True with partial results, so a gate reading success sees green over a scan
+    # that stopped halfway. strix's CI skill gates on run.json status == "completed" for
+    # exactly this reason; docket had no equivalent field.
+    status: str = "completed"          # completed | stopped | error
+    stages: dict = field(default_factory=dict)
 
 
 def run_scan(
@@ -177,6 +184,17 @@ def run_scan(
     # Bound here so the name exists whether or not recon runs — root reads it much
     # later, and `if recon:` is otherwise the only binder.
     recon_surface: dict | None = None
+    # Every stage transition already flowed to on_stage and was then dropped on the floor:
+    # the state lived only in the console's in-memory SESSION, so report.json could not
+    # distinguish "semgrep found nothing" from "semgrep never started". That is the
+    # fail-open a PR gate cares about most, so record it here and persist it.
+    stages: dict[str, str] = {}
+    _caller_on_stage = on_stage
+
+    def on_stage(scanner: str, state: str) -> None:      # noqa: F811 - deliberate wrap
+        stages[scanner] = state
+        if _caller_on_stage is not None:
+            _caller_on_stage(scanner, state)
     coordinator = AgentCoordinator(
         max_agents=cfg.max_agents,
         budget_usd=cfg.max_cost_usd,
@@ -355,9 +373,15 @@ def run_scan(
                 emitter.log_static(verdicts.summary())
 
         if static_only:
+            # Was an unconditional success=True, so a static-only run could return 0 or 2
+            # and never 1 — a run whose scanners all failed reported clean. `drain()`
+            # already marks a scanner `error`; now that verdict reaches the caller.
+            failed = sorted(k for k, v in stages.items() if v == "error")
             output = {
-                "success": True,
-                "summary": "static-only scan: scanner pre-scan only, no AI agents run",
+                "success": not failed,
+                "summary": ("static-only scan: scanner pre-scan only, no AI agents run"
+                            if not failed else
+                            f"static-only scan: {', '.join(failed)} did not run"),
                 "findings": [],
             }
         else:
@@ -396,6 +420,15 @@ def run_scan(
 
     findings = output.get("findings", [])
     emitter.scan_finished(bool(output.get("success", True)), output.get("summary", ""))
+    # "stopped" is NOT an error: partial results are still real, and the distinction is
+    # the whole point — a caller may show them while a gate refuses to call them clean.
+    if any(v == "error" for v in stages.values()):
+        status = "error"
+    elif cancel.cancelled or coordinator.over_budget("root") is not None:
+        status = "stopped"
+    else:
+        status = "completed"
+
     return ScanResult(
         success=bool(output.get("success", True)),
         summary=output.get("summary", ""),
@@ -404,4 +437,6 @@ def run_scan(
         agents_spawned=0 if static_only else len(coordinator.agents) + 1,  # +1 for root
         leads=leads,
         triage=triage_report,
+        status=status,
+        stages=dict(stages),
     )

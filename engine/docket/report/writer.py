@@ -28,6 +28,49 @@ def severity_counts(findings: list[Finding]) -> dict[str, int]:
     return counts
 
 
+def _unjudged(triage_rows: list[dict], findings: list) -> int:
+    """Verdicts the runner synthesised rather than the model producing them.
+
+    core.triage marks these with UNJUDGED_PREFIX precisely so they stay distinguishable;
+    counting them is what lets a gate say "3 of 15 were never actually looked at".
+    """
+    from docket.core.triage import UNJUDGED_PREFIX
+
+    n = sum(1 for row in triage_rows
+            if str(row.get("reasoning", "")).startswith(UNJUDGED_PREFIX))
+    for finding in findings:
+        triage = getattr(finding, "triage", None)
+        if triage is not None and str(getattr(triage, "reasoning", "")).startswith(
+                UNJUDGED_PREFIX):
+            n += 1
+    return n
+
+
+def _provenance() -> dict:
+    """What code this run actually looked at, from the CI environment when there is one.
+
+    report.json carried no repo, ref, sha or PR number, so a finding could not be tied to
+    a commit and `fix/workflow.md`'s requirement to cite "file:line at the base commit" was
+    unanswerable. Read from the environment rather than threaded through every call site,
+    because the values belong to the invocation and not to any one function.
+
+    DOCKET_HEAD_SHA, not GITHUB_SHA: on a pull_request event GITHUB_SHA is the ephemeral
+    MERGE commit, which exists in neither branch's history, so a finding attributed to it
+    points at nothing a reviewer can check out.
+    """
+    import os
+
+    keys = {
+        "repo": "DOCKET_REPO",
+        "pr": "DOCKET_PR",
+        "head_sha": "DOCKET_HEAD_SHA",
+        "base_sha": "DOCKET_BASE_SHA",
+        "base_ref": "DOCKET_BASE_REF",
+    }
+    out = {name: os.environ.get(env, "").strip() for name, env in keys.items()}
+    return {k: v for k, v in out.items() if v}
+
+
 def build_report(
     store: FindingStore,
     *,
@@ -42,6 +85,10 @@ def build_report(
     coverage: dict | None = None,
     surface: dict | None = None,
     agents: list[dict] | None = None,
+    status: str = "completed",
+    stages: dict | None = None,
+    triage_requested: int = 0,
+    suppressed_outside_diff: int = 0,
 ) -> dict:
     """`leads` are static-analysis candidates (docket.static.correlate.Lead). They are
     reported in a SEPARATE list from `findings` and never merged into it.
@@ -103,6 +150,15 @@ def build_report(
         "target": target,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "success": success,
+        # `success` says "nothing threw"; `status` says "did this finish". A budget-stopped
+        # run is success=True with partial results, and a gate must refuse to read that as
+        # clean. strix's CI skill gates on exactly this field for exactly this reason.
+        "status": status,
+        # Per-scanner outcome. `done` vs `error` vs `skipped` — the difference between
+        # "semgrep found nothing" and "semgrep never started", which used to live only in
+        # the console's memory.
+        "stages": stages or {},
+        "provenance": _provenance(),
         "summary": summary,
         "cost_usd": cost_usd,
         "agents_spawned": agents_spawned,
@@ -128,6 +184,18 @@ def build_report(
         # not a reproduction, and the two must stay distinguishable.
         "triage_counts": triage_counts,
         "triaged": triage_rows,
+        # COMPLETENESS, which is a different question from "what did we find". A gate that
+        # cannot tell "judged everything and it was fine" from "ran out of money after
+        # three" will pass a pull request nobody looked at. `triage_unjudged` counts
+        # verdicts the RUNNER wrote rather than the model, marked with
+        # core.triage.UNJUDGED_PREFIX, so a synthesised `uncertain` can never be mistaken
+        # for a real one.
+        "triage_requested": triage_requested,
+        "triage_judged": len(triage_rows),
+        "triage_unjudged": _unjudged(triage_rows, findings),
+        # How much of the tree was deliberately not reported. Diff-scoped scanning is
+        # honest only if this number is stated: silence reads as "the repository is clean".
+        "suppressed_outside_diff": suppressed_outside_diff,
         # Per-agent token accounting: explains where the run's cost actually went.
         "usage": get_global_report_state().usage.to_dict(),
         "findings": [f.model_dump(mode="json") for f in findings],
@@ -218,8 +286,44 @@ def format_summary(report: dict, *, paths: dict[str, Path] | None = None, full: 
 
 
 def demo() -> None:
+    import os
     import shutil
     import tempfile
+
+    # --- the fields a CI gate reads, and the fail-open each one closes ----------------
+    # `status` distinguishes finished from stopped. Without it a budget-exhausted run is
+    # success=True with partial results and a gate reads it as clean.
+    empty = FindingStore()
+    assert build_report(empty, run_name="r", target="t")["status"] == "completed"
+    stopped = build_report(empty, run_name="r", target="t", status="stopped")
+    assert stopped["status"] == "stopped"
+    # `stages` distinguishes "found nothing" from "never ran". This lived only in the
+    # console's memory before, so report.json could not tell them apart at all.
+    staged = build_report(empty, run_name="r", target="t",
+                          stages={"semgrep": "error", "trivy": "done"})
+    assert staged["stages"]["semgrep"] == "error"
+    # Completeness is a different question from findings: 0 judged of 15 requested is not
+    # a clean result, it is an unanswered one.
+    counted = build_report(empty, run_name="r", target="t", triage_requested=15)
+    assert counted["triage_requested"] == 15 and counted["triage_judged"] == 0
+    # Diff scoping is honest only if the suppressed count is stated.
+    assert build_report(empty, run_name="r", target="t",
+                        suppressed_outside_diff=42)["suppressed_outside_diff"] == 42
+    # Provenance ties a finding to a commit. HEAD_SHA and not GITHUB_SHA, which on a
+    # pull_request event is the ephemeral merge commit and exists in neither branch.
+    saved = {k: os.environ.pop(k, None)
+             for k in ("DOCKET_REPO", "DOCKET_PR", "DOCKET_HEAD_SHA")}
+    try:
+        assert build_report(empty, run_name="r", target="t")["provenance"] == {}
+        os.environ.update({"DOCKET_REPO": "o/r", "DOCKET_PR": "4",
+                           "DOCKET_HEAD_SHA": "abc1234"})
+        prov = build_report(empty, run_name="r", target="t")["provenance"]
+        assert prov == {"repo": "o/r", "pr": "4", "head_sha": "abc1234"}, prov
+    finally:
+        for k, v in saved.items():
+            os.environ[k] = v if v is not None else ""
+            if not v:
+                os.environ.pop(k, None)
 
     from docket.report.models import Location, PoC
 
