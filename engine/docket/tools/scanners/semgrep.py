@@ -147,7 +147,37 @@ class ScannerError(RuntimeError):
     tool tells someone their code is fine when it was never analysed."""
 
 
-def run_semgrep(sandbox: Any, run_dir: Path, *, timeout_sec: int = 120) -> list[Finding]:
+# A pull request can touch thousands of files, and every path becomes an argv entry.
+# Past this, scanning the whole tree is cheaper than a command line the shell refuses.
+MAX_SCOPED_PATHS = 300
+
+
+def scope_paths(paths: list[str] | None) -> list[str]:
+    """Repo-relative paths, safe to interpolate into the sandbox command.
+
+    These arrive from a pull request diff, so they are attacker-influenceable: anyone
+    who can open a PR chooses these strings. Absolute paths and traversal are dropped
+    rather than escaped, because there is no legitimate PR that needs them and a
+    rejected path is a smaller failure than a scanner pointed outside the repository.
+    """
+    if not paths:
+        return []
+    clean: list[str] = []
+    for raw in paths:
+        # Only strings. A None in the list would become the literal path "None" via
+        # str(), and semgrep would be handed a target that does not exist.
+        if not isinstance(raw, str):
+            continue
+        candidate = raw.strip().lstrip("/")
+        if not candidate or ".." in candidate.split("/") or candidate.startswith("~"):
+            continue
+        if candidate not in clean:
+            clean.append(candidate)
+    return clean
+
+
+def run_semgrep(sandbox: Any, run_dir: Path, *, timeout_sec: int = 120,
+                paths: list[str] | None = None) -> list[Finding]:
     """Requires the sandbox to have been started with a source_dir mounted at
     /work/source — callers gate on that before invoking this.
 
@@ -156,11 +186,21 @@ def run_semgrep(sandbox: Any, run_dir: Path, *, timeout_sec: int = 120) -> list[
     behind a green stage and 0 findings."""
     out_path = run_dir / "artifacts" / "scanners" / "semgrep.json"
     excludes = " ".join(f"--exclude={shlex.quote(e)}" for e in SEMGREP_EXCLUDES)
+
+    # Scoped to a pull request's changed files when given. Over MAX_SCOPED_PATHS the
+    # whole tree is cheaper than an argv the shell will refuse, and a silently
+    # truncated file list would report "clean" for files nobody looked at.
+    scoped = scope_paths(paths)
+    if scoped and len(scoped) <= MAX_SCOPED_PATHS:
+        targets = " ".join(shlex.quote(f"/work/source/{p}") for p in scoped)
+    else:
+        targets = "/work/source"
+
     command = (
         "mkdir -p /work/run/artifacts/scanners && "
         f"semgrep scan --config {shlex.quote(semgrep_config())} --json --quiet "
         f"--metrics=off {excludes} "
-        "--output /work/run/artifacts/scanners/semgrep.json /work/source"
+        f"--output /work/run/artifacts/scanners/semgrep.json {targets}"
     )
     try:
         result = sandbox.call("shell", command=command, timeout_sec=timeout_sec)
@@ -225,6 +265,22 @@ def demo() -> None:
     # test file is still a leaked secret.
     assert not any(e.startswith("test") for e in SEMGREP_EXCLUDES), SEMGREP_EXCLUDES
     assert "*.md" in SEMGREP_EXCLUDES and "node_modules" in SEMGREP_EXCLUDES
+    # ── PR scoping ──────────────────────────────────────────────────────────
+    # These paths come from a pull request diff, so anyone who can open a PR picks
+    # these strings. Traversal and absolute paths are dropped, not escaped.
+    assert scope_paths(["app/auth.py", "app/db.py"]) == ["app/auth.py", "app/db.py"]
+    assert scope_paths(["/etc/passwd"]) == ["etc/passwd"], "leading slash stripped, not trusted"
+    assert scope_paths(["../../../etc/shadow"]) == []
+    assert scope_paths(["a/../../b"]) == []
+    assert scope_paths(["~/.ssh/id_rsa"]) == []
+    assert scope_paths(["app/a.py", "app/a.py"]) == ["app/a.py"], "deduped"
+    assert scope_paths([" ", "", None, 7]) == [], "non-strings are dropped, not str()d"
+    assert scope_paths(None) == [] and scope_paths([]) == []
+    # A path with a space or a quote must survive as data, never as shell syntax —
+    # it is quoted at the call site, so it only has to survive the filter here.
+    assert scope_paths(["my dir/a b.py"]) == ["my dir/a b.py"]
+    assert scope_paths(["a'; rm -rf /; '.py"]) == ["a'; rm -rf /; '.py"]
+
     print("scanners.semgrep: ok")
 
 

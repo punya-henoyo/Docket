@@ -123,6 +123,328 @@ def active_scans() -> list[dict[str, Any]]:
         ]
 
 
+# Verdicts kept in memory for the console. Enough to demonstrate a watcher running
+# for hours without growing without bound; the durable record is report.json on disk.
+MAX_WATCH_RESULTS = 50
+
+
+def watch_state() -> dict[str, Any]:
+    """A JSON-safe snapshot of the watcher for the console."""
+    with SESSION.lock:
+        state = dict(SESSION.watch)
+        state["results"] = list(state.get("results") or [])
+    return state
+
+
+def record_watch_result(ref: Any, verdict: dict[str, Any], posted: dict[str, str],
+                        error: str | None = None, scanning: bool = False) -> None:
+    """Record a pull request's state: in progress, or the finished verdict.
+
+    Called TWICE per pull request — once when the scan starts and once when it ends —
+    because a scan takes minutes and a screen that shows nothing for minutes reads as
+    broken. The second call replaces the first rather than appending.
+    """
+    entry = {
+        "repo": getattr(ref, "repo", "?"),
+        "number": getattr(ref, "number", 0),
+        "title": getattr(ref, "title", ""),
+        "head_sha": (getattr(ref, "head_sha", "") or "")[:7],
+        "base_ref": getattr(ref, "base_ref", ""),
+        "at": time.time(),
+        "scanning": scanning,
+        "error": error,
+        "exit_code": verdict.get("exit_code"),
+        "reason": verdict.get("reason", ""),
+        "new": len(verdict.get("new") or []),
+        "reachable": len(verdict.get("new_reachable") or []),
+        "fixed": len(verdict.get("fixed") or []),
+        "trustworthy": verdict.get("trustworthy", False),
+        "posted": posted,
+        # Enough of each finding to render a row without holding the whole report.
+        "findings": [
+            {"rule_id": f.get("rule_id"), "title": f.get("title"),
+             "severity": f.get("severity"), "discovered_by": f.get("discovered_by"),
+             "where": str((f.get("location") or {}).get("source_file") or "")
+                      .replace("/work/source/", ""),
+             "verdict": (f.get("triage") or {}).get("verdict")}
+            for f in (verdict.get("new") or [])[:12]
+        ],
+    }
+    with SESSION.lock:
+        results = SESSION.watch.setdefault("results", [])
+        for index, existing in enumerate(results):
+            if (existing.get("repo"), existing.get("number"),
+                    existing.get("head_sha")) == (entry["repo"], entry["number"],
+                                                  entry["head_sha"]):
+                results[index] = entry     # the in-progress row becomes the verdict
+                return
+        results.insert(0, entry)
+        del results[MAX_WATCH_RESULTS:]
+
+
+_WATCH_THREAD: threading.Thread | None = None
+_WATCH_STOP = threading.Event()
+
+
+def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
+                 budget_usd: float | None = None, only: list | None = None,
+                 recon: bool = False) -> dict[str, Any] | None:
+    """Fetch a commit and scan it, returning report.json. Used for both sides of a diff.
+
+    A pull request scan is a normal scan with two differences: it is pinned to a
+    commit rather than a branch, and semgrep is scoped to the changed files.
+    """
+    from docket.core.paths import run_path
+    from docket.core.runner import run_scan
+    from docket.report.dedupe import FindingStore
+    from docket.report.writer import write_report
+
+    token = SESSION.token
+    if not token:
+        raise RuntimeError("GitHub is not connected")
+
+    workdir = Path(tempfile.mkdtemp(prefix="docket-pr-"))
+    run_name = f"pr-{repo.replace('/', '-')}-{sha[:7]}"
+    store = FindingStore()
+    try:
+        source = fetch_source(repo, token, workdir, sha)
+        result = run_scan(
+            target_url=None, whitebox_path=str(source), run_name=run_name,
+            use_sandbox=True, store=store, static_only=True,
+            triage_max=triage_max, recon=recon, scope_paths=paths,
+            budget_usd=budget_usd, on_finding=None,
+        )
+        out_dir = run_path(run_name)
+        write_report(store, out_dir, run_name=run_name,
+                     target=f"github:{repo}@{sha}",
+                     coverage=read_coverage(out_dir / "sandbox"),
+                     summary=result.summary, cost_usd=result.cost_usd,
+                     agents_spawned=result.agents_spawned, success=result.success)
+        return json.loads((out_dir / "report.json").read_text())
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def open_fix_pr(full_name: str, token: str, *, base_sha: str, base_ref: str,
+                path: str, content: str, title: str, body: str,
+                branch: str) -> dict[str, Any]:
+    """Create a branch, commit one file, open a pull request. Returns the PR payload.
+
+    Uses the contents API rather than git so no clone, no working tree and no
+    credential helper are involved — docket already holds a token and this is three
+    calls.
+    """
+    import base64
+
+    if not _FULL_NAME.match(full_name):
+        raise ValueError(f"refusing suspicious repository name: {full_name!r}")
+    if not valid_ref(branch) or not valid_ref(base_ref):
+        raise ValueError("refusing suspicious branch name")
+
+    # Branch from the exact commit that was scanned and verified, never from the tip
+    # of base — the tip may have moved since, and the proof applies to what was tested.
+    _api(f"/repos/{full_name}/git/refs", token,
+         body={"ref": f"refs/heads/{branch}", "sha": base_sha})
+
+    existing = _api(f"/repos/{full_name}/contents/{path}?ref={branch}", token)
+    _api(f"/repos/{full_name}/contents/{path}", token, method="PUT", body={
+        "message": title,
+        "content": base64.b64encode(content.encode()).decode(),
+        "sha": (existing or {}).get("sha"),
+        "branch": branch,
+    })
+
+    return _api(f"/repos/{full_name}/pulls", token, body={
+        "title": title, "body": body, "head": branch, "base": base_ref,
+    })
+
+
+def attempt_autofix(ref: Any, verdict: dict[str, Any]) -> dict[str, Any]:
+    """Try to fix what a pull request introduced, and open a PR only if it is proven.
+
+    Runs against the HEAD commit, patching the fetched source on the host — the
+    container mount is read-only but the extracted tree is not, so no agent ever needs
+    a write tool.
+
+    Only findings from a deterministic scanner are attempted. An agent candidate like
+    "no authorization on /orders" has no single line to replace and its fix is a design
+    decision; proposing a patch for it would be guessing at architecture.
+    """
+    from docket.config.settings import Config
+    from docket.core.remediation import attempt_fix
+    from docket.core.runner import run_scan
+    from docket.report.dedupe import FindingStore
+    from docket.report.diff import DETERMINISTIC_SOURCES
+
+    token = SESSION.token
+    if not token:
+        return {"opened": False, "note": "GitHub is not connected"}
+
+    fixable = [f for f in (verdict.get("new") or [])
+               if str(f.get("discovered_by", "")) in DETERMINISTIC_SOURCES]
+    if not fixable:
+        return {"opened": False,
+                "note": "nothing a patch can address — the new findings are design "
+                        "issues, not single lines"}
+
+    workdir = Path(tempfile.mkdtemp(prefix="docket-fix-"))
+    try:
+        source = fetch_source(ref.repo, token, workdir, ref.head_sha)
+        config = Config.from_env()
+
+        def rescan(paths: list[str]) -> dict[str, Any] | None:
+            """Scanners only, over the patched tree. No agents: the question here is
+            narrow and factual — did this line stop matching — and an agent would add
+            cost and non-determinism to a comparison that must be exact."""
+            store = FindingStore()
+            name = f"fixcheck-{ref.repo.replace('/', '-')}-{secrets.token_hex(3)}"
+            from docket.core.paths import run_path
+            from docket.report.writer import write_report
+
+            result = run_scan(target_url=None, whitebox_path=str(source),
+                              run_name=name, use_sandbox=True, store=store,
+                              static_only=True, triage_max=0, recon=False,
+                              scope_paths=paths)
+            out = run_path(name)
+            write_report(store, out, run_name=name,
+                         target=f"github:{ref.repo}@{ref.head_sha}",
+                         coverage=read_coverage(out / "sandbox"),
+                         summary=result.summary, success=result.success)
+            return json.loads((out / "report.json").read_text())
+
+        attempt = attempt_fix(fixable[0], root=source, config=config, rescan=rescan)
+        if not attempt.deliverable:
+            return {"opened": False,
+                    "note": attempt.note or "the fix could not be verified"}
+
+        patched = (source / attempt.patch.path).read_text()
+        branch = f"docket/fix-{ref.number}-{secrets.token_hex(3)}"
+        gates = ", ".join(k for k, ok in attempt.verification.gates.items() if ok)
+        pull = open_fix_pr(
+            ref.repo, token, base_sha=ref.head_sha, base_ref=ref.base_ref or "main",
+            path=attempt.patch.path, content=patched, branch=branch,
+            title=f"Fix: {attempt.patch.why or 'security finding'} (#{ref.number})",
+            body=(
+                f"Fixes a finding docket reported on #{ref.number}.\n\n"
+                f"**What changed** — {attempt.patch.why}\n\n"
+                f"**Verified by re-scanning.** The finding is present before the patch "
+                f"and absent after, nothing else disappeared, no new findings appeared, "
+                f"parse errors did not rise, coverage did not shrink, and the file still "
+                f"parses.\n\nGates passed: `{gates}`\n\n"
+                f"<sub>Branched from {ref.head_sha[:7]}, the exact commit that was "
+                f"scanned and verified. Written by docket; review it as you would any "
+                f"patch.</sub>"
+            ),
+        )
+        return {"opened": True, "url": (pull or {}).get("html_url"),
+                "number": (pull or {}).get("number"), "note": attempt.patch.why}
+    except Exception as exc:  # noqa: BLE001 — a failed fix must not sink the verdict
+        return {"opened": False, "note": f"{type(exc).__name__}: {exc}"}
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _post_for_pr(ref: Any, verdict: dict[str, Any]) -> dict[str, str]:
+    if not SESSION.token:
+        return {"status": "skipped: not connected"}
+    return post_pr_result(
+        ref.repo, SESSION.token, pr_number=ref.number, head_sha=ref.head_sha,
+        verdict=verdict, run_url=None,
+    )
+
+
+def _watch_loop() -> None:
+    """Poll watched repositories until stopped. Runs on its own thread."""
+    from docket.core.paths import runs_root
+    from docket.core.pr_service import BaselineCache, scan_pull_request, watch_forever
+    from docket.core.pr_watcher import SeenStore
+
+    baselines = BaselineCache()
+    seen = SeenStore(runs_root() / ".pr-seen.json")
+
+    def list_pulls(repo: str):
+        # Stamped here, not in sleeper(): a cycle that starts a multi-minute scan does
+        # not reach sleeper for minutes, so "last checked" sat at never while docket
+        # was demonstrably working.
+        with SESSION.lock:
+            SESSION.watch["last_poll"] = time.time()
+        payload = _api(f"/repos/{repo}/pulls?state=open&per_page=50", SESSION.token)
+        return payload, {}
+
+    def handle(ref):
+        record_watch_result(ref, {}, {}, scanning=True)
+        outcome = scan_pull_request(
+            ref, token=SESSION.token or "", fetch_files=changed_files,
+            scan=_scan_for_pr, baselines=baselines, post=_post_for_pr,
+            triage_max=int(SESSION.watch.get("triage_max") or 5),
+        )
+        posted = dict(outcome.posted)
+        # Only on a blocking verdict. Opening a fix PR for a check that passed is
+        # noise, and the whole point of blocking is that something needs doing.
+        if (outcome.ok and outcome.verdict.get("exit_code") == 2
+                and SESSION.watch.get("autofix")):
+            fix = attempt_autofix(ref, outcome.verdict)
+            posted["autofix"] = (f"opened #{fix['number']}" if fix.get("opened")
+                                 else f"not opened — {fix.get('note', '')}"[:120])
+        record_watch_result(ref, outcome.verdict, posted, outcome.error)
+        return outcome
+
+    def tick() -> None:
+        with SESSION.lock:
+            SESSION.watch["last_poll"] = time.time()
+            SESSION.watch["next_poll"] = time.time() + SESSION.watch.get("interval_sec", 30)
+
+    def sleeper(seconds: float) -> None:
+        tick()
+        # Event.wait rather than sleep: a Stop must take effect now, not in 30s.
+        _WATCH_STOP.wait(seconds)
+
+    try:
+        while not _WATCH_STOP.is_set():
+            repos = list(SESSION.watch.get("repos") or [])
+            if not repos:
+                _WATCH_STOP.wait(5)
+                continue
+            watch_forever(
+                repos, list_pulls=list_pulls, handle=handle, seen=seen,
+                interval_sec=int(SESSION.watch.get("interval_sec") or 30),
+                should_stop=_WATCH_STOP.is_set, sleep=sleeper,
+            )
+    except Exception as exc:  # noqa: BLE001 — a dead thread must say why
+        logger.warning("pull-request watcher stopped: %s", exc)
+        with SESSION.lock:
+            SESSION.watch["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        with SESSION.lock:
+            SESSION.watch["enabled"] = False
+            SESSION.watch["next_poll"] = None
+
+
+def start_watching(repos: list[str], interval_sec: int = 30) -> dict[str, Any]:
+    global _WATCH_THREAD
+    with SESSION.lock:
+        SESSION.watch.update({
+            "enabled": True, "repos": repos, "error": None,
+            "interval_sec": max(10, int(interval_sec)),
+        })
+    _persist_session()
+    if _WATCH_THREAD is None or not _WATCH_THREAD.is_alive():
+        _WATCH_STOP.clear()
+        _WATCH_THREAD = threading.Thread(target=_watch_loop, name="docket-pr-watch",
+                                         daemon=True)
+        _WATCH_THREAD.start()
+    return watch_state()
+
+
+def stop_watching() -> dict[str, Any]:
+    _WATCH_STOP.set()
+    with SESSION.lock:
+        SESSION.watch["enabled"] = False
+        SESSION.watch["next_poll"] = None
+    _persist_session()
+    return watch_state()
+
+
 def _merge_live_usage(state: dict[str, Any]) -> dict[str, Any]:
     """Refresh a scan state's per-agent turns and cost from the usage ledger.
 
@@ -160,6 +482,19 @@ class Session:
     # Kept out of `scans` deliberately: that dict is serialised straight to the
     # browser and a threading.Event is not JSON.
     cancels: dict[str, Any] = field(default_factory=dict)
+    # The pull-request watcher: which repositories it polls, and what it has found.
+    # Not persisted with the scans dict because a verdict outlives the scan that
+    # produced it — it is the record the operator actually reads.
+    watch: dict[str, Any] = field(default_factory=lambda: {
+        "enabled": False,
+        "autofix": False,
+        "repos": [],
+        "interval_sec": 30,
+        "last_poll": None,
+        "next_poll": None,
+        "error": None,
+        "results": [],      # newest first
+    })
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -203,18 +538,95 @@ def oauth_scope() -> str:
     return os.environ.get("DOCKET_GITHUB_SCOPE", "").strip() or "repo"
 
 
-def _api(path: str, token: str, *, timeout: float = 20.0) -> Any:
+def _api(path: str, token: str, *, timeout: float = 20.0,
+         method: str | None = None, body: dict[str, Any] | None = None) -> Any:
+    """One GitHub call. `body` makes it a write; `method` overrides the verb.
+
+    Writes go through the same function as reads on purpose — one place holds the
+    auth header, the API version and the user agent, so a new endpoint cannot
+    accidentally ship without them.
+    """
+    data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(
         f"{GITHUB_API}{path}",
+        data=data,
+        method=method or ("POST" if data is not None else "GET"),
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "docket",
+            **({"Content-Type": "application/json"} if data is not None else {}),
         },
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read() or b"null")
+
+
+def changed_files(full_name: str, token: str, base: str, head: str) -> list[dict[str, Any]]:
+    """The files a pull request touched, from GitHub's compare endpoint.
+
+    Paginated at 300 files by GitHub itself, which is why plan_scan falls back to a
+    whole-repo scan above that count rather than scanning a silently truncated list.
+    """
+    if not _FULL_NAME.match(full_name):
+        raise ValueError(f"refusing suspicious repository name: {full_name!r}")
+    for ref in (base, head):
+        if not valid_ref(ref):
+            raise ValueError(f"refusing suspicious ref: {ref!r}")
+    payload = _api(f"/repos/{full_name}/compare/{base}...{head}", token)
+    return (payload or {}).get("files") or []
+
+
+def post_pr_result(full_name: str, token: str, *, pr_number: int, head_sha: str,
+                   verdict: dict[str, Any], run_url: str | None = None) -> dict[str, str]:
+    """Publish a verdict: commit status, then the summary comment.
+
+    Ordered deliberately. The status is the merge gate and must land even if commenting
+    fails — a PR blocked with no explanation is recoverable, a PR that merges because
+    the comment API rate-limited is not.
+    """
+    from docket.report.pr_report import (
+        COMMENT_MARKER, STATUS_CONTEXT, render_comment, should_comment, status_for,
+    )
+
+    outcome: dict[str, str] = {}
+    state, description = status_for(verdict.get("exit_code", 1), verdict.get("reason", ""))
+    try:
+        _api(f"/repos/{full_name}/statuses/{head_sha}", token, body={
+            "state": state,
+            "context": STATUS_CONTEXT,
+            "description": description,
+            **({"target_url": run_url} if run_url else {}),
+        })
+        outcome["status"] = state
+    except Exception as exc:  # noqa: BLE001 — report the failure, do not mask the verdict
+        outcome["status"] = f"failed: {exc}"
+
+    try:
+        existing = None
+        for comment in _api(f"/repos/{full_name}/issues/{pr_number}/comments", token) or []:
+            if COMMENT_MARKER in (comment.get("body") or ""):
+                existing = comment["id"]
+                break
+
+        if not should_comment(verdict, already_commented=existing is not None):
+            outcome["comment"] = "skipped (clean, nothing said before)"
+            return outcome
+
+        body = {"body": render_comment(verdict, run_url=run_url)}
+        if existing:
+            # Edited in place. A check that appends a comment per push trains people
+            # to collapse the whole conversation.
+            _api(f"/repos/{full_name}/issues/comments/{existing}", token,
+                 method="PATCH", body=body)
+            outcome["comment"] = "updated"
+        else:
+            _api(f"/repos/{full_name}/issues/{pr_number}/comments", token, body=body)
+            outcome["comment"] = "created"
+    except Exception as exc:  # noqa: BLE001
+        outcome["comment"] = f"failed: {exc}"
+    return outcome
 
 
 def exchange_code(code: str) -> tuple[str | None, str | None]:
@@ -872,6 +1284,8 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self._auth_callback(query)
             elif path == "/api/repos":
                 self._repos()
+            elif path == "/api/watch":
+                self._json(200, watch_state())
             elif path == "/api/scans/active":
                 self._json(200, {"scans": active_scans()})
             elif path.startswith("/api/scan/"):
@@ -895,6 +1309,9 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             post_path = urllib.parse.urlparse(self.path).path
             if post_path == "/api/scan/cancel":
                 self._cancel_scan()
+                return
+            if post_path == "/api/watch":
+                self._set_watch()
                 return
             if post_path != "/api/scan":
                 self._send(404, b"not found", "text/plain")
@@ -969,6 +1386,42 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 name=f"docket-scan-{scan_id}", daemon=True,
             ).start()
             self._json(202, {"id": scan_id, "status": "queued"})
+
+        def _set_watch(self) -> None:
+            """Start or stop the pull-request watcher."""
+            if SESSION.token is None:
+                self._json(401, {"error": "not connected to GitHub"})
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._json(400, {"error": "body must be JSON"})
+                return
+
+            if not body.get("enabled"):
+                self._json(200, stop_watching())
+                return
+
+            repos = [r for r in (body.get("repos") or []) if isinstance(r, str)]
+            bad = [r for r in repos if not _FULL_NAME.match(r)]
+            if bad:
+                self._json(400, {"error": f"not a repository name: {bad[0]}"})
+                return
+            if not repos:
+                self._json(400, {"error": "pick at least one repository to watch"})
+                return
+            try:
+                interval = int(body.get("interval_sec") or 30)
+            except (TypeError, ValueError):
+                self._json(400, {"error": "interval_sec must be a whole number"})
+                return
+            with SESSION.lock:
+                SESSION.watch["triage_max"] = max(0, int(body.get("triage_max") or 5))
+                # Opt-in. Opening pull requests on someone's repository is not a
+                # thing to start doing because a checkbox defaulted on.
+                SESSION.watch["autofix"] = bool(body.get("autofix"))
+            self._json(200, start_watching(repos, interval))
 
         def _cancel_scan(self) -> None:
             """Ask the running scan to stop at its next checkpoint.
@@ -1061,6 +1514,7 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 SESSION.login = (_api("/user", token) or {}).get("login")
             except urllib.error.URLError:
                 SESSION.login = None
+            _persist_session()
             self._redirect("/?connected=1")
 
         def _repos(self) -> None:
@@ -1088,9 +1542,59 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
+def _persist_session() -> None:
+    """Save the token and the operator's watch choices so a restart is not a reset."""
+    from docket.interface import session_store
+
+    with SESSION.lock:
+        session_store.save(token=SESSION.token, login=SESSION.login,
+                           watch=dict(SESSION.watch))
+
+
+def restore_session() -> bool:
+    """Reload a saved session and resume watching. True when something was restored.
+
+    Called at startup. Without it every restart costs an OAuth round trip and a
+    re-tick of every watched repository, which during development is constant and is
+    most of what made the console feel unreliable.
+    """
+    from docket.interface import session_store
+
+    saved = session_store.load()
+    if not saved:
+        return False
+
+    with SESSION.lock:
+        SESSION.token = saved.get("token")
+        SESSION.login = saved.get("login")
+        watch = saved.get("watch") or {}
+        SESSION.watch.update({
+            "repos": list(watch.get("repos") or []),
+            "interval_sec": int(watch.get("interval_sec") or 30),
+            "triage_max": int(watch.get("triage_max") or 5),
+            "autofix": bool(watch.get("autofix")),
+        })
+        resume = bool(watch.get("enabled")) and bool(SESSION.watch["repos"])
+        repos = list(SESSION.watch["repos"])
+        interval = SESSION.watch["interval_sec"]
+
+    if resume:
+        # The watcher was on when the console stopped, so it is on again. An operator
+        # who left it running did not ask for it to quietly stop.
+        start_watching(repos, interval)
+        logger.info("resumed watching %d repository(s)", len(repos))
+    return True
+
+
 def start_server(port: int = 8765) -> ThreadingHTTPServer:
     # Must happen on the main thread: signal.signal() refuses anywhere else, and a
     # console killed mid-scan is exactly when the sandbox needs reaping.
+    try:
+        if restore_session():
+            logger.info("restored a saved GitHub session")
+    except Exception:  # noqa: BLE001 — a bad session file must not stop the console
+        logger.warning("could not restore the saved session", exc_info=True)
+
     try:
         from docket.runtime.sandbox import install_cleanup
 
@@ -1282,6 +1786,77 @@ def demo() -> None:
         finally:
             SESSION.scans.pop("fake", None)
             SESSION.cancels.pop("fake", None)
+
+        # ── reporting a PR verdict ────────────────────────────────────────────
+        # Recorded, not sent: the point is which calls are made and in what order.
+        calls: list = []
+
+        def _fake_api(path, tok, *, timeout=20.0, method=None, body=None):
+            calls.append((method or ("POST" if body else "GET"), path, body))
+            if path.endswith("/comments") and method is None and body is None:
+                return _existing_comments
+            return {}
+
+        from docket.report.pr_report import COMMENT_MARKER, STATUS_CONTEXT
+
+        _g2 = globals()
+        _saved2 = _g2["_api"]
+        _g2["_api"] = _fake_api
+        try:
+            blocked = {"exit_code": 2, "reason": "1 new finding blocks this merge",
+                       "new": [{"rule_id": "r", "severity": "high",
+                                "location": {"path": "a.py", "source_file": "a.py:1"}}],
+                       "fixed": [], "new_reachable": [], "caveats": []}
+
+            # Nothing said before: status posted, comment created.
+            _existing_comments = []
+            calls.clear()
+            out = post_pr_result("o/r", "tok", pr_number=7, head_sha="sha1",
+                                 verdict=blocked)
+            assert out["status"] == "failure" and out["comment"] == "created", out
+            assert calls[0][1] == "/repos/o/r/statuses/sha1", calls[0]
+            assert calls[0][2]["context"] == STATUS_CONTEXT
+            assert calls[-1][0] == "POST" and calls[-1][1].endswith("/issues/7/comments")
+
+            # Said before: the SAME comment is edited, never a second one appended.
+            _existing_comments = [{"id": 99, "body": f"{COMMENT_MARKER}\nold"}]
+            calls.clear()
+            out = post_pr_result("o/r", "tok", pr_number=7, head_sha="sha1",
+                                 verdict=blocked)
+            assert out["comment"] == "updated", out
+            assert calls[-1][0] == "PATCH" and "issues/comments/99" in calls[-1][1]
+
+            # Clean and never spoken on: status only. An unprompted "nothing to
+            # report" on every PR is how a bot gets muted.
+            _existing_comments = []
+            calls.clear()
+            clean = {"exit_code": 0, "reason": "No new findings", "new": [],
+                     "fixed": [], "new_reachable": [], "caveats": []}
+            out = post_pr_result("o/r", "tok", pr_number=7, head_sha="sha1",
+                                 verdict=clean)
+            assert out["status"] == "success" and "skipped" in out["comment"], out
+            assert all("comments" not in c[1] or c[0] == "GET" for c in calls)
+
+            # Clean but a stale failure is on the PR: it MUST be replaced.
+            _existing_comments = [{"id": 99, "body": f"{COMMENT_MARKER}\n1 reachable"}]
+            calls.clear()
+            out = post_pr_result("o/r", "tok", pr_number=7, head_sha="sha1",
+                                 verdict=clean)
+            assert out["comment"] == "updated", "a stale failure must not be left up"
+
+            # The status is the gate and must land even when commenting fails.
+            def _status_ok_comment_dies(path, tok, *, timeout=20.0, method=None, body=None):
+                if "statuses" in path:
+                    return {}
+                raise RuntimeError("rate limited")
+
+            _g2["_api"] = _status_ok_comment_dies
+            out = post_pr_result("o/r", "tok", pr_number=7, head_sha="sha1",
+                                 verdict=blocked)
+            assert out["status"] == "failure", "the gate must survive a comment failure"
+            assert out["comment"].startswith("failed:"), out
+        finally:
+            _g2["_api"] = _saved2
 
         # ── a 404 from GitHub must say WHICH 404 ──────────────────────────────
         # GitHub returns 404 for a missing ref, a repo the token cannot see, and a
