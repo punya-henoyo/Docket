@@ -11,9 +11,13 @@ merge. Three decisions bring it to seconds and cents:
   3. Triage runs ONLY on findings the diff calls new. A PR introduces nought to three,
      not forty-eight, and triage is the only phase that costs real money.
 
-Recon is deliberately not run per pull request. It maps the whole application, which a
-three-line diff does not change, and it is the second most expensive phase. The base
-branch's map is reused; refreshing it belongs on a schedule, not on a PR.
+Recon runs on the HEAD commit only, in pull-request mode: it is handed the changed
+files rather than grepping for routes, so the discovery phase is skipped and the turns
+go into reading handlers. What it may READ is not restricted to the diff — a missing
+guard is missing only relative to the guards around it, so comparing a changed handler
+against its unchanged siblings is the whole technique. What it REPORTS is scoped to the
+changed files, which is also what keeps a pre-existing candidate from being blamed on
+this author.
 
 WHAT THIS MODULE DOES NOT DO
 Fetching the source and posting results are the caller's job (interface/connect.py
@@ -129,6 +133,10 @@ def evaluate(base_report: dict[str, Any] | None, head_report: dict[str, Any],
     fallback run is exactly the coverage the fallback existed to get.
     """
     scope = plan.paths if (plan.scoped and plan.paths) else None
+    # This also does the recon scoping: a candidate's location.path is the file it
+    # cited, so a candidate about untouched code is filtered out here rather than
+    # blaming this author for someone else's work. Recon is only run on head now, so
+    # without this every pre-existing candidate would read as introduced.
     diff = diff_runs(base_report, head_report, scope=scope)
 
     if not plan.scoped:

@@ -114,11 +114,17 @@ def scan_pull_request(
         if base_report is None:
             # Triage is off for the baseline deliberately: nothing in it is reported,
             # it exists only to be subtracted, and judging it would double the bill.
-            # SAME `recon` as head, always. Asymmetry here is a trap: with recon on
-            # only one side, every candidate it finds has no counterpart in the other
-            # and the whole map reports as introduced by this pull request.
+            # Recon is NOT run on base. It doubled the wall clock — two agent runs
+            # per pull request, six to ten minutes — and the comparison it bought was
+            # non-deterministic anyway: recon phrases candidates afresh each run, so
+            # the same code produced different candidates on the two sides and the
+            # difference read as findings introduced by the change.
+            #
+            # Scoping candidates to the CHANGED FILES replaces it, and is a stronger
+            # signal: "this is in a file you changed" is a fact, where "recon did not
+            # mention it last time" is an agent's phrasing.
             base_report = scan(repo=ref.repo, sha=ref.base_sha, paths=plan.paths,
-                               triage_max=0, budget_usd=budget_usd, recon=recon)
+                               triage_max=0, budget_usd=budget_usd, recon=False)
             if base_report is not None:
                 baselines.put(ref.repo, ref.base_sha, base_report)
 
@@ -235,9 +241,11 @@ def demo() -> None:
     assert out.ok and out.verdict["exit_code"] == 0
     assert started == [], "a markdown PR must not spin up Docker"
 
-    # ── recon must run on both sides or neither ─────────────────────────────
-    # With it on head only, every candidate has no counterpart in base and the whole
-    # map reports as introduced by this pull request.
+    # ── recon runs on HEAD only ─────────────────────────────────────────────
+    # Running it on both doubled the wall clock to six-plus minutes per pull request,
+    # and bought a non-deterministic comparison: recon phrases candidates afresh, so
+    # the same code yielded different candidates on the two sides. Scoping candidates
+    # to the changed files replaces it — a fact rather than an agent's phrasing.
     sides: list = []
 
     def scan_sides(**kw):
@@ -246,8 +254,7 @@ def demo() -> None:
 
     scan_pull_request(ref, token="t", fetch_files=files_py, scan=scan_sides,
                       baselines=BaselineCache(), triage_max=0, recon=True)
-    assert {r for _, r in sides} == {True}, sides
-    assert {sha for sha, _ in sides} == {"head1", "base1"}, sides
+    assert dict(sides) == {"head1": True, "base1": False}, sides
 
     sides.clear()
     scan_pull_request(ref, token="t", fetch_files=files_py, scan=scan_sides,

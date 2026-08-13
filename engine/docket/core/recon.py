@@ -70,6 +70,7 @@ def run_recon(
     cancel: CancelToken = NEVER,
     on_agent: Callable[[dict[str, Any]], None] | None = None,
     source_root: str | None = None,
+    changed: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """The attack surface, or None. Never raises: recon is enrichment, and a scan that
     already produced findings must not be lost because the mapper failed."""
@@ -107,7 +108,7 @@ def run_recon(
     try:
         output = asyncio.run(run_agent_loop(
             agent, context,
-            build_recon_task(repo, hint_files(findings or [])),
+            build_recon_task(repo, hint_files(findings or []), changed=changed),
             max_turns=max_turns,
         ))
     except ScanCancelled:

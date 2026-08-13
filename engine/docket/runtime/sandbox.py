@@ -183,13 +183,44 @@ class Sandbox:
         self._await_health(health_timeout)
         return self
 
-    def _read_port(self) -> int:
-        mapping = _docker("port", self.name, f"{SHIM_PORT}/tcp", timeout=30)
-        # e.g. "127.0.0.1:55001" (possibly several lines, one per address family)
-        for line in mapping.splitlines():
-            if ":" in line:
-                return int(line.rsplit(":", 1)[1])
-        raise SandboxError(f"could not read published port from: {mapping!r}")
+    def _read_port(self, *, attempts: int = 12, gap: float = 0.5) -> int:
+        """The host port Docker published for the shim.
+
+        Retried, because `docker run -d` returns as soon as the container is created
+        and the port mapping is published a moment later. Asking immediately returns
+        an EMPTY string, and the scan then dies with "could not read published port
+        from: ''" — which reads like a bug in the shim rather than a race.
+
+        Seen in the wild whenever more than one sandbox starts at once: a pull-request
+        scan runs base and head back to back, and the container tests start one each.
+        That is also why those tests failed in a different combination on every run.
+        """
+        last = ""
+        for attempt in range(attempts):
+            last = _docker("port", self.name, f"{SHIM_PORT}/tcp", timeout=30)
+            # e.g. "127.0.0.1:55001" (possibly several lines, one per address family)
+            for line in last.splitlines():
+                if ":" in line:
+                    return int(line.rsplit(":", 1)[1])
+            if attempt + 1 < attempts:
+                # If the container died, waiting cannot help and the logs say why.
+                state = _docker("inspect", "-f", "{{.State.Running}}", self.name,
+                                timeout=15).strip()
+                if state != "true":
+                    logs = ""
+                    try:
+                        logs = _docker("logs", "--tail", "20", self.name, timeout=15)
+                    except SandboxError:
+                        pass
+                    raise SandboxError(
+                        f"the sandbox container exited before publishing a port"
+                        f"{chr(10) + logs if logs else ''}"
+                    )
+                time.sleep(gap)
+        raise SandboxError(
+            f"could not read published port after {attempts} attempts; last "
+            f"response was {last!r}"
+        )
 
     def _await_health(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout

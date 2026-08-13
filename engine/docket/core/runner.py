@@ -246,6 +246,9 @@ def run_scan(
                     if store is not None else [],
                     model_override=model_override, cancel=cancel,
                     on_agent=on_agent,
+                    # In a pull-request scan this is the changed-file list, which
+                    # switches recon from mapping the application to judging a diff.
+                    changed=scope_paths,
                     source_root=str(whitebox_path) if whitebox_path else None,
                 )
                 if recon_surface:
