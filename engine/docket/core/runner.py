@@ -26,6 +26,7 @@ from docket.core.execution import ScanContext, run_agent_loop
 from docket.core.inputs import DEFAULT_MAX_TURNS
 from docket.core.cancel import NEVER, CancelToken
 from docket.core.recon import DEFAULT_MAX_TURNS as DEFAULT_RECON_TURNS
+from docket.core.recon import PR_MAX_TURNS
 from docket.discovery.discover import discover
 from docket.report.dedupe import merge_static
 from docket.static.correlate import correlate, summarise
