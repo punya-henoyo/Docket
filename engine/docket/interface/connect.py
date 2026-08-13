@@ -259,6 +259,91 @@ def open_fix_pr(full_name: str, token: str, *, base_sha: str, base_ref: str,
     })
 
 
+def attempt_autofix(ref: Any, verdict: dict[str, Any]) -> dict[str, Any]:
+    """Try to fix what a pull request introduced, and open a PR only if it is proven.
+
+    Runs against the HEAD commit, patching the fetched source on the host — the
+    container mount is read-only but the extracted tree is not, so no agent ever needs
+    a write tool.
+
+    Only findings from a deterministic scanner are attempted. An agent candidate like
+    "no authorization on /orders" has no single line to replace and its fix is a design
+    decision; proposing a patch for it would be guessing at architecture.
+    """
+    from docket.config.settings import Config
+    from docket.core.remediation import attempt_fix
+    from docket.core.runner import run_scan
+    from docket.report.dedupe import FindingStore
+    from docket.report.diff import DETERMINISTIC_SOURCES
+
+    token = SESSION.token
+    if not token:
+        return {"opened": False, "note": "GitHub is not connected"}
+
+    fixable = [f for f in (verdict.get("new") or [])
+               if str(f.get("discovered_by", "")) in DETERMINISTIC_SOURCES]
+    if not fixable:
+        return {"opened": False,
+                "note": "nothing a patch can address — the new findings are design "
+                        "issues, not single lines"}
+
+    workdir = Path(tempfile.mkdtemp(prefix="docket-fix-"))
+    try:
+        source = fetch_source(ref.repo, token, workdir, ref.head_sha)
+        config = Config.from_env()
+
+        def rescan(paths: list[str]) -> dict[str, Any] | None:
+            """Scanners only, over the patched tree. No agents: the question here is
+            narrow and factual — did this line stop matching — and an agent would add
+            cost and non-determinism to a comparison that must be exact."""
+            store = FindingStore()
+            name = f"fixcheck-{ref.repo.replace('/', '-')}-{secrets.token_hex(3)}"
+            from docket.core.paths import run_path
+            from docket.report.writer import write_report
+
+            result = run_scan(target_url=None, whitebox_path=str(source),
+                              run_name=name, use_sandbox=True, store=store,
+                              static_only=True, triage_max=0, recon=False,
+                              scope_paths=paths)
+            out = run_path(name)
+            write_report(store, out, run_name=name,
+                         target=f"github:{ref.repo}@{ref.head_sha}",
+                         coverage=read_coverage(out / "sandbox"),
+                         summary=result.summary, success=result.success)
+            return json.loads((out / "report.json").read_text())
+
+        attempt = attempt_fix(fixable[0], root=source, config=config, rescan=rescan)
+        if not attempt.deliverable:
+            return {"opened": False,
+                    "note": attempt.note or "the fix could not be verified"}
+
+        patched = (source / attempt.patch.path).read_text()
+        branch = f"docket/fix-{ref.number}-{secrets.token_hex(3)}"
+        gates = ", ".join(k for k, ok in attempt.verification.gates.items() if ok)
+        pull = open_fix_pr(
+            ref.repo, token, base_sha=ref.head_sha, base_ref=ref.base_ref or "main",
+            path=attempt.patch.path, content=patched, branch=branch,
+            title=f"Fix: {attempt.patch.why or 'security finding'} (#{ref.number})",
+            body=(
+                f"Fixes a finding docket reported on #{ref.number}.\n\n"
+                f"**What changed** — {attempt.patch.why}\n\n"
+                f"**Verified by re-scanning.** The finding is present before the patch "
+                f"and absent after, nothing else disappeared, no new findings appeared, "
+                f"parse errors did not rise, coverage did not shrink, and the file still "
+                f"parses.\n\nGates passed: `{gates}`\n\n"
+                f"<sub>Branched from {ref.head_sha[:7]}, the exact commit that was "
+                f"scanned and verified. Written by docket; review it as you would any "
+                f"patch.</sub>"
+            ),
+        )
+        return {"opened": True, "url": (pull or {}).get("html_url"),
+                "number": (pull or {}).get("number"), "note": attempt.patch.why}
+    except Exception as exc:  # noqa: BLE001 — a failed fix must not sink the verdict
+        return {"opened": False, "note": f"{type(exc).__name__}: {exc}"}
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def _post_for_pr(ref: Any, verdict: dict[str, Any]) -> dict[str, str]:
     if not SESSION.token:
         return {"status": "skipped: not connected"}
@@ -293,7 +378,15 @@ def _watch_loop() -> None:
             scan=_scan_for_pr, baselines=baselines, post=_post_for_pr,
             triage_max=int(SESSION.watch.get("triage_max") or 5),
         )
-        record_watch_result(ref, outcome.verdict, outcome.posted, outcome.error)
+        posted = dict(outcome.posted)
+        # Only on a blocking verdict. Opening a fix PR for a check that passed is
+        # noise, and the whole point of blocking is that something needs doing.
+        if (outcome.ok and outcome.verdict.get("exit_code") == 2
+                and SESSION.watch.get("autofix")):
+            fix = attempt_autofix(ref, outcome.verdict)
+            posted["autofix"] = (f"opened #{fix['number']}" if fix.get("opened")
+                                 else f"not opened — {fix.get('note', '')}"[:120])
+        record_watch_result(ref, outcome.verdict, posted, outcome.error)
         return outcome
 
     def tick() -> None:
@@ -334,6 +427,7 @@ def start_watching(repos: list[str], interval_sec: int = 30) -> dict[str, Any]:
             "enabled": True, "repos": repos, "error": None,
             "interval_sec": max(10, int(interval_sec)),
         })
+    _persist_session()
     if _WATCH_THREAD is None or not _WATCH_THREAD.is_alive():
         _WATCH_STOP.clear()
         _WATCH_THREAD = threading.Thread(target=_watch_loop, name="docket-pr-watch",
@@ -347,6 +441,7 @@ def stop_watching() -> dict[str, Any]:
     with SESSION.lock:
         SESSION.watch["enabled"] = False
         SESSION.watch["next_poll"] = None
+    _persist_session()
     return watch_state()
 
 
@@ -392,6 +487,7 @@ class Session:
     # produced it — it is the record the operator actually reads.
     watch: dict[str, Any] = field(default_factory=lambda: {
         "enabled": False,
+        "autofix": False,
         "repos": [],
         "interval_sec": 30,
         "last_poll": None,
@@ -1322,6 +1418,9 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 return
             with SESSION.lock:
                 SESSION.watch["triage_max"] = max(0, int(body.get("triage_max") or 5))
+                # Opt-in. Opening pull requests on someone's repository is not a
+                # thing to start doing because a checkbox defaulted on.
+                SESSION.watch["autofix"] = bool(body.get("autofix"))
             self._json(200, start_watching(repos, interval))
 
         def _cancel_scan(self) -> None:
@@ -1415,6 +1514,7 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 SESSION.login = (_api("/user", token) or {}).get("login")
             except urllib.error.URLError:
                 SESSION.login = None
+            _persist_session()
             self._redirect("/?connected=1")
 
         def _repos(self) -> None:
@@ -1442,9 +1542,59 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
+def _persist_session() -> None:
+    """Save the token and the operator's watch choices so a restart is not a reset."""
+    from docket.interface import session_store
+
+    with SESSION.lock:
+        session_store.save(token=SESSION.token, login=SESSION.login,
+                           watch=dict(SESSION.watch))
+
+
+def restore_session() -> bool:
+    """Reload a saved session and resume watching. True when something was restored.
+
+    Called at startup. Without it every restart costs an OAuth round trip and a
+    re-tick of every watched repository, which during development is constant and is
+    most of what made the console feel unreliable.
+    """
+    from docket.interface import session_store
+
+    saved = session_store.load()
+    if not saved:
+        return False
+
+    with SESSION.lock:
+        SESSION.token = saved.get("token")
+        SESSION.login = saved.get("login")
+        watch = saved.get("watch") or {}
+        SESSION.watch.update({
+            "repos": list(watch.get("repos") or []),
+            "interval_sec": int(watch.get("interval_sec") or 30),
+            "triage_max": int(watch.get("triage_max") or 5),
+            "autofix": bool(watch.get("autofix")),
+        })
+        resume = bool(watch.get("enabled")) and bool(SESSION.watch["repos"])
+        repos = list(SESSION.watch["repos"])
+        interval = SESSION.watch["interval_sec"]
+
+    if resume:
+        # The watcher was on when the console stopped, so it is on again. An operator
+        # who left it running did not ask for it to quietly stop.
+        start_watching(repos, interval)
+        logger.info("resumed watching %d repository(s)", len(repos))
+    return True
+
+
 def start_server(port: int = 8765) -> ThreadingHTTPServer:
     # Must happen on the main thread: signal.signal() refuses anywhere else, and a
     # console killed mid-scan is exactly when the sandbox needs reaping.
+    try:
+        if restore_session():
+            logger.info("restored a saved GitHub session")
+    except Exception:  # noqa: BLE001 — a bad session file must not stop the console
+        logger.warning("could not restore the saved session", exc_info=True)
+
     try:
         from docket.runtime.sandbox import install_cleanup
 

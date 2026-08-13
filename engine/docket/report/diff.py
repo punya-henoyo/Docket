@@ -38,6 +38,11 @@ from typing import Any
 # Worst first, so the caller can gate on the top of the list.
 _ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
+# Sources that return the same findings for the same code every time. Only these can
+# support a claim that something was FIXED, because only for these does absence mean
+# the code changed.
+DETERMINISTIC_SOURCES = frozenset({"semgrep", "trivy", "nuclei"})
+
 
 def _snippet(finding: dict[str, Any]) -> str:
     """The matched code, whitespace-normalised. Empty when the finding carries none.
@@ -182,6 +187,19 @@ def diff_runs(base: dict[str, Any] | None, head: dict[str, Any],
     fixed_seen: set[str] = set()
     fixed = []
     for finding in base_findings:
+        # An agent's candidate vanishing is NOT evidence it was fixed. Recon phrases
+        # each candidate afresh and is free to mention different ones on two runs of
+        # the same code, so its absence means "not mentioned this time", not "gone".
+        # Measured on kaizenmantra/vulnshop#19: a pull request that fixed nothing was
+        # credited with "4 finding(s) fixed", purely from candidates churning between
+        # the base and head runs.
+        #
+        # The asymmetry is deliberate and correct: a NEW candidate is a real
+        # observation an agent made against real code and is reported, while a missing
+        # one is the absence of an observation and proves nothing. Presence is
+        # evidence; absence is not.
+        if str(finding.get("discovered_by", "")) not in DETERMINISTIC_SOURCES:
+            continue
         key = finding_key(finding)
         if key not in head_keys and key not in fixed_seen:
             fixed_seen.add(key)
@@ -264,6 +282,23 @@ def demo() -> None:
 
     sqli = finding("semgrep/sqli", "app/auth.py", line=41)
     xss = finding("semgrep/xss", "app/search.py", line=12, severity="medium")
+
+    # ── "fixed" must be provable ────────────────────────────────────────────
+    # A recon candidate absent from the head run was not necessarily fixed — the agent
+    # simply did not mention it this time. vulnshop#19 fixed nothing and was credited
+    # with 4 fixes purely from that churn.
+    candidate = finding("recon/no-authz", "app.py", by="recon", code="/orders route")
+    scanner = finding("semgrep/sqli", "app.py", by="semgrep", code="execute(q)")
+    churn = diff_runs(report([candidate, scanner]), report([scanner]))
+    assert churn.fixed == [], "an agent candidate vanishing is not a fix"
+
+    real = diff_runs(report([candidate, scanner]), report([candidate]))
+    assert [f["rule_id"] for f in real.fixed] == ["semgrep/sqli"], real.fixed
+
+    # ...but a NEW candidate IS reported. Presence is an observation an agent made
+    # against real code; absence is the lack of one.
+    appeared = diff_runs(report([scanner]), report([scanner, candidate]))
+    assert len(appeared.new) == 1 and appeared.new[0]["discovered_by"] == "recon"
 
     # ── the false negative that shipped, and must never come back ───────────
     # A pull request adding a SECOND SQL injection to a file that already had one.

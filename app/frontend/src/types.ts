@@ -100,6 +100,9 @@ export interface PrResult {
 
 export interface WatchState {
   enabled: boolean;
+  /** Opt-in. When on, a BLOCKED pull request also gets a fix PR — but only if the
+   *  fix verifies by re-scanning. An unproven patch is never opened. */
+  autofix?: boolean;
   repos: string[];
   interval_sec: number;
   last_poll: number | null;

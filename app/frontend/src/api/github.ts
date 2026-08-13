@@ -47,6 +47,7 @@ export const getWatch = () => req<WatchState>("/api/watch");
 
 export const setWatch = (body: {
   enabled: boolean; repos?: string[]; interval_sec?: number; triage_max?: number;
+  autofix?: boolean;
 }) => postJson<WatchState>("/api/watch", body);
 
 export const AUTH_START = "/auth/start";

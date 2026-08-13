@@ -254,13 +254,14 @@ export default function App() {
     }
   }, [liveId, go, rememberLive]);
 
-  const applyWatch = useCallback(async (repos: string[]) => {
+  const applyWatch = useCallback(async (repos: string[], autofix = false) => {
     setWatchBusy(true);
     setWatchError(null);
     try {
       setWatch(await api.github.setWatch(
-        repos.length ? { enabled: true, repos, interval_sec: 30, triage_max: 5 }
-                     : { enabled: false },
+        repos.length
+          ? { enabled: true, repos, interval_sec: 30, triage_max: 5, autofix }
+          : { enabled: false },
       ));
     } catch (err) {
       setWatchError(err instanceof Error ? err.message : String(err));

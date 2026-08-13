@@ -23,7 +23,7 @@ export function Repositories({
   onScan: (repo: string, ref?: string, triageMax?: number, recon?: boolean,
            budgetUsd?: number) => void;
   watch: WatchState | null;
-  onWatch: (repos: string[]) => void;
+  onWatch: (repos: string[], autofix?: boolean) => void;
   watchBusy: boolean;
   scanning: boolean;
   activeRepo?: string;
@@ -44,6 +44,9 @@ export function Repositories({
   // Repositories queued for the pull-request watcher. Separate from the scan
   // controls above because watching is a standing arrangement, not one action.
   const [toWatch, setToWatch] = useState<string[]>([]);
+  // Off by default. Opening pull requests on someone's repository is not something to
+  // start doing because a checkbox defaulted on.
+  const [autofix, setAutofix] = useState(false);
 
 const APPROX_USD_PER_FINDING = 0.033;
 
@@ -184,11 +187,22 @@ const APPROX_USD_PER_FINDING = 0.033;
                     ? `Watching ${watch.repos.length} repository(s) — every pull request is checked as it is pushed.`
                     : `${toWatch.length} selected. Watching checks every pull request and posts a commit status.`}
                 </span>
+                {!watch?.enabled && (
+                  <label style={{ display: "flex", alignItems: "center", gap: 7,
+                                  cursor: "pointer", font: "13px var(--sans)",
+                                  color: "var(--ink-2)" }}
+                         title="When a pull request is blocked, docket also attempts a fix and opens a second PR — but only if the fix verifies by re-scanning. An unproven patch is never opened.">
+                    <input type="checkbox" checked={autofix}
+                           onChange={(e) => setAutofix(e.target.checked)}
+                           style={{ margin: 0, accentColor: "var(--ok)" }} />
+                    also open a fix PR
+                  </label>
+                )}
                 <button
                   className="btn primary"
                   style={{ marginLeft: "auto" }}
                   disabled={watchBusy || (!watch?.enabled && toWatch.length === 0)}
-                  onClick={() => onWatch(watch?.enabled ? [] : toWatch)}
+                  onClick={() => onWatch(watch?.enabled ? [] : toWatch, autofix)}
                 >
                   {watchBusy
                     ? "…"
