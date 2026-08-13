@@ -1,6 +1,6 @@
 <div align="center">
 
-# docket
+# Docket
 
 **Autonomous pentesting agents that report a vulnerability only once they have reproduced it.**
 
