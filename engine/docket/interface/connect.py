@@ -175,8 +175,8 @@ _WATCH_STOP = threading.Event()
 
 
 def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
-                 budget_usd: float | None = None, only: list | None = None
-                 ) -> dict[str, Any] | None:
+                 budget_usd: float | None = None, only: list | None = None,
+                 recon: bool = False) -> dict[str, Any] | None:
     """Fetch a commit and scan it, returning report.json. Used for both sides of a diff.
 
     A pull request scan is a normal scan with two differences: it is pinned to a
@@ -199,7 +199,7 @@ def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
         result = run_scan(
             target_url=None, whitebox_path=str(source), run_name=run_name,
             use_sandbox=True, store=store, static_only=True,
-            triage_max=triage_max, recon=False, scope_paths=paths,
+            triage_max=triage_max, recon=recon, scope_paths=paths,
             budget_usd=budget_usd, on_finding=None,
         )
         out_dir = run_path(run_name)

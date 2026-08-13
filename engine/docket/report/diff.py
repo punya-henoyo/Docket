@@ -39,22 +39,47 @@ from typing import Any
 _ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 
-def finding_key(finding: dict[str, Any]) -> str:
-    """The stable identity of a finding across runs.
+def _snippet(finding: dict[str, Any]) -> str:
+    """The matched code, whitespace-normalised. Empty when the finding carries none.
 
-    Recomputed here rather than read from the report because report.json does not
-    carry it — `dedupe_key` is a property on the model and is serialised only into
-    SARIF's partialFingerprints. Same formula, so the two agree by construction; if
-    Finding.dedupe_key ever changes, this must change with it.
+    Normalised so reindenting a block is not mistaken for new code: only the tokens
+    matter, not the spacing between them.
+    """
+    request = ((finding.get("poc") or {}).get("request") or "")
+    return " ".join(str(request).split())
+
+
+def finding_key(finding: dict[str, Any]) -> str:
+    """The identity of a finding across runs, for DIFFING.
+
+    DELIBERATELY NOT Finding.dedupe_key, and this is the correction to a real false
+    negative. dedupe_key is rule|method|file|param with no line and no content, which
+    is right for its job — collapsing several agents reporting one issue into one
+    finding. Reused for diffing it hides the commonest regression there is:
+
+        main            f-string SQL in /login          app.py
+        pull request    f-string SQL in /admin/users     app.py   <- same rule, same file
+
+    Same key, so the new one classified as `unchanged` and the check reported "No new
+    findings" on a pull request that plainly introduced one. GitHub's own Semgrep
+    action flagged it in the same run, which is how it was caught.
+
+    The matched CODE is the anchor instead. It distinguishes two instances in one file,
+    and unlike a line number it survives a comment being inserted above them — the
+    line-noise problem that made line numbers unusable in the first place. Findings
+    with no snippet fall back to the location, which is all they have.
     """
     location = finding.get("location") or {}
-    raw = "|".join([
+    parts = [
         str(finding.get("rule_id", "")),
         str(location.get("method", "")),
         str(location.get("path", "")),
         str(location.get("parameter") or ""),
-    ])
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    ]
+    snippet = _snippet(finding)
+    if snippet:
+        parts.append(snippet)
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
 def _incomplete(report: dict[str, Any] | None, side: str) -> list[str]:
@@ -219,11 +244,13 @@ def gate(diff: RunDiff, *, block_on: str = "reachable") -> tuple[int, str]:
 
 
 def demo() -> None:
-    def finding(rule, path, line=1, severity="high", verdict=None, by="semgrep"):
+    def finding(rule, path, line=1, severity="high", verdict=None, by="semgrep",
+                code=None):
         f = {
             "rule_id": rule, "severity": severity, "discovered_by": by,
             "location": {"method": "STATIC", "path": path, "parameter": None,
                          "source_file": f"{path}:{line}"},
+            "poc": {"request": code or f"line {line} of {path}", "response": "match"},
         }
         if verdict:
             f["triage"] = {"verdict": verdict, "reasoning": "r", "evidence": "e"}
@@ -238,13 +265,40 @@ def demo() -> None:
     sqli = finding("semgrep/sqli", "app/auth.py", line=41)
     xss = finding("semgrep/xss", "app/search.py", line=12, severity="medium")
 
+    # ── the false negative that shipped, and must never come back ───────────
+    # A pull request adding a SECOND SQL injection to a file that already had one.
+    # Keyed on rule|file alone the two collide, the new one reads as `unchanged`, and
+    # the check reports "No new findings" on a PR that plainly introduced one. That
+    # happened on kaizenmantra/vulnshop#18; GitHub's own Semgrep action flagged it in
+    # the same run, which is how it was caught.
+    RULE = "semgrep/python.lang.security.audit.tainted-sql-string"
+    existing = finding(RULE, "app.py", 36, code='query = f"SELECT id FROM users WHERE u = {u}"')
+    introduced = finding(RULE, "app.py", 80, code='cur.execute(f"SELECT id FROM users LIKE {t}")')
+    assert finding_key(existing) != finding_key(introduced), \
+        "two instances of one rule in one file must be distinguishable"
+    regression = diff_runs(report([existing]), report([existing, introduced]),
+                           scope=["app.py"])
+    assert len(regression.new) == 1, regression.summary()
+
+    # A finding with no snippet still keys on its location rather than vanishing.
+    bare = {"rule_id": "r", "severity": "high",
+            "location": {"method": "STATIC", "path": "a.py", "parameter": None}}
+    assert finding_key(bare)
+
     # ── the property the whole design rests on ──────────────────────────────
     # A comment inserted at the top shifts every line below it. Keyed on lines this
     # reports the file's findings as new; keyed on the file it reports none.
-    moved = finding("semgrep/sqli", "app/auth.py", line=99)
-    same = diff_runs(report([sqli]), report([moved]))
+    # Same code, different line: a comment inserted above must not report the whole
+    # file as new. This is why the anchor is the CODE and not the line number.
+    moved = finding("semgrep/sqli", "app/auth.py", line=99, code="db.execute(q)")
+    sqli_anchored = finding("semgrep/sqli", "app/auth.py", line=41, code="db.execute(q)")
+    same = diff_runs(report([sqli_anchored]), report([moved]))
     assert same.new == [] and same.fixed == [], "a line shift must not look like a change"
     assert same.unchanged and same.trustworthy
+
+    # Reindenting is not a change either — the snippet is whitespace-normalised.
+    reindented = finding("semgrep/sqli", "app/auth.py", line=41, code="   db.execute(q)  ")
+    assert diff_runs(report([sqli_anchored]), report([reindented])).new == []
 
     # Moving to a DIFFERENT file is a real change, and shows as both.
     relocated = diff_runs(report([sqli]), report([finding("semgrep/sqli", "app/db.py")]))
@@ -268,12 +322,23 @@ def demo() -> None:
     ], coverage={"semgrep": {}}))
     assert ordered.new[0]["severity"] == "critical", [f["severity"] for f in ordered.new]
 
-    # Two matches of one rule in one file share a key and must not double-count.
+    # Two DIFFERENT matches of one rule in one file are two findings. This is the
+    # behaviour the vulnshop#18 false negative forced: collapsing them is right when
+    # deduping one issue reported twice, and wrong when diffing, where the second
+    # instance is exactly the regression being looked for.
     twice = diff_runs(report([]), report([
-        finding("semgrep/sqli", "app/auth.py", line=10),
-        finding("semgrep/sqli", "app/auth.py", line=20),
+        finding("semgrep/sqli", "app/auth.py", line=10, code="execute(a)"),
+        finding("semgrep/sqli", "app/auth.py", line=20, code="execute(b)"),
     ], coverage={"semgrep": {}}))
-    assert len(twice.new) == 1, twice.new
+    assert len(twice.new) == 2, twice.new
+
+    # ...but genuinely identical code at two places still collapses, because there is
+    # nothing to tell the two apart and reporting one change twice is noise.
+    identical = diff_runs(report([]), report([
+        finding("semgrep/sqli", "app/auth.py", line=10, code="execute(q)"),
+        finding("semgrep/sqli", "app/auth.py", line=20, code="execute(q)"),
+    ], coverage={"semgrep": {}}))
+    assert len(identical.new) == 1, identical.new
 
     # ── the gate ────────────────────────────────────────────────────────────
     reachable = finding("semgrep/sqli", "app/auth.py", verdict="exploitable")

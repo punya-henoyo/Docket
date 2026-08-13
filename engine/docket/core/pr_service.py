@@ -75,6 +75,7 @@ def scan_pull_request(
     triage_max: int = 10,
     budget_usd: float | None = None,
     run_url: str | None = None,
+    recon: bool = True,
 ) -> PullRequestOutcome:
     """Scan one pull request and, when `post` is given, publish the verdict.
 
@@ -104,7 +105,7 @@ def scan_pull_request(
 
     try:
         head_report = scan(repo=ref.repo, sha=ref.head_sha, paths=plan.paths,
-                           triage_max=0, budget_usd=budget_usd)
+                           triage_max=0, budget_usd=budget_usd, recon=recon)
         if head_report is None:
             raise RuntimeError("the head scan produced no report")
 
@@ -113,8 +114,11 @@ def scan_pull_request(
         if base_report is None:
             # Triage is off for the baseline deliberately: nothing in it is reported,
             # it exists only to be subtracted, and judging it would double the bill.
+            # SAME `recon` as head, always. Asymmetry here is a trap: with recon on
+            # only one side, every candidate it finds has no counterpart in the other
+            # and the whole map reports as introduced by this pull request.
             base_report = scan(repo=ref.repo, sha=ref.base_sha, paths=plan.paths,
-                               triage_max=0, budget_usd=budget_usd)
+                               triage_max=0, budget_usd=budget_usd, recon=recon)
             if base_report is not None:
                 baselines.put(ref.repo, ref.base_sha, base_report)
 
@@ -125,7 +129,7 @@ def scan_pull_request(
         if triage_max and verdict["new"]:
             head_report = scan(repo=ref.repo, sha=ref.head_sha, paths=plan.paths,
                                triage_max=min(triage_max, len(verdict["new"])),
-                               budget_usd=budget_usd,
+                               budget_usd=budget_usd, recon=recon,
                                only=[f.get("id") for f in verdict["new"]]) or head_report
             verdict = evaluate(base_report, head_report, plan)
     except Exception as exc:  # noqa: BLE001
@@ -230,6 +234,25 @@ def demo() -> None:
                             baselines=BaselineCache())
     assert out.ok and out.verdict["exit_code"] == 0
     assert started == [], "a markdown PR must not spin up Docker"
+
+    # ── recon must run on both sides or neither ─────────────────────────────
+    # With it on head only, every candidate has no counterpart in base and the whole
+    # map reports as introduced by this pull request.
+    sides: list = []
+
+    def scan_sides(**kw):
+        sides.append((kw["sha"], kw.get("recon")))
+        return report([])
+
+    scan_pull_request(ref, token="t", fetch_files=files_py, scan=scan_sides,
+                      baselines=BaselineCache(), triage_max=0, recon=True)
+    assert {r for _, r in sides} == {True}, sides
+    assert {sha for sha, _ in sides} == {"head1", "base1"}, sides
+
+    sides.clear()
+    scan_pull_request(ref, token="t", fetch_files=files_py, scan=scan_sides,
+                      baselines=BaselineCache(), triage_max=0, recon=False)
+    assert {r for _, r in sides} == {False}, sides
 
     # ── a real PR: base scanned once, then cached ───────────────────────────
     calls: list = []
