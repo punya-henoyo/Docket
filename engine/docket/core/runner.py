@@ -25,6 +25,8 @@ from docket.core.agents import AgentCoordinator
 from docket.core.execution import ScanContext, run_agent_loop
 from docket.core.inputs import DEFAULT_MAX_TURNS
 from docket.core.cancel import NEVER, CancelToken
+from docket.core.recon import DEFAULT_MAX_TURNS as DEFAULT_RECON_TURNS
+from docket.core.recon import PR_MAX_TURNS
 from docket.discovery.discover import discover
 from docket.report.dedupe import merge_static
 from docket.static.correlate import correlate, summarise
@@ -363,6 +365,11 @@ def run_scan(
                     if store is not None else [],
                     model_override=model_override, cancel=cancel,
                     on_agent=on_agent,
+                    # In a pull-request scan this is the changed-file list, which
+                    # switches recon from mapping the application to judging a diff —
+                    # a smaller job, so a smaller ceiling.
+                    changed=scope_paths,
+                    max_turns=PR_MAX_TURNS if scope_paths else DEFAULT_RECON_TURNS,
                     source_root=str(whitebox_path) if whitebox_path else None,
                 )
                 if recon_surface:

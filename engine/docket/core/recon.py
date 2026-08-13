@@ -36,6 +36,16 @@ from docket.core.execution import ScanContext, run_agent_loop
 # one. The prompt now also orders the agent to record the moment it sees a turn
 # warning, because a ceiling alone only decides how much you lose.
 DEFAULT_MAX_TURNS = 24
+
+# Pull-request mode is a much smaller job and gets a much smaller ceiling. The
+# discovery phase is gone — the changed files are handed over rather than grepped for
+# — so the turns go straight into reading handlers and their siblings. Measured: a
+# full map of a 26-file app used 22-40 reads across ~20 turns, and most of that was
+# finding the routes rather than judging them.
+#
+# 5.3 minutes per pull request is too slow to gate a merge, and the turn count is what
+# that time is made of.
+PR_MAX_TURNS = 10
 MAX_HINTS = 20
 
 
@@ -70,6 +80,7 @@ def run_recon(
     cancel: CancelToken = NEVER,
     on_agent: Callable[[dict[str, Any]], None] | None = None,
     source_root: str | None = None,
+    changed: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """The attack surface, or None. Never raises: recon is enrichment, and a scan that
     already produced findings must not be lost because the mapper failed."""
@@ -107,7 +118,7 @@ def run_recon(
     try:
         output = asyncio.run(run_agent_loop(
             agent, context,
-            build_recon_task(repo, hint_files(findings or [])),
+            build_recon_task(repo, hint_files(findings or []), changed=changed),
             max_turns=max_turns,
         ))
     except ScanCancelled:

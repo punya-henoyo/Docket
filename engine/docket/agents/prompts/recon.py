@@ -159,7 +159,48 @@ found, that IS the finding — record it and stop.
 """
 
 
-def build_recon_task(repo: str, hints: list[str] | None = None) -> str:
+def build_recon_task(repo: str, hints: list[str] | None = None,
+                     changed: list[str] | None = None) -> str:
+    """The opening task. `changed` switches to pull-request mode.
+
+    In PR mode the job narrows from "map this application" to "judge what this change
+    did", and that is a much smaller piece of work: the discovery phase is skipped
+    entirely because the changed files are already known, so the turns go into reading
+    handlers instead of grepping for them.
+
+    What does NOT narrow is what the agent may READ. Restricting it to the diff would
+    remove the only thing it does that a scanner cannot: the /admin/logs finding
+    happened because it could see that the sibling /admin/users had @require_admin.
+    A guard is missing only relative to the guards around it, so the comparison needs
+    the neighbours. Reporting is scoped to the changed files; reading is not.
+    """
+    if changed:
+        return "\n".join([
+            f"Repository: {repo}",
+            "Source is mounted read-only.",
+            "",
+            "This is a PULL REQUEST review, not a full map. These files changed:",
+            *(f"  - {c}" for c in changed[:40]),
+            *(["  ...and more"] if len(changed) > 40 else []),
+            "",
+            "You already know what changed, so do NOT go hunting for the route list. "
+            "Read the changed files first, then read only what you need to JUDGE them:",
+            "",
+            "  - the handlers those files declare, and what guards each one",
+            "  - their SIBLINGS in the same module or blueprint — a missing guard is "
+            "missing only relative to the guards around it, and comparing a changed "
+            "handler against its unchanged neighbours is the whole technique",
+            "  - the auth mechanism, if a changed handler appears to rely on it",
+            "",
+            "Report ONLY on the files listed above. A candidate about code this change "
+            "did not touch is pre-existing, and reporting it here blames this author "
+            "for someone else's work — which is how a check gets muted.",
+            "",
+            "Finish with record_surface: the entry points these files declare (each "
+            "citing a file), the auth model as it applies to them, candidates no "
+            "scanner would catch, and what you could not determine.",
+        ])
+
     lines = [
         f"Repository: {repo}",
         "Source is mounted read-only. Map its attack surface.",

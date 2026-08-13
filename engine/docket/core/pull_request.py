@@ -11,9 +11,13 @@ merge. Three decisions bring it to seconds and cents:
   3. Triage runs ONLY on findings the diff calls new. A PR introduces nought to three,
      not forty-eight, and triage is the only phase that costs real money.
 
-Recon is deliberately not run per pull request. It maps the whole application, which a
-three-line diff does not change, and it is the second most expensive phase. The base
-branch's map is reused; refreshing it belongs on a schedule, not on a PR.
+Recon runs on the HEAD commit only, in pull-request mode: it is handed the changed
+files rather than grepping for routes, so the discovery phase is skipped and the turns
+go into reading handlers. What it may READ is not restricted to the diff — a missing
+guard is missing only relative to the guards around it, so comparing a changed handler
+against its unchanged siblings is the whole technique. What it REPORTS is scoped to the
+changed files, which is also what keeps a pre-existing candidate from being blamed on
+this author.
 
 WHAT THIS MODULE DOES NOT DO
 Fetching the source and posting results are the caller's job (interface/connect.py
@@ -22,6 +26,7 @@ is testable without a network.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -73,6 +78,9 @@ class PullRequestPlan:
     """What to scan and how, decided before anything expensive runs."""
 
     paths: list[str] = field(default_factory=list)
+    # The lines each changed file actually touched. Empty means "not known", and the
+    # caller falls back to file-level scoping rather than discarding everything.
+    lines: dict[str, set[int]] = field(default_factory=dict)
     # False when the change is too large to scope, or touches files no scanner reads.
     # The caller falls back to a full scan rather than scanning a misleading subset.
     scoped: bool = True
@@ -86,6 +94,38 @@ class PullRequestPlan:
         container to prove that markdown has no SQL injection.
         """
         return bool(self.paths) or not self.scoped
+
+
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
+
+
+def changed_lines(files: list[dict[str, Any]] | None) -> dict[str, set[int]]:
+    """{path: line numbers this change touched}, from GitHub's unified diff hunks.
+
+    Scoping by FILE is not enough. A pull request that appends one route to app.py
+    makes the whole of app.py "changed", so every finding anywhere in it — including
+    ones that predate the author by months — reads as introduced. Measured on
+    kaizenmantra/vulnshop#20: three findings reported, two of them about lines 36 and
+    39 in a change that only touched 58-73.
+
+    That is the exact failure this product exists to avoid: blame someone for code
+    they did not write and the check gets muted.
+    """
+    out: dict[str, set[int]] = {}
+    for entry in files or []:
+        if not isinstance(entry, dict) or entry.get("status") == "removed":
+            continue
+        name = entry.get("filename") or entry.get("path")
+        patch = entry.get("patch")
+        if not isinstance(name, str) or not isinstance(patch, str):
+            continue
+        lines: set[int] = out.setdefault(name, set())
+        for start, count in _HUNK.findall(patch):
+            first = int(start)
+            # A hunk with no count is a single line. GitHub omits ",1".
+            span = int(count) if count else 1
+            lines.update(range(first, first + span))
+    return out
 
 
 def plan_scan(files: list[dict[str, Any]] | None) -> PullRequestPlan:
@@ -105,7 +145,34 @@ def plan_scan(files: list[dict[str, Any]] | None) -> PullRequestPlan:
             paths=[], scoped=True,
             notes=["no files a static scanner reads were changed"],
         )
-    return PullRequestPlan(paths=paths)
+    return PullRequestPlan(paths=paths, lines=changed_lines(files))
+
+
+def _touches_change(finding: dict[str, Any], lines: dict[str, set[int]]) -> bool:
+    """Does this finding sit on a line the change touched?
+
+    True when the finding cites no line at all — a candidate about a whole handler
+    ("no authorization on /orders") legitimately spans a range, and refusing it for
+    lacking a single line number would drop the findings recon is best at.
+    """
+    location = finding.get("location") or {}
+    source = str(location.get("source_file") or "")
+    path = str(location.get("path") or "").replace("/work/source/", "").lstrip("/")
+    touched = lines.get(path)
+    if not touched:
+        return True                      # unknown scope: keep rather than guess
+
+    numbers = [int(n) for n in re.findall(r"\d+", source.rsplit(":", 1)[-1])] \
+        if ":" in source else []
+    if not numbers:
+        return True                      # no line cited: cannot be shown pre-existing
+    # A candidate may cite a RANGE ("app.py:29-58"); any overlap counts.
+    span = re.findall(r"(\d+)(?:\s*-\s*(\d+))?", source.rsplit(":", 1)[-1])
+    for start, end in span:
+        low, high = int(start), int(end or start)
+        if any(low <= n <= high for n in touched):
+            return True
+    return False
 
 
 def findings_to_triage(diff: RunDiff, limit: int) -> list[dict[str, Any]]:
@@ -130,6 +197,19 @@ def evaluate(base_report: dict[str, Any] | None, head_report: dict[str, Any],
     """
     scope = plan.paths if (plan.scoped and plan.paths) else None
     diff = diff_runs(base_report, head_report, scope=scope)
+
+    # Then narrow to the lines the change actually touched. Recon runs on head only,
+    # so it has no base to be compared against and every candidate about the file
+    # would otherwise read as introduced — including ones about code the author never
+    # opened. A finding that cites no line is kept: it cannot be shown to be
+    # pre-existing, and dropping it would hide something on a technicality.
+    if plan.scoped and plan.lines:
+        diff = RunDiff(
+            new=[f for f in diff.new if _touches_change(f, plan.lines)],
+            fixed=diff.fixed,
+            unchanged=diff.unchanged,
+            caveats=diff.caveats,
+        )
 
     if not plan.scoped:
         diff = RunDiff(
@@ -189,6 +269,59 @@ def demo() -> None:
 
     normal = plan_scan([gh("app/auth.py"), gh("docs/x.md")])
     assert normal.paths == ["app/auth.py"] and normal.scoped
+
+    # ── line scoping: the vulnshop#20 failure ───────────────────────────────
+    # A pull request that appended one route to app.py made the WHOLE file "changed",
+    # so recon candidates about lines 36 and 39 — code the author never opened — were
+    # reported as introduced by it. Three findings, two of them someone else's.
+    patch = ("@@ -58,5 +58,15 @@ def search():\n context\n+new line\n+another\n")
+    touched = changed_lines([{"filename": "app.py", "status": "modified",
+                              "patch": patch}])
+    assert 58 in touched["app.py"] and 72 in touched["app.py"]
+    assert 36 not in touched["app.py"], "a line the change never touched"
+
+    def rec(title, at):
+        return {"rule_id": f"recon/{title}", "title": title, "severity": "high",
+                "discovered_by": "recon",
+                "location": {"method": "STATIC", "path": "app.py", "parameter": None,
+                             "source_file": f"app.py:{at}"},
+                "poc": {"request": title, "response": "x"}}
+
+    files20 = [{"filename": "app.py", "status": "modified", "patch": patch}]
+    head20 = report([rec("pre-existing login sqli", 36),
+                     rec("the injection this PR added", 66),
+                     rec("pre-existing session bug", 39)])
+    scoped20 = evaluate(report([]), head20, plan_scan(files20))
+    assert len(scoped20["new"]) == 1, [f["title"] for f in scoped20["new"]]
+    assert scoped20["new"][0]["title"] == "the injection this PR added"
+
+    # A candidate spanning a RANGE counts if it overlaps the change at all — recon's
+    # best findings are about whole handlers, not single lines.
+    spanning = report([{**rec("no authorization on the new route", 1),
+                        "location": {"method": "STATIC", "path": "app.py",
+                                     "parameter": None,
+                                     "source_file": "app.py:60-70"}}])
+    assert len(evaluate(report([]), spanning, plan_scan(files20))["new"]) == 1
+
+    # A range entirely outside the change is dropped.
+    outside = report([{**rec("old handler", 1),
+                       "location": {"method": "STATIC", "path": "app.py",
+                                    "parameter": None,
+                                    "source_file": "app.py:10-20"}}])
+    assert evaluate(report([]), outside, plan_scan(files20))["new"] == []
+
+    # No line cited at all: kept. It cannot be SHOWN pre-existing, and dropping it
+    # would hide a finding on a technicality.
+    noline = report([{**rec("something", 1),
+                      "location": {"method": "STATIC", "path": "app.py",
+                                   "parameter": None, "source_file": "app.py"}}])
+    assert len(evaluate(report([]), noline, plan_scan(files20))["new"]) == 1
+
+    # No patch text from GitHub means no line data; fall back to file scoping rather
+    # than discarding everything.
+    nopatch = [{"filename": "app.py", "status": "modified"}]
+    assert changed_lines(nopatch) == {}
+    assert len(evaluate(report([]), head20, plan_scan(nopatch))["new"]) == 3
 
     # ── the trap scoping closes ─────────────────────────────────────────────
     # Head only scanned app/auth.py. The base finding in legacy.py has no counterpart
