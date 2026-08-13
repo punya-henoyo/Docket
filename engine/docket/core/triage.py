@@ -88,6 +88,7 @@ def triage_findings(
     on_agent: Callable[[dict[str, Any]], None] | None = None,
     model_override: Callable[[str], Any] | None = None,
     cancel: CancelToken = NEVER,
+    source_root: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """{finding_id: verdict} for the findings triaged. Never raises: a triage pass is
     an enrichment, and losing the whole scan because one agent failed would be a bad
@@ -129,6 +130,9 @@ def triage_findings(
             config=config,
             model_override=model_override,
             sandbox=sandbox,
+            # Same omission recon had: read_source is host-side and rooted here, so
+            # leaving this unset pointed the agent at docket's own tree.
+            source_root=source_root,
         )
         agent = build_agent(
             "triage", config,

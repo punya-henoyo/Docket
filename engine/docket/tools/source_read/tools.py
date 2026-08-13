@@ -42,6 +42,19 @@ class SourceAccessError(Exception):
 
 def resolve_in_root(root: str | Path, relative: str) -> Path:
     """The one containment check. Every read goes through it."""
+    # Refuse an EMPTY root before resolving it. Path("").resolve() is the process CWD,
+    # which is a directory, so the is_dir() check below passes and every read silently
+    # succeeds against docket's own source tree. Proven in a live run: the recon agent
+    # listed app/backend/routers and read this repo's files instead of the scanned repo's,
+    # because core/recon.py built its ScanContext without source_root and the call sites
+    # pass `ctx.context.source_root or ""`. Failing closed here kills the class for every
+    # caller rather than one role at a time — and the message tells the model plainly,
+    # instead of handing it a plausible-looking wrong answer.
+    if not str(root).strip():
+        raise SourceAccessError(
+            "no source tree is available to this agent (source_root is unset). This is a "
+            "configuration error, not something you can work around by guessing paths."
+        )
     base = Path(root).resolve()
     if not base.is_dir():
         raise SourceAccessError(f"no source tree available at {root}")

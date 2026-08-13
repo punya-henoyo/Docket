@@ -69,6 +69,7 @@ def run_recon(
     model_override: Any = None,
     cancel: CancelToken = NEVER,
     on_agent: Callable[[dict[str, Any]], None] | None = None,
+    source_root: str | None = None,
 ) -> dict[str, Any] | None:
     """The attack surface, or None. Never raises: recon is enrichment, and a scan that
     already produced findings must not be lost because the mapper failed."""
@@ -91,6 +92,9 @@ def run_recon(
         config=config,
         model_override=model_override,
         sandbox=sandbox,
+        # Without this the host-side read_source/list_source/grep_source resolved
+        # `source_root or ""` to the CWD and mapped docket's own repository.
+        source_root=source_root,
     )
     if on_agent is not None:
         on_agent({"id": "recon", "role": "recon", "status": "running",
