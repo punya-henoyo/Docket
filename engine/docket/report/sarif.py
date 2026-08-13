@@ -198,12 +198,11 @@ def to_sarif(findings: list[Finding], *, target: str | None = None) -> dict:
 def leads_to_sarif(leads: list, verdicts: dict | None = None) -> dict:
     """SARIF for STATIC candidates — one result per (rule_id, file, line).
 
-    Separate from to_sarif() because the two key differently and must. Finding.dedupe_key
-    deliberately omits the line, so two hits of one rule in one file collapse inside
-    FindingStore.add and only ONE alert can ever exist for them. StaticFinding.key is
-    per-line. Emitting candidates as their own document keeps every flagged line
-    addressable as its own annotation without touching dedupe_key, which report/dedupe.py
-    pins with its own asserts.
+    Separate from to_sarif() because the two cover different populations: these are
+    CANDIDATES, and a candidate never becomes a Finding (AGENTS.md rule 10), so a run with
+    no sandbox has leads and no findings at all. Both are now per-line —
+    Finding.dedupe_key includes source_file, StaticFinding.key is (rule, file, line) — but
+    they stay two documents so a lead can never close a proven finding's alert.
 
     `leads` accepts docket.static.correlate.Lead objects or bare StaticFindings.
     `verdicts` optionally maps StaticFinding.key -> a verdict string, or a dict carrying

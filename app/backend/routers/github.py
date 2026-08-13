@@ -7,6 +7,7 @@ its own stdlib server; this is the same behaviour reachable from the one console
 """
 from __future__ import annotations
 
+import logging
 import secrets
 import threading
 import urllib.parse
@@ -18,6 +19,8 @@ from pydantic import BaseModel, Field
 
 from docket.core.cancel import CancelToken
 from docket.interface import connect
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -127,6 +130,14 @@ def auth_callback(code: str = "", state: str = ""):
         connect.SESSION.login = (connect._api("/user", token) or {}).get("login")
     except Exception:
         connect.SESSION.login = None       # a name is cosmetic; the token is what matters
+    # Save it, or the next restart logs the operator straight back out. connect.py
+    # persists on its own callback; this one did not, so the restore added to the
+    # lifespan would have had nothing to read. Both halves or neither.
+    # Written 0600 into docket_runs/, which is gitignored; DOCKET_NO_SESSION_FILE opts out.
+    try:
+        connect.persist_session()
+    except Exception as exc:  # noqa: BLE001 - losing persistence must not fail the login
+        log.warning("could not persist the session: %s", exc)
     # App.tsx watches for ?connected= and jumps to the repo picker.
     return RedirectResponse("/?connected=1", status_code=302)
 
@@ -256,3 +267,4 @@ def cancel_scan(request: CancelRequest) -> dict:
         raise HTTPException(409, f"scan already {state['status']}")
     cancel.cancel("stopped by the operator")
     return {"id": scan_id, "status": "cancelling"}
+

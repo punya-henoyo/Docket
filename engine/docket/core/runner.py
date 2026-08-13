@@ -285,6 +285,26 @@ def run_scan(
         per_agent_reserve_usd=cfg.max_child_cost_usd,
     )
     directory = run_dir(run_name)
+    # A store with no sink is a scan that measures and then throws the result away, and
+    # it fails SILENTLY: the scanners run, the coverage block fills in, and `findings[]`
+    # is empty — which reads exactly like a clean repository.
+    #
+    # Measured on kaizenmantra/vulnshop#20. connect.py:_scan_for_pr passed `store=store`
+    # and `on_finding=None`; semgrep found 17 hits inside the container INCLUDING the SQL
+    # injection the pull request introduced (app.py:64 and app.py:66, `errors: []`,
+    # `paths.scanned: ["/work/source/app.py"]` — all still on disk in
+    # docket_runs/pr-kaizenmantra-vulnshop-262561b/sandbox/artifacts/scanners/semgrep.json)
+    # and _run_scanner_prescans dropped every one of them at `if on_finding is not None`.
+    # report.json said finding_count 0, diff_runs read `findings[]`, the verdict was "No
+    # new findings", exit_code 0, and the autofix was then told there was nothing to fix.
+    # The PR check reported a pass over a live SQL injection it had already found.
+    #
+    # The two other callers (interface/main.py:96, connect.py:962) both pass a sink that
+    # is `store.add` with a display wrapper, so this default changes neither of them. It
+    # exists so the next caller cannot make the same mistake: if you hand run_scan a
+    # store, findings reach it unless you deliberately say otherwise.
+    if store is not None and on_finding is None and hasattr(store, "add"):
+        on_finding = store.add
     # Publish live run state so SDK hooks (which Runner.run calls deep inside, with no
     # way to inject a reference) and any attached viewer/TUI can see it.
     if store is not None:
@@ -352,9 +372,17 @@ def run_scan(
                     # "recon" and status OPEN so nothing mistakes them for a match.
                     from docket.core.surface_findings import candidates_to_findings
 
+                    # ONE sink, the same one the scanner prescan uses. This used to call
+                    # store.add() here AND on_finding(), and every real caller's
+                    # on_finding already ends in store.add (interface/main.py:96 wraps it,
+                    # connect.py:962 `publish` calls it) — so every recon candidate was
+                    # added twice. The second add takes FindingStore.add's "already seen"
+                    # branch with `existing is candidate`, which appends the candidate's
+                    # own PoC to its own corroborating_evidence: a lead that appears to
+                    # corroborate itself. Routing through the single sink removes that and
+                    # keeps a store-only caller working, because run_scan now defaults
+                    # on_finding to store.add above.
                     for candidate in candidates_to_findings(recon_surface):
-                        if store is not None:
-                            store.add(candidate)
                         if on_finding is not None:
                             on_finding(candidate)
                 if recon_surface and on_surface is not None:

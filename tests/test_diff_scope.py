@@ -153,10 +153,93 @@ def test_run_scan_reports_the_suppressed_count() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_a_store_with_no_sink_never_silently_swallows_findings() -> None:
+    """A scan handed a store must not report zero findings when the scanner found some.
+
+    THE BUG THIS EXISTS TO CATCH, measured on kaizenmantra/vulnshop#20:
+    connect.py:_scan_for_pr called run_scan with `store=store` and `on_finding=None`.
+    Semgrep ran inside the container and found 17 hits including the SQL injection the
+    pull request introduced (app.py:64 and app.py:66); `_run_scanner_prescans` dropped
+    every one of them at `if on_finding is not None`. report.json said finding_count 0,
+    report/diff.diff_runs reads `findings[]`, and the verdict came back "No new findings",
+    exit_code 0 — a green PR check over a live SQL injection docket had already found.
+    It fails SILENTLY, which is what makes it worth a test: the coverage block still said
+    one file scanned and zero errors, so nothing on screen looked wrong.
+
+    Docker-free: the Sandbox is replaced with a stub, so this exercises the wiring
+    (does what the scanner produced reach the store?) and nothing else.
+    """
+    from docket.core import runner
+    from docket.report.dedupe import FindingStore
+    from docket.report.models import Finding, Location, PoC, Severity
+
+    def lead(rule: str, line: int) -> Finding:
+        return Finding(
+            rule_id=f"semgrep/{rule}", title=f"{rule} in app.py", severity=Severity.HIGH,
+            location=Location(method="STATIC", path="app.py", source_file=f"app.py:{line}"),
+            description="static", poc=PoC(request=f"line {line}", response="match"),
+            discovered_by="semgrep",
+        )
+
+    class StubSandbox:
+        """Enough of runtime.Sandbox for run_scan; starts no container."""
+
+        def __init__(self, run_dir, source_dir=None):
+            self.run_dir, self.source_dir = Path(run_dir), source_dir
+
+        def start(self):
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+
+        def stop(self):
+            pass
+
+    def fake_prescans(sandbox, target_url, run_dir_, on_finding, on_stage=None, **kw):
+        # Exactly what the real one does with what a scanner produced.
+        for finding in (lead("sqli", 64), lead("tainted-sql-string", 66)):
+            if on_finding is not None:
+                on_finding(finding)
+
+    tmp = Path(tempfile.mkdtemp())
+    cwd = Path.cwd()
+    real_sandbox, real_prescans = runner.Sandbox, runner._run_scanner_prescans
+    try:
+        os.chdir(tmp)
+        (tmp / "src").mkdir()
+        (tmp / "src" / "app.py").write_text("x = 1\n")
+        runner.Sandbox, runner._run_scanner_prescans = StubSandbox, fake_prescans
+
+        # on_finding OMITTED — the exact shape _scan_for_pr used.
+        store = FindingStore()
+        runner.run_scan(None, run_name="sink-default", use_sandbox=True, static_only=True,
+                        discovery=False, store=store, whitebox_path=str(tmp / "src"))
+        assert len(store.findings()) == 2, (
+            "a store passed to run_scan must receive scanner findings even when the "
+            f"caller omits on_finding; got {len(store.findings())}"
+        )
+
+        # An EXPLICIT sink still wins, and is not called twice.
+        seen: list = []
+        store2 = FindingStore()
+        runner.run_scan(None, run_name="sink-explicit", use_sandbox=True, static_only=True,
+                        discovery=False, store=store2, whitebox_path=str(tmp / "src"),
+                        on_finding=lambda f: (seen.append(f), store2.add(f))[0])
+        assert len(seen) == 2, seen
+        assert len(store2.findings()) == 2, store2.findings()
+        # Nothing corroborates itself: a double add would append a finding's own PoC to
+        # its own corroborating_evidence, which is what the removed recon store.add did.
+        assert all(not f.corroborating_evidence for f in store2.findings()), \
+            "a finding was added to the store twice"
+    finally:
+        runner.Sandbox, runner._run_scanner_prescans = real_sandbox, real_prescans
+        os.chdir(cwd)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_scope_of_one_file_suppresses_the_other_two()
     test_missing_scope_file_raises()
     test_empty_scope_file_yields_zero_not_everything()
     test_filter_still_applies_after_the_empty_sarif_fall_through()
     test_run_scan_reports_the_suppressed_count()
+    test_a_store_with_no_sink_never_silently_swallows_findings()
     print("test_diff_scope: ok")

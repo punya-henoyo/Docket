@@ -133,8 +133,31 @@ class Finding(BaseModel):
     @property
     def dedupe_key(self) -> str:
         """Same (rule, route, param) from two agents/payloads -> same key. Reused verbatim
-        as the SARIF partialFingerprints value (docket/report/sarif.py)."""
-        raw = f"{self.rule_id}|{self.location.method}|{self.location.path}|{self.location.parameter or ''}"
+        as the SARIF partialFingerprints value (docket/report/sarif.py).
+
+        `source_file` IS PART OF THE KEY WHEN THERE IS ONE, and that is a correction to a
+        measured false negative, not a refinement. It is `path:line`, so a static finding's
+        identity is its LINE; a dynamic finding has no source_file (an agent works from the
+        outside and has no reason to know which line it reached), so route/param dedupe is
+        untouched — which is the job this key was written for.
+
+        Without it, two hits of one rule in one file collapsed here and only ONE could ever
+        reach the report. Measured on kaizenmantra/vulnshop#20: the pull request adds a
+        `/coupon` route with `cur.execute("... '%s'" % code)`, and app.py already carried
+        those same rules at lines 31, 32, 36 and 37. semgrep found the new hits at app.py:64
+        and app.py:66, FindingStore.add discarded every one of them as a duplicate of the
+        older line, and the head report came back byte-identical to the base report — 8
+        findings each. diff_runs had nothing to compare, so a pull request that introduces
+        SQL injection reported "No new findings", exit_code 0.
+        report/diff.finding_key already fixed this for DIFFING by keying on the matched
+        snippet, and it never got the chance: the second instance was gone before the
+        report was written.
+
+        merge_static() runs before the store and folds the several rules that match ONE
+        line into one finding, so this makes the store per-line, not per-match.
+        """
+        raw = (f"{self.rule_id}|{self.location.method}|{self.location.path}"
+               f"|{self.location.parameter or ''}|{self.location.source_file or ''}")
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 

@@ -63,7 +63,9 @@ GITHUB_API = "https://api.github.com"
 # frontend path helper, and this module is imported by the service loop. Same regexes,
 # same reason — both values are interpolated into an api.github.com path, so a stray
 # "../" or a scheme here would be a path-traversal / SSRF primitive.
-_FULL_NAME = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+# The lookaheads reject a segment of "." or ".."; the char class allows dots because
+# `owner/.github` is a real repository, and without them "../evil" matched in full.
+_FULL_NAME = re.compile(r"^(?!\.\.?/)[A-Za-z0-9._-]+/(?!\.\.?$)[A-Za-z0-9._-]+$")
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 # GitHub rejects more than 50 annotations in one check-run request. Batching lives in

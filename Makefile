@@ -13,10 +13,13 @@ help:
 install:
 	uv sync
 
-# The console is a Vite/React app; connect.py serves its build output from
-# frontend/dist. Needs Node. `docket connect` prints a build hint if dist/ is absent.
+# The console is a Vite/React app. BOTH servers serve the same build output at
+# app/frontend/dist: connect.py via resource_paths.frontend_dir(), and app/run.py via
+# app.backend.main.FRONTEND_DIST. This target said `cd frontend` until it was noticed —
+# a stale path from when there were two consoles, which cost real debugging time by
+# implying `docket connect` had no UI to serve. It has; it is this one.
 console:
-	cd frontend && npm install && npm run build
+	cd app/frontend && npm install && npm run build
 
 image:
 	docker build -f containers/Dockerfile -t docket-sandbox:latest .

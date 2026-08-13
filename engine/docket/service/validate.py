@@ -102,7 +102,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -242,15 +242,53 @@ def scan_tree(root: str | Path, *, timeout_sec: int = 600) -> ScanOutcome:
 
 
 def validate_patch(*, base_root: str | Path, patched_root: str | Path,
-                   target_key: tuple[str, str, int], timeout_sec: int = 600,
+                   target_key: tuple[str, str, int],
+                   in_scope_keys: Iterable[tuple[str, str, int]] | None = None,
+                   timeout_sec: int = 600,
                    scan: Callable[..., ScanOutcome] = scan_tree) -> Validation:
     """target_key is StaticFinding.key — (rule_id, file, line).
 
     `scan` is injectable so the gates are testable with no semgrep installed. It is
     keyword-only and defaults to the real runner: a caller cannot accidentally supply a
     different scanner for one tree, because it is used for both.
+
+    `in_scope_keys` IS WHAT MAKES A PULL-REQUEST FIX VERIFIABLE AT ALL
+    -----------------------------------------------------------------
+    Without it, gate 2 demands the target's rule fire NOWHERE in the file and gate 3
+    forgives a co-vanishing hit only at the target's exact line. On a file with a
+    backlog — which is every real file — that combination makes a CORRECT fix
+    unverifiable, and this was measured, not predicted. On kaizenmantra/vulnshop#20 the
+    pull request adds a `/coupon` route whose `cur.execute("... '%s'" % code)` fires five
+    rules across app.py:64 (the taint source line) and app.py:66 (the sink). The same
+    app.py ALREADY has SQL injection at lines 31, 32, 36 and 37, which #20 did not
+    introduce and a fix to #20 must not touch. Hand-writing the textbook fix
+    (`cur.execute("... = ?", (code,))`) and running the gates gave `not_fixed` /
+    `target_absent` for ALL FIVE possible target keys, with `target_still_firing_at`
+    [31, 32] or [36] or [37] — the backlog — plus gate 3 failing on the OTHER four hits
+    the same one-line fix legitimately cleared. Nothing could ever have shipped.
+
+    So the caller may name the keys THIS pull request introduced — `verdict["new"]`,
+    expanded over `merged_rules` — and the two gates read them as follows:
+
+      gate 2  the target's rule may still fire at a line where it ALREADY fired before
+              the patch and which is out of scope. Anywhere else, including a NEW line,
+              still fails: that is the moved-sink fail-open, and it stays closed.
+      gate 3  each in-scope key is one hit that may legitimately vanish. Losing MORE
+              hits of that rule than were in scope is still collateral and still fails,
+              so a file that quietly stopped being parsed is still caught.
+
+    Omitting it keeps the whole-file reading of workflow.md:50-52 ("fix the siblings
+    too"), which is right for a repo-wide fix campaign and wrong for a diff gate.
+
+    # ponytail: with a scope given, a patch that clears the target but leaves a DIFFERENT
+    # in-scope finding alive still passes — gate 2 only ever looks at the target's own
+    # rule. Accepted: fixes are attempted one finding at a time, the survivor is still
+    # `new` so the check still blocks, and the next pass takes it. Tighten by failing on
+    # any surviving in-scope key if one-pass-fixes-everything ever becomes the goal.
     """
     target = _norm_key(target_key)
+    scope = (None if in_scope_keys is None
+             else {_norm_key(key) for key in in_scope_keys} | {target})
     before = scan(base_root, timeout_sec=timeout_sec)
     after = scan(patched_root, timeout_sec=timeout_sec)
 
@@ -301,17 +339,32 @@ def validate_patch(*, base_root: str | Path, patched_root: str | Path,
     exempt = Counter(_pair(key) for key in before.keys
                      if (key[1], key[2]) == (target[1], target[2]))
     target_pair = _pair(target)
-    # The target's own rule in that file is gate 2's business, and gate 2 demands it reach
-    # zero everywhere in the file (workflow.md:50-52, fix the siblings too). Gate 3 must
-    # not punish the fix for obeying that.
-    exempt[target_pair] = before_pairs[target_pair]
+    if scope is None:
+        # The target's own rule in that file is gate 2's business, and gate 2 demands it
+        # reach zero everywhere in the file (workflow.md:50-52, fix the siblings too).
+        # Gate 3 must not punish the fix for obeying that.
+        exempt[target_pair] = before_pairs[target_pair]
+    else:
+        # One forgiven hit per in-scope key, counted rather than blanket-exempted by pair:
+        # clearing the two hits this pull request introduced is the fix, clearing a third
+        # hit of the same rule from the backlog is collateral and must still fail.
+        for key in scope:
+            exempt[_pair(key)] += 1
+
+    # Hits of the target's rule that were ALREADY in this file before the patch and are
+    # not this pull request's to fix. Gate 2 forgives exactly these and nothing else — a
+    # hit at a line that was not firing before is a moved sink, not a backlog entry.
+    preexisting = (frozenset() if scope is None else
+                   frozenset(key for key in before.keys
+                             if _pair(key) == target_pair and key not in scope))
 
     lost = {pair: count - after_pairs[pair] for pair, count in before_pairs.items()
             if after_pairs[pair] < count}
     gained = {pair: count - before_pairs[pair] for pair, count in after_pairs.items()
               if count > before_pairs[pair]}
     unexpected = {pair: count for pair, count in lost.items() if count > exempt[pair]}
-    still_firing = sorted(key for key in after.keys if _pair(key) == target_pair)
+    still_firing = sorted(key for key in after.keys
+                          if _pair(key) == target_pair and key not in preexisting)
 
     evidence |= {
         # [rule_id, file, how many hits were lost/gained], not keys: the comparison is at
@@ -326,6 +379,11 @@ def validate_patch(*, base_root: str | Path, patched_root: str | Path,
         # The lines the target's rule still fires at, which is what gate 2 rejects and the
         # one thing the agent can act on.
         "target_still_firing_at": [key[2] for key in still_firing],
+        # Named so a reader of the report can tell "gate 2 passed" from "gate 2 passed
+        # because four hits of this rule were somebody else's backlog".
+        "out_of_scope_preexisting_at": sorted(key[2] for key in preexisting),
+        "in_scope_keys": ([] if scope is None
+                          else [list(key) for key in sorted(scope)][:MAX_LISTED]),
     }
 
     gates["target_absent"] = not still_firing
@@ -393,6 +451,62 @@ def demo() -> None:
                                           outcome((target[0], target[1], 9), other)))
     assert unfixed.status == NOT_FIXED and unfixed.failed_gate == "target_absent", unfixed
     assert unfixed.evidence["target_still_firing_at"] == [9], unfixed.evidence
+
+    # --- in_scope_keys: a pull-request fix on a file that has a backlog -------------
+    # The shape measured on kaizenmantra/vulnshop#20. The pull request introduces the
+    # target plus a second rule on a NEARBY line (semgrep reports the taint source line
+    # and the sink line separately); the same file already carries the target's own rule
+    # at two OTHER lines, which the pull request did not add and its fix must not touch.
+    sibling: Key = ("python.lang.security.cmdi", "app/db.py", 4)   # in scope, other line
+    backlog_a: Key = (target[0], target[1], 31)                    # NOT in scope
+    backlog_b: Key = (target[0], target[1], 32)
+    dirty = outcome(target, sibling, backlog_a, backlog_b, other)
+    after_fix = outcome(backlog_a, backlog_b, other)
+
+    # Without a scope this correct fix is unverifiable, and that is the whole reason the
+    # parameter exists: gate 2 sees the backlog and gate 3 sees the sibling.
+    unscoped = validate_patch(base_root="a", patched_root="b", target_key=target,
+                              scan=scanner(dirty, after_fix))
+    assert unscoped.status == NOT_FIXED, unscoped
+    assert unscoped.failed_gate == "target_absent", unscoped.failed_gate
+    assert unscoped.evidence["target_still_firing_at"] == [31, 32], unscoped.evidence
+
+    scoped = validate_patch(base_root="a", patched_root="b", target_key=target,
+                            in_scope_keys=[target, sibling],
+                            scan=scanner(dirty, after_fix))
+    assert scoped.status == VERIFIED, scoped
+    assert scoped.evidence["out_of_scope_preexisting_at"] == [31, 32], scoped.evidence
+
+    # A MOVED SINK is still not a fix. The rule reappears at a line that was not firing
+    # before, so it is not forgiven as backlog — this is the fail-open the scope must not
+    # open, and it is the one thing the relaxation could plausibly have broken.
+    relocated = validate_patch(
+        base_root="a", patched_root="b", target_key=target,
+        in_scope_keys=[target, sibling],
+        scan=scanner(dirty, outcome((target[0], target[1], 77), backlog_a, backlog_b, other)))
+    assert relocated.status == NOT_FIXED, relocated
+    assert relocated.failed_gate == "target_absent", relocated.failed_gate
+    assert relocated.evidence["target_still_firing_at"] == [77], relocated.evidence
+
+    # Losing MORE hits of an in-scope rule than were in scope is still collateral: one
+    # `cmdi` hit was introduced, so a patch that clears two of them broke something.
+    extra_cmdi: Key = ("python.lang.security.cmdi", "app/db.py", 90)
+    greedy = validate_patch(
+        base_root="a", patched_root="b", target_key=target,
+        in_scope_keys=[target, sibling],
+        scan=scanner(outcome(target, sibling, extra_cmdi, backlog_a, backlog_b, other),
+                     after_fix))
+    assert greedy.status == NOT_FIXED, greedy
+    assert greedy.failed_gate == "nothing_else_vanished", greedy.failed_gate
+
+    # And a scope never rescues a broken file: gate 5 is measured, not scoped.
+    still_broken = validate_patch(
+        base_root="a", patched_root="b", target_key=target,
+        in_scope_keys=[target, sibling],
+        scan=scanner(dirty, ScanOutcome(keys=frozenset({backlog_a, backlog_b, other}),
+                                        files_scanned=10, parse_errors=1)))
+    assert still_broken.status == NOT_FIXED, still_broken
+    assert still_broken.failed_gate == "parse_errors_not_increased", still_broken.failed_gate
 
     # --- THE TRAP: a syntax error makes the file report zero findings ---------------
     # Every finding in the file vanishes, so gate 3 catches what gate 2 alone would have

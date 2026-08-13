@@ -16,6 +16,7 @@ fires real exploit payloads, so it must never be reachable from anything but thi
 """
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,8 +28,23 @@ from app.backend.routers import github, runs, service
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 
+log = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Reload the saved GitHub session BEFORE serving. Without this the OAuth token
+    # lives only in connect.SESSION, so every restart of this console logs the operator
+    # out: /api/session reports connected:false, the repo list comes back empty, and the
+    # scan form has nothing to offer. connect.py already restores on its own startup;
+    # this console never did, which is the twin-server divergence again.
+    try:
+        from docket.interface import connect
+
+        if connect.restore_session():
+            log.info("restored the saved GitHub session")
+    except Exception as exc:  # noqa: BLE001 - a console that cannot restore must still boot
+        log.warning("could not restore the saved session: %s", exc)
     yield
     # A scan outliving the server would keep a container up and keep writing to a run
     # directory nothing is watching.

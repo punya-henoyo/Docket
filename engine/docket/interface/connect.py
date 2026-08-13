@@ -68,7 +68,16 @@ GITHUB_API = "https://api.github.com"
 # "owner/repo" exactly. Anything else never reaches a URL or the filesystem: this value
 # arrives from the browser and is interpolated into an api.github.com path, so a stray
 # "../" or scheme here would be a path-traversal / SSRF primitive.
-_FULL_NAME = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+#
+# The lookaheads reject a segment that is "." or "..", and they are load-bearing rather
+# than belt-and-braces: the char class allows dots, because `owner/.github` is a real
+# repository, and WITHOUT them "../evil" matched this pattern in full. It reached
+# `/repos/../evil/pulls` — urllib sends a path literally, so what that resolves to is up
+# to whatever normalises it next. The demo only tested three-segment traversals
+# ("../../etc/passwd"), which the single slash already rejects, so the two-segment case
+# went unnoticed. `..` in a REF has always been refused explicitly (valid_ref below);
+# this is the same refusal on the other half of every URL built here.
+_FULL_NAME = re.compile(r"^(?!\.\.?/)[A-Za-z0-9._-]+/(?!\.\.?$)[A-Za-z0-9._-]+$")
 
 # A git ref: branch, tag or commit SHA. Slashes are legal and common ("feat/x"), which
 # is exactly why this needs its own check rather than reusing _FULL_NAME — it is
@@ -212,7 +221,7 @@ def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
             target_url=None, whitebox_path=str(source), run_name=run_name,
             use_sandbox=True, store=store, static_only=True,
             triage_max=triage_max, recon=recon, scope_paths=paths,
-            budget_usd=budget_usd, on_finding=None,
+            budget_usd=budget_usd, on_finding=store.add,
         )
         out_dir = run_path(run_name)
         write_report(store, out_dir, run_name=run_name,
@@ -259,28 +268,102 @@ def open_fix_pr(full_name: str, token: str, *, base_sha: str, base_ref: str,
     })
 
 
-def attempt_autofix(ref: Any, verdict: dict[str, Any]) -> dict[str, Any]:
-    """Try to fix what a pull request introduced, and open a PR only if it is proven.
+def _repo_relative(finding: dict[str, Any]) -> dict[str, Any]:
+    """The same finding with container paths rebased to repo-relative.
 
-    Runs against the HEAD commit, patching the fetched source on the host — the
-    container mount is read-only but the extracted tree is not, so no agent ever needs
-    a write tool.
+    Semgrep runs inside the sandbox, so it reports `/work/source/app.py:66`.
+    `report.writer.parse_source_file` rejects any path starting with "/" (it cannot tell a
+    route from a file), so service/fix.py's `_fixable` saw no anchor and skipped EVERY
+    finding a sandboxed scan produced — the autofix would report "nothing to fix" on a
+    verdict full of patchable findings. core/remediation.py:attempt_fix already stripped
+    this prefix inline; this is the same strip, hoisted so both paths share it.
+    """
+    location = dict(finding.get("location") or {})
+    for field_name in ("source_file", "path"):
+        if isinstance(location.get(field_name), str):
+            location[field_name] = location[field_name].replace("/work/source/", "")
+    return finding | {"location": location}
+
+
+def autofix_target_key(finding: dict[str, Any]) -> tuple[str, str, int] | None:
+    """`(rule_id, repo-relative file, line)` — what validate_patch calls a target key."""
+    from docket.report.writer import parse_source_file
+
+    parsed = parse_source_file((_repo_relative(finding).get("location") or {})
+                               .get("source_file"))
+    if not parsed or not finding.get("rule_id"):
+        return None
+    return (str(finding["rule_id"]), parsed[0], parsed[1])
+
+
+def autofix_scope_keys(findings: list[dict[str, Any]]) -> list[tuple[str, str, int]]:
+    """Every scanner key this pull request INTRODUCED — `validate_patch(in_scope_keys=)`.
+
+    `merged_rules` is expanded, not ignored: `report/dedupe.merge_static` folds the several
+    rules that match one line into a single Finding carrying one `rule_id` and the rest in
+    `merged_rules`, and validate_patch compares against raw semgrep keys where all of them
+    are separate. Without the expansion the four rules that fire on vulnshop#20's
+    `cur.execute(... % code)` would arrive as one in-scope key, three of the four hits the
+    fix legitimately clears would read as collateral, and gate 3 would refuse it.
+    """
+    keys: list[tuple[str, str, int]] = []
+    for finding in findings:
+        key = autofix_target_key(finding)
+        if key is None:
+            continue
+        rules = [str(r) for r in (finding.get("merged_rules") or []) if r] or [key[0]]
+        keys.extend((rule, key[1], key[2]) for rule in rules)
+    return keys
+
+
+def attempt_autofix(ref: Any, verdict: dict[str, Any], *,
+                    dry_run: bool = False) -> dict[str, Any]:
+    """Try to fix what a pull request introduced, and open a PR only if it is PROVEN.
 
     Only findings from a deterministic scanner are attempted. An agent candidate like
     "no authorization on /orders" has no single line to replace and its fix is a design
     decision; proposing a patch for it would be guessing at architecture.
+
+    TWO THINGS CHANGED HERE, AND BOTH ARE THE POINT
+    -----------------------------------------------
+    1. THE PROOF IS `service/validate.py`, NOT A SECOND `run_scan`. What this used to do
+       was call `core.remediation.attempt_fix` with a `rescan` closure that ran a full
+       `run_scan(use_sandbox=True)` over the patched tree — TWICE per finding, each one a
+       container start, a trivy pass and a semgrep pass, to answer one narrow question.
+       `service/fix.fix_findings` already answers it: it copies the tree per finding so
+       the pristine one is never written, routes every byte through
+       `source_write.propose_edit` (which strips `NN: ` display prefixes, refuses an
+       ambiguous anchor, denies `.github/`, `.env*`, `*.pem`, `*.key` and lockfiles,
+       refuses a reformat-only change and refuses an added `# nosemgrep`), derives the
+       diff by comparing the two trees rather than believing the model, and hands both
+       trees to `validate_patch` — seven gates, semgrep host-side via uvx, no Docker.
+       Fewer moving parts, no container, and the suppression refusal that no scanner
+       comparison can ever catch by itself.
+    2. THE PULL REQUEST IS OPENED BY `service/delivery.py:_fix_pr`, not by `open_fix_pr`
+       below. `_fix_pr` READS FIRST — `GET /pulls?head=owner:branch&state=all` — so a
+       re-run adopts its own branch instead of littering the repo, refuses
+       `base_commit_stale` when the pull request has moved off the commit that was
+       validated, and takes its base from the pull request's OWN head branch so the fix
+       merges into it rather than competing with it against main. `open_fix_pr` does none
+       of those three: it mints a random branch suffix every call, never re-reads the
+       head sha, and falls back to `base_ref or "main"`.
+
+    `dry_run=True` does everything except the write: same fetch, same agent, same seven
+    gates, and it returns what WOULD have been opened. Nothing reaches GitHub.
     """
+    from functools import partial
+
     from docket.config.settings import Config
-    from docket.core.remediation import attempt_fix
-    from docket.core.runner import run_scan
-    from docket.report.dedupe import FindingStore
+    from docket.core.paths import run_path
     from docket.report.diff import DETERMINISTIC_SOURCES
+    from docket.service.fix import VERIFIED, fix_findings
+    from docket.service.validate import validate_patch
 
     token = SESSION.token
     if not token:
         return {"opened": False, "note": "GitHub is not connected"}
 
-    fixable = [f for f in (verdict.get("new") or [])
+    fixable = [_repo_relative(f) for f in (verdict.get("new") or [])
                if str(f.get("discovered_by", "")) in DETERMINISTIC_SOURCES]
     if not fixable:
         return {"opened": False,
@@ -290,54 +373,56 @@ def attempt_autofix(ref: Any, verdict: dict[str, Any]) -> dict[str, Any]:
     workdir = Path(tempfile.mkdtemp(prefix="docket-fix-"))
     try:
         source = fetch_source(ref.repo, token, workdir, ref.head_sha)
-        config = Config.from_env()
-
-        def rescan(paths: list[str]) -> dict[str, Any] | None:
-            """Scanners only, over the patched tree. No agents: the question here is
-            narrow and factual — did this line stop matching — and an agent would add
-            cost and non-determinism to a comparison that must be exact."""
-            store = FindingStore()
-            name = f"fixcheck-{ref.repo.replace('/', '-')}-{secrets.token_hex(3)}"
-            from docket.core.paths import run_path
-            from docket.report.writer import write_report
-
-            result = run_scan(target_url=None, whitebox_path=str(source),
-                              run_name=name, use_sandbox=True, store=store,
-                              static_only=True, triage_max=0, recon=False,
-                              scope_paths=paths)
-            out = run_path(name)
-            write_report(store, out, run_name=name,
-                         target=f"github:{ref.repo}@{ref.head_sha}",
-                         coverage=read_coverage(out / "sandbox"),
-                         summary=result.summary, success=result.success)
-            return json.loads((out / "report.json").read_text())
-
-        attempt = attempt_fix(fixable[0], root=source, config=config, rescan=rescan)
-        if not attempt.deliverable:
+        run_dir = run_path(f"autofix-{ref.repo.replace('/', '-')}-{ref.number}-"
+                           f"{ref.head_sha[:7]}")
+        # THE SCOPE IS WHY THIS VERIFIES AT ALL — see validate_patch's docstring. Gate 2
+        # is file-level by default, so on any file with a pre-existing finding of the same
+        # rule (vulnshop's app.py has four) a CORRECT fix reports not_fixed and nothing
+        # can ever ship. `verdict["new"]` is exactly the set the pull request introduced,
+        # which is exactly the set the patch is allowed to clear. `validate` is already an
+        # injectable seam in fix_findings, so this needs no change there.
+        validate = partial(validate_patch, in_scope_keys=autofix_scope_keys(fixable))
+        # max_fixes=1: one finding per pull request per pass. The watcher runs again on
+        # the next push, and a reviewer reads one small diff sooner than three.
+        patches = fix_findings({"findings": fixable}, source_root=source,
+                               run_dir=run_dir, config=Config.from_env(), max_fixes=1,
+                               validate=validate)
+        if not patches:
             return {"opened": False,
-                    "note": attempt.note or "the fix could not be verified"}
+                    "note": "no finding carried a file:line anchor to patch"}
 
-        patched = (source / attempt.patch.path).read_text()
-        branch = f"docket/fix-{ref.number}-{secrets.token_hex(3)}"
-        gates = ", ".join(k for k, ok in attempt.verification.gates.items() if ok)
-        pull = open_fix_pr(
-            ref.repo, token, base_sha=ref.head_sha, base_ref=ref.base_ref or "main",
-            path=attempt.patch.path, content=patched, branch=branch,
-            title=f"Fix: {attempt.patch.why or 'security finding'} (#{ref.number})",
-            body=(
-                f"Fixes a finding docket reported on #{ref.number}.\n\n"
-                f"**What changed** — {attempt.patch.why}\n\n"
-                f"**Verified by re-scanning.** The finding is present before the patch "
-                f"and absent after, nothing else disappeared, no new findings appeared, "
-                f"parse errors did not rise, coverage did not shrink, and the file still "
-                f"parses.\n\nGates passed: `{gates}`\n\n"
-                f"<sub>Branched from {ref.head_sha[:7]}, the exact commit that was "
-                f"scanned and verified. Written by docket; review it as you would any "
-                f"patch.</sub>"
-            ),
-        )
-        return {"opened": True, "url": (pull or {}).get("html_url"),
-                "number": (pull or {}).get("number"), "note": attempt.patch.why}
+        patch = patches[0]
+        result: dict[str, Any] = {
+            "opened": False, "status": patch.status, "key": patch.key,
+            "outcome": patch.outcome, "validation": patch.validation,
+            "note": patch.summary, "dry_run": dry_run,
+            "files": [c["path"] for c in patch.files],
+        }
+        if patch.status != VERIFIED:
+            # unverified_plausible is DISPLAY ONLY and is labelled as such here, at the
+            # one place a caller reads: a pull request is the wrong vehicle for a patch
+            # nobody re-tested, because a diff in a review queue reads as "this is the
+            # fix" whatever the description says.
+            result["note"] = f"{patch.status} (NOT verified): {patch.summary}"
+            return result
+        if dry_run:
+            result["note"] = f"verified_fixed, not opened (dry run): {patch.summary}"
+            return result
+
+        from docket.interface.scm import GitHubApp
+        from docket.service.delivery import _fix_pr
+
+        # OAuth mode: everything _fix_pr needs — reads, a branch, a commit, a pull
+        # request — is writable by a user-to-server token with the `repo` scope. Only
+        # check runs are not, and _fix_pr creates none.
+        opened = _fix_pr(GitHubApp(oauth_token=token), ref.repo, int(ref.number),
+                         ref.head_sha, patch, patch.key)
+        return result | {"opened": True, "url": opened.get("url"),
+                         "number": opened.get("number"),
+                         "adopted": opened.get("adopted"),
+                         "branch": opened.get("branch"),
+                         "note": ("adopted the existing fix PR" if opened.get("adopted")
+                                  else patch.summary)}
     except Exception as exc:  # noqa: BLE001 — a failed fix must not sink the verdict
         return {"opened": False, "note": f"{type(exc).__name__}: {exc}"}
     finally:
@@ -369,23 +454,64 @@ def _watch_loop() -> None:
         with SESSION.lock:
             SESSION.watch["last_poll"] = time.time()
         payload = _api(f"/repos/{repo}/pulls?state=open&per_page=50", SESSION.token)
+        # Reconcile the board against reality. A pull request closed or merged on GitHub
+        # vanishes from this list, and nothing else ever writes its row again — so an
+        # in-progress row for it sat at `scanning: true` forever, claiming to be working
+        # on something that no longer exists. This is the only place the open set is
+        # known, so it is the only place that can tell.
+        open_numbers = {int(pr.get("number")) for pr in (payload or [])
+                        if isinstance(pr, dict) and str(pr.get("number", "")).isdigit()}
+        with SESSION.lock:
+            for row in SESSION.watch.get("results") or []:
+                if row.get("repo") != repo or not row.get("scanning"):
+                    continue
+                if int(row.get("number") or 0) in open_numbers:
+                    continue
+                # Not an error and not a verdict: nobody judged this code. Saying
+                # "closed" is the honest record; calling it clean would be a lie, and
+                # leaving it spinning was the bug.
+                row["scanning"] = False
+                row["reason"] = "the pull request was closed or merged before the scan finished"
+                row["exit_code"] = None
         return payload, {}
+
+    from docket.core.pr_service import PullRequestOutcome
 
     def handle(ref):
         record_watch_result(ref, {}, {}, scanning=True)
-        outcome = scan_pull_request(
-            ref, token=SESSION.token or "", fetch_files=changed_files,
-            scan=_scan_for_pr, baselines=baselines, post=_post_for_pr,
-            triage_max=int(SESSION.watch.get("triage_max") or 5),
-        )
-        posted = dict(outcome.posted)
-        # Only on a blocking verdict. Opening a fix PR for a check that passed is
-        # noise, and the whole point of blocking is that something needs doing.
-        if (outcome.ok and outcome.verdict.get("exit_code") == 2
-                and SESSION.watch.get("autofix")):
-            fix = attempt_autofix(ref, outcome.verdict)
-            posted["autofix"] = (f"opened #{fix['number']}" if fix.get("opened")
-                                 else f"not opened — {fix.get('note', '')}"[:120])
+        # EVERYTHING between the two record_watch_result calls is guarded, because
+        # `scanning` is cleared ONLY by the second one and nothing else ever writes it.
+        # A raise in between left the row reading `scanning: true, error: null` forever —
+        # a dead scan and a slow scan were indistinguishable on screen, which is the same
+        # fail-open as a scanner whose crash reads as a clean result. Worse, watch_forever
+        # has no handler around handle(), so the exception also killed the watcher thread
+        # and every later pull request went unscanned in silence.
+        try:
+            outcome = scan_pull_request(
+                ref, token=SESSION.token or "", fetch_files=changed_files,
+                scan=_scan_for_pr, baselines=baselines, post=_post_for_pr,
+                triage_max=int(SESSION.watch.get("triage_max") or 5),
+            )
+            posted = dict(outcome.posted)
+            # Only on a blocking verdict. Opening a fix PR for a check that passed is
+            # noise, and the whole point of blocking is that something needs doing.
+            if (outcome.ok and outcome.verdict.get("exit_code") == 2
+                    and SESSION.watch.get("autofix")):
+                fix = attempt_autofix(ref, outcome.verdict)
+                posted["autofix"] = (f"opened #{fix['number']}" if fix.get("opened")
+                                     else f"not opened — {fix.get('note', '')}"[:120])
+        except Exception as exc:  # noqa: BLE001 — one bad PR must not sink the watcher
+            logger.exception("scan of %s#%s failed", getattr(ref, "repo", "?"),
+                             getattr(ref, "number", "?"))
+            detail = f"{type(exc).__name__}: {exc}"
+            # exit_code 1 is ERROR, not 0/clean and not 2/findings. A scan that did not
+            # finish has not cleared anything, and saying so is the whole point.
+            record_watch_result(ref, {"exit_code": 1, "reason": f"scan failed: {detail}"},
+                                {}, error=detail)
+            # Returned, not raised: watch_forever leaves a not-ok outcome unmarked in
+            # `seen`, so the next poll retries this pull request instead of skipping it
+            # forever, and the loop lives on to scan the others.
+            return PullRequestOutcome(ref, {}, error=detail)
         record_watch_result(ref, outcome.verdict, posted, outcome.error)
         return outcome
 
@@ -427,7 +553,7 @@ def start_watching(repos: list[str], interval_sec: int = 30) -> dict[str, Any]:
             "enabled": True, "repos": repos, "error": None,
             "interval_sec": max(10, int(interval_sec)),
         })
-    _persist_session()
+    persist_session()
     if _WATCH_THREAD is None or not _WATCH_THREAD.is_alive():
         _WATCH_STOP.clear()
         _WATCH_THREAD = threading.Thread(target=_watch_loop, name="docket-pr-watch",
@@ -441,7 +567,7 @@ def stop_watching() -> dict[str, Any]:
     with SESSION.lock:
         SESSION.watch["enabled"] = False
         SESSION.watch["next_poll"] = None
-    _persist_session()
+    persist_session()
     return watch_state()
 
 
@@ -1514,7 +1640,7 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 SESSION.login = (_api("/user", token) or {}).get("login")
             except urllib.error.URLError:
                 SESSION.login = None
-            _persist_session()
+            persist_session()
             self._redirect("/?connected=1")
 
         def _repos(self) -> None:
@@ -1542,7 +1668,7 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def _persist_session() -> None:
+def persist_session() -> None:
     """Save the token and the operator's watch choices so a restart is not a reset."""
     from docket.interface import session_store
 
@@ -1631,10 +1757,34 @@ def demo() -> None:
 
     # 1. Repo-name validation is the guard in front of every URL and path built below.
     for bad in ("../../etc/passwd", "owner/repo/../..", "https://evil.test/x",
-                "owner", "", "owner/repo extra", "-flag/repo\nx"):
+                "owner", "", "owner/repo extra", "-flag/repo\nx",
+                # Two segments, so the slash count alone does not reject them. These
+                # DID match before the lookaheads were added.
+                "../evil", "owner/..", "./evil", "owner/."):
         assert not _FULL_NAME.match(bad), bad
-    for good in ("punya-henoyo/Docket", "a/b", "org.name/repo_1.2-3"):
+    # A repository legitimately named `.github` must still be accepted — the guard is
+    # against a dot-only segment, not against dots.
+    for good in ("punya-henoyo/Docket", "a/b", "org.name/repo_1.2-3", "owner/.github"):
         assert _FULL_NAME.match(good), good
+
+    # 1b. Autofix keys. Semgrep runs INSIDE the sandbox, so it reports
+    # `/work/source/app.py:66`; parse_source_file rejects anything starting with "/",
+    # which made service/fix.py skip every finding a sandboxed scan produced and the
+    # autofix report "nothing to fix" over a verdict full of patchable findings.
+    sandboxed = {"rule_id": "semgrep/sqli", "discovered_by": "semgrep",
+                 "location": {"method": "STATIC", "path": "/work/source/app.py",
+                              "source_file": "/work/source/app.py:66"},
+                 "merged_rules": ["semgrep/sqli", "semgrep/tainted-sql-string"]}
+    assert autofix_target_key(sandboxed) == ("semgrep/sqli", "app.py", 66), \
+        autofix_target_key(sandboxed)
+    # merged_rules is EXPANDED: merge_static folds the several rules matching one line
+    # into one Finding, while validate_patch compares raw semgrep keys where each is
+    # separate. Collapse them and gate 3 reads the fix's own work as collateral.
+    assert autofix_scope_keys([sandboxed]) == [("semgrep/sqli", "app.py", 66),
+                                               ("semgrep/tainted-sql-string", "app.py", 66)]
+    # A route is not a file, so it yields no key rather than a bogus one.
+    assert autofix_target_key({"rule_id": "x", "location": {"source_file": "/"}}) is None
+    assert autofix_scope_keys([{"rule_id": "x", "location": {}}]) == []
 
     state = new_scan_state("abc", "o/r")
     assert state["status"] == "queued" and state["finding_count"] == 0
