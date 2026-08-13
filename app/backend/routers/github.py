@@ -14,11 +14,17 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from docket.core.cancel import CancelToken
 from docket.interface import connect
 
 router = APIRouter()
+
+
+class CancelRequest(BaseModel):
+    # Optional: the Stop button sends {} and means "the live one".
+    id: str | None = None
 
 
 class RepoScanRequest(BaseModel):
@@ -26,6 +32,21 @@ class RepoScanRequest(BaseModel):
     # A branch, tag or commit SHA. None means the repository's default branch, which is
     # what GitHub serves when the tarball path omits a ref.
     ref: str | None = None
+    # The three AI-phase controls. They were MISSING here while the frontend already sent
+    # them and connect.py's stdlib server already validated them, so pydantic dropped
+    # them silently (extra fields are ignored by default) and run_repo_scan took its
+    # defaults: triage_max=0, recon=False. Result: the console's "AI recon" and "AI
+    # triage" toggles did nothing at all, with no error anywhere to say why. Third
+    # instance of the same twin-server divergence as /auth/callback and /api/download.
+    #
+    # Each defaults OFF because each spends real money: one LLM agent per triaged
+    # finding, one per repo for recon.
+    triage_max: int = Field(default=0, ge=0)
+    recon: bool = False
+    # A ceiling in dollars, not a count — the only control that bounds what an AI phase
+    # actually costs. triage_max caps how many findings are judged and says nothing about
+    # the cost of each. gt=0 because 0 means "unset", not "spend nothing".
+    budget_usd: float | None = Field(default=None, gt=0)
 
 
 @router.get("/api/session")
@@ -112,10 +133,33 @@ def auth_callback(code: str = "", state: str = ""):
 
 @router.get("/api/scan/{scan_id}")
 def scan_state(scan_id: str) -> dict:
-    state = connect.SESSION.scans.get(scan_id)
-    if state is None:
+    """Mirrors connect.py's /api/scan/<id> handler, including the usage refresh it was
+    missing here.
+
+    Three bugs lived in the four lines this replaces:
+
+    1. `_merge_live_usage` was never called, so cost_usd, input_tokens, output_tokens and
+       every per-agent turn count stayed at their new_scan_state zeros for the whole run.
+       That is the "live budget shows nothing" symptom. It has to happen on every READ
+       rather than when something calls snapshot(), because during recon nothing calls
+       snapshot() for minutes at a time — the runner's on_progress fires only after recon
+       finishes. Joining at read time means a poll can never show a stale number.
+    2. No SESSION.lock, while the scan thread mutates this dict from its own thread.
+    3. The live dict was returned by reference, so FastAPI serialised a structure being
+       mutated underneath it — a "dictionary changed size during iteration" waiting to
+       happen. Copy inside the lock, like connect.py does.
+
+    Fifth instance of the twin-server divergence, after /auth/callback, /api/download,
+    the AI-phase flags and /api/scan/cancel.
+    """
+    with connect.SESSION.lock:
+        state = connect.SESSION.scans.get(scan_id)
+        if state is not None and state.get("status") in connect.LIVE_STATUSES:
+            connect._merge_live_usage(state)
+        payload = dict(state) if state is not None else None
+    if payload is None:
         raise HTTPException(404, f"no scan {scan_id!r}")
-    return state
+    return payload
 
 
 @router.get("/api/run/{run_name}")
@@ -146,10 +190,69 @@ def start_repo_scan(request: RepoScanRequest) -> dict:
     # interpolated into a GitHub API path.
     if ref is not None and not connect.valid_ref(ref):
         raise HTTPException(400, f"not a usable branch/tag/sha: {ref!r}")
+    if request.triage_max or request.recon:
+        # Refuse early with the real reason rather than starting a scan that dies partway
+        # through its first agent turn. Config.from_env() is what loads .env, so asking it
+        # beats reading os.environ — the same mistake that made oauth_config report an
+        # unconfigured GitHub App on a correctly-configured machine.
+        try:
+            from docket.config.settings import Config
+
+            Config.from_env()
+        except Exception as exc:
+            raise HTTPException(400, f"AI agents need a model configured: {exc}") from exc
+
     scan_id = uuid.uuid4().hex[:12]
-    connect.SESSION.scans[scan_id] = connect.new_scan_state(scan_id, request.repo, ref)
+    # Echoed into the scan state so the console can show what was REQUESTED next to what
+    # happened; TriagePanel reads scan.triage_max to say "judged 3 of 5" rather than just
+    # "3", and a requested-but-zero count is how you tell "nothing to judge" from "the
+    # phase never ran".
+    # A real CancelToken, not None: passing None gave the scan nothing to check, so the
+    # console's Stop button could not have worked even once the route below existed.
+    cancel = CancelToken()
+    with connect.SESSION.lock:
+        connect.SESSION.scans[scan_id] = connect.new_scan_state(
+            scan_id, request.repo, ref, request.triage_max, request.recon,
+            request.budget_usd,
+        )
+        connect.SESSION.cancels[scan_id] = cancel
     threading.Thread(
-        target=connect.run_repo_scan, args=(request.repo, token, scan_id, ref),
+        target=connect.run_repo_scan,
+        args=(request.repo, token, scan_id, ref, request.triage_max, request.recon,
+              cancel, request.budget_usd),
         name=f"repo-scan-{scan_id}", daemon=True,
     ).start()
     return {"id": scan_id, "status": "queued"}
+
+
+@router.post("/api/scan/cancel", status_code=202)
+def cancel_scan(request: CancelRequest) -> dict:
+    """Ask the running scan to stop at its next checkpoint.
+
+    Ported from connect.py:_cancel_scan, which was the only place it existed — so the
+    frontend's Stop button (api/github.ts:19) POSTed to a path this server did not serve
+    and the scan carried on. Fourth instance of the twin-server divergence, after
+    /auth/callback, /api/download and the AI-phase flags above.
+
+    202, not 200: the scan has NOT stopped when this returns, it has been asked to.
+    Reporting a stop that has not happened is how a UI ends up showing "stopped" over a
+    scanner still burning CPU.
+    """
+    scan_id = (request.id or "").strip()
+    with connect.SESSION.lock:
+        # No id means "whatever is running", which is what the Stop button sends: the
+        # console only ever shows one live scan.
+        if not scan_id:
+            scan_id = next(
+                (k for k, v in connect.SESSION.scans.items()
+                 if v.get("status") in ("queued", "fetching", "scanning")),
+                "",
+            )
+        cancel = connect.SESSION.cancels.get(scan_id)
+        state = connect.SESSION.scans.get(scan_id)
+    if cancel is None or state is None:
+        raise HTTPException(404, "no scan is running")
+    if state.get("status") in ("done", "error", "cancelled"):
+        raise HTTPException(409, f"scan already {state['status']}")
+    cancel.cancel("stopped by the operator")
+    return {"id": scan_id, "status": "cancelling"}

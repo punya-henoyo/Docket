@@ -241,6 +241,7 @@ def run_scan(
                     if store is not None else [],
                     model_override=model_override, cancel=cancel,
                     on_agent=on_agent,
+                    source_root=str(whitebox_path) if whitebox_path else None,
                 )
                 if recon_surface:
                     # Into the SAME store the scanners feed, so candidates appear in
@@ -286,6 +287,7 @@ def run_scan(
                     [f.model_dump(mode="json") for f in store.findings()],
                     run_dir=directory, config=cfg, sandbox=sandbox,
                     max_findings=triage_max, model_override=model_override,
+                    source_root=str(whitebox_path) if whitebox_path else None,
                     cancel=cancel, on_agent=on_agent,
                     on_verdict=_on_verdict,
                 )

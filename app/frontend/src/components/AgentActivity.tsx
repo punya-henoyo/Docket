@@ -39,8 +39,23 @@ export function AgentActivity({
 
   const active = agents.filter((a) => a.status === "running");
   const done = agents.filter((a) => a.status !== "running");
-  const spend = agents.reduce((sum, a) => sum + (a.cost_usd ?? 0), 0);
+  const perAgent = agents.reduce((sum, a) => sum + (a.cost_usd ?? 0), 0);
   const turns = agents.reduce((sum, a) => sum + (a.turns ?? 0), 0);
+  // The ledger total is authoritative: it includes spend not attributable to a listed
+  // agent row, so it can only ever be >= the sum of the rows.
+  const spend = Math.max(scan?.cost_usd ?? 0, perAgent);
+  const inTok = scan?.input_tokens ?? 0;
+  const outTok = scan?.output_tokens ?? 0;
+  const budget = scan?.budget_usd ?? 0;
+  // Tokens but no dollars means LiteLLM could not price this model, so core/hooks.py
+  // charged 0.0 — and the budget gate is therefore inert. Saying "$0.0000" with no
+  // qualifier reads as "this run was free", which is the opposite of the truth: it is
+  // unmetered. Set DOCKET_PRICE_INPUT_PER_1M / _OUTPUT_PER_1M to arm it.
+  const unpriced = spend === 0 && inTok + outTok > 0;
+  // Capped for the bar only; the number beside it stays true, so an overrun reads as
+  // "full bar, $2.14 of $2.00" rather than being silently clipped.
+  const pct = budget > 0 ? Math.min((spend / budget) * 100, 100) : 0;
+  const tight = budget > 0 && spend / budget >= 0.8;
 
   // Newest first, but the running one always on top: it is the only row that changes.
   const ordered = [...active, ...done.reverse()];
@@ -57,9 +72,30 @@ export function AgentActivity({
       <div className="body">
         <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
           <Stat label="Model turns" value={turns} />
-          <Stat label="Spend" value={`$${spend.toFixed(4)}`} />
+          <Stat
+            label="Spend"
+            value={`$${spend.toFixed(4)}`}
+            sub={unpriced ? "model unpriced" : budget > 0 ? `of $${budget.toFixed(2)}` : undefined}
+          />
+          {/* Tokens, not only dollars. They are the one figure that is non-zero even on
+              a model LiteLLM cannot price, and they lived only in the Triage panel — so a
+              recon-only run showed no usage at all. */}
+          <Stat
+            label="Tokens"
+            value={(inTok + outTok).toLocaleString()}
+            sub={`${inTok.toLocaleString()} in · ${outTok.toLocaleString()} out`}
+          />
           <Stat label="Concurrency" value="1" sub="sequential" />
         </div>
+
+        {budget > 0 && (
+          <div
+            style={{ display: "flex", height: 6, borderRadius: 2, overflow: "hidden", background: "var(--wash)" }}
+            title={`$${spend.toFixed(4)} of $${budget.toFixed(2)}`}
+          >
+            <span style={{ width: `${pct}%`, background: tight ? "var(--warn)" : "var(--ok)" }} />
+          </div>
+        )}
 
         {/* Queue depth as a bar: filled = finished, outlined = still to come. At 48
             findings this is the difference between "working" and "8% done". */}
