@@ -48,6 +48,9 @@ class Patch:
     why: str = ""
 
 
+from docket.tools.source_write.tools import SUPPRESSIONS
+
+
 class PatchError(Exception):
     """The patch could not be applied. Never partially applied."""
 
@@ -64,6 +67,22 @@ def apply_patch(root: Path, patch: Patch) -> str:
         raise PatchError("patch has no anchor text to replace")
     if patch.old == patch.new:
         raise PatchError("patch changes nothing")
+
+    # Silencing the check is not a fix, and it is the one edit that defeats verify_fix
+    # BY working. semgrep obeys the comment, so the finding vanishes while the code stays
+    # byte-identical: the file still parses, coverage holds, nothing else disappears and
+    # nothing new appears. Measured against live semgrep, all seven gates go green on an
+    # untouched vulnerability. No scanner comparison can see this, because the comparison
+    # is exactly what it subverts — so it has to be refused before the edit exists.
+    # The marker list is shared with tools/source_write so the two cannot drift apart.
+    for marker in SUPPRESSIONS:
+        if patch.new.count(marker) > patch.old.count(marker):
+            raise PatchError(
+                f"refusing to add `{marker}`: that silences the check rather than fixing "
+                f"the bug. It would pass every verification gate while leaving the "
+                f"vulnerability in place. Fix the root cause, or refuse with a reason — "
+                f"a refusal is a respected answer, this is not."
+            )
 
     cleaned = str(patch.path).strip().lstrip("/")
     if not cleaned or ".." in cleaned.split("/"):
@@ -417,6 +436,23 @@ def demo() -> None:
                 raise AssertionError(f"should have refused {bad.path!r}")
             except PatchError:
                 pass
+
+        # Silencing the scanner. This one is refused HERE and nowhere else: verify_fix
+        # cannot catch it, because semgrep obeys the comment and the finding genuinely
+        # disappears while the code stays byte-identical. Measured against live semgrep,
+        # all seven gates pass on an untouched vulnerability, so the fix PR would ship.
+        for marker in ("# nosemgrep", "# noqa", "// eslint-disable-next-line"):
+            try:
+                apply_patch(root, Patch("app.py", "b = 2", f"b = 2  {marker}"))
+                raise AssertionError(f"adding {marker!r} must be refused, not applied")
+            except PatchError as exc:
+                assert "silences the check" in str(exc), str(exc)
+        # ...and the file was not touched by any of those attempts.
+        assert "nosemgrep" not in (root / "app.py").read_text()
+        # A patch that REMOVES an existing suppression is the opposite, and allowed.
+        (root / "sil.py").write_text("d = 4  # nosemgrep\n")
+        apply_patch(root, Patch("sil.py", "d = 4  # nosemgrep", "d = 4"))
+        assert (root / "sil.py").read_text() == "d = 4\n"
 
         # ── the syntax gate ─────────────────────────────────────────────────
         (root / "ok.py").write_text("def f():\n    return 1\n")

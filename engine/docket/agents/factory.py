@@ -52,6 +52,8 @@ from docket.agents.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_
 from docket.agents.prompts.recon import SYSTEM_PROMPT as RECON_SYSTEM_PROMPT
 from docket.agents.prompts.triage import SYSTEM_PROMPT as TRIAGE_SYSTEM_PROMPT
 from docket.agents.prompts.triage_static import SYSTEM_PROMPT as TRIAGE_STATIC_PROMPT
+from docket.agents.prompts.fix import SYSTEM_PROMPT as FIX_SYSTEM_PROMPT
+from docket.tools.fix.tool import fix_report
 from docket.tools.recon.tool import record_surface
 from docket.tools.source.tools import list_source, read_source, search_source
 from docket.tools.triage.tool import triage_verdict
@@ -73,12 +75,15 @@ from docket.tools.source_read import tools as source_read
 # `elif` unreachable — static triage would have silently run the other agent's prompt
 # and finish tool.
 # ponytail: collapse to one triage role once a real run shows which prompt holds up.
-Role = Literal["root", "sqli", "cmdi", "xss", "triage", "triage_static", "recon"]
-# Root spawns attack specialists only. Triage and recon are driven by the runner, not
-# delegated by root, so they are deliberately absent here.
+Role = Literal["root", "sqli", "cmdi", "xss", "triage", "triage_static", "recon", "fix"]
+# Root spawns attack specialists only. Triage, recon and fix are driven by the runner, not
+# delegated by root, so they are deliberately absent here. `fix` most of all: it is the one
+# role that WRITES, and a role that writes should be reachable from exactly one place a
+# human can read, not from a model's judgement about when a patch would be nice.
 SpecialistRole = Literal["sqli", "cmdi", "xss"]
 
-_FINISH_TOOL_NAMES = {"finish_scan", "agent_finish", "triage_verdict", "record_surface"}
+_FINISH_TOOL_NAMES = {"finish_scan", "agent_finish", "triage_verdict", "record_surface",
+                      "fix_report"}
 
 
 @function_tool(strict_mode=False)  # headers/params/data are open-ended dicts — strict
@@ -340,6 +345,33 @@ async def grep_source(
     )
 
 
+@function_tool(name_override="propose_edit")
+async def propose_edit_tool(
+    ctx: RunContextWrapper[ScanContext], path: str, anchor: str, replacement: str,
+) -> dict:
+    """Replace `anchor` with `replacement` in `path`. The one tool that writes.
+
+    `anchor` must match the file's REAL BYTES: read_source shows you `NN: ` line-number
+    prefixes for display, and those are not in the file — strip them. Anchor on enough
+    surrounding text to be unique. A match on zero or several places is refused rather
+    than guessed at, so widen the anchor and try again.
+    """
+    # Rooted at ctx.context.source_root, NEVER at a path the model supplies — and for the
+    # `fix` role that root is a COPY of the repository (service/fix.py), so the pristine
+    # tree cannot be written to at all. core/triage.py:130-136 records what happens when a
+    # source-rooted role is built without it: the agent read the operator's own working
+    # directory instead of the target repo. A write tool making that mistake edits it.
+    #
+    # Imported lazily, like service/delivery.py:_gate: this module must import and its
+    # demo must run whether or not source_write exists yet, and every other role is
+    # unaffected by its absence.
+    from docket.tools.source_write import tools as source_write
+
+    return await asyncio.to_thread(
+        source_write.propose_edit, ctx.context.source_root or "", path, anchor, replacement,
+    )
+
+
 _SOURCE_TOOLS: list[Tool] = [read_around, read_source, list_source, grep_source]
 
 _COMMON_TOOLS: list[Tool] = [thinking, notes, todo, load_skill_tool, list_skills_tool, web_search_tool]
@@ -392,6 +424,26 @@ def build_agent(
         base_tools = [*_SOURCE_TOOLS, *_COMMON_TOOLS]
         finish_tool = agent_finish
         name = "triage-static-agent"
+    elif role == "fix":
+        # NO http_request, NO shell, NO browser — the triage_static reasoning above, and
+        # more so, because this role WRITES. A patch has to be auditable as a read of the
+        # source plus an edit to it; a network tool here would make "where did that change
+        # come from" unanswerable, and a shell would make the sandbox's whole point moot.
+        # It reads and edits ONE tree (a copy — see propose_edit_tool) and finishes.
+        instructions = FIX_SYSTEM_PROMPT
+        # load_skill/list_skills come in with _COMMON_TOOLS, and they are load-bearing
+        # here: skills/fix/workflow.md is the four-phase spec the prompt only summarises,
+        # and triage/<class> is what stops it patching a non-bug.
+        # NOT *_COMMON_TOOLS: that set carries web_search, and this is the one role
+        # that runs over UNTRUSTED input by construction — a pull request's own diff,
+        # written by whoever opened it. A search query is an outbound channel, so a
+        # prompt injection planted in a PR could carry private source out of the repo in
+        # one. Its guidance comes from skills/fix/workflow.md via load_skill instead,
+        # which is where the framework-defence table already lives.
+        base_tools = [*_SOURCE_TOOLS, propose_edit_tool, thinking, notes, todo,
+                      load_skill_tool, list_skills_tool]
+        finish_tool = fix_report
+        name = "docket-fix"
     elif role in ("sqli", "cmdi", "xss"):
         instructions = SPECIALIST_SYSTEM_PROMPT
         finish_tool = agent_finish
@@ -522,6 +574,21 @@ def demo() -> None:
 
     # No sandbox at all is still a plain Agent.
     assert not isinstance(build_agent("root", cfg, model=live), SandboxAgent)
+
+    # --- the `fix` role: it writes, so its tool list is the security boundary ----------
+    fix_tools = {t.name for t in build_agent("fix", cfg, model=live).tools}
+    assert "propose_edit" in fix_tools, fix_tools           # the one tool that writes
+    assert "fix_report" in fix_tools, fix_tools             # the only way it can stop
+    assert {"read_around", "read_source", "grep_source", "list_source"} <= fix_tools
+    assert {"load_skill", "list_skills"} <= fix_tools       # it must open fix/workflow
+    # A role that edits source must not also be able to reach the network or a shell:
+    # a patch has to be auditable as a read plus an edit, and nothing else.
+    for forbidden in ("http_request", "shell", "browser", "finding"):
+        assert forbidden not in fix_tools, forbidden
+    # Root must not be able to delegate a write. `fix` is driven by the runner only.
+    assert "fix" not in SpecialistRole.__args__, SpecialistRole
+    # Even handed a sandbox it stays a plain source-only agent.
+    assert isinstance(build_agent("fix", cfg, model=live, sandbox=sentinel), Agent)
     print("agents.factory: ok")
 
 

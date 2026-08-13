@@ -18,15 +18,20 @@ demonstrated is reported as unverified, never as fixed.
 
 Read the finding before you touch code:
 
-- `docket_runs/<run>/report.json` → `findings[]` for the finding, and `triaged[]` for any
-  verdict already attached to it.
+- `docket_runs/<run>/report.json` → `findings[]` for the finding. A verdict already reached
+  on it lives in one of two places, because two triage passes write two vocabularies:
+  `findings[].triage` (`exploitable` / `not_reachable` / `uncertain`) or the top-level
+  `triaged[]` (`CONFIRMED` / `FALSE_POSITIVE` / `UNCERTAIN`). **Read `triaged[]` — it is
+  authoritative**: the report now derives those rows from `findings[].triage` whenever that
+  is where the verdicts landed, so one list answers "what was judged" either way. An empty
+  `triaged[]` means nobody judged this finding, not that it was cleared.
 - The finding's `poc.request` for a static finding **is the matched source line**, and its
   `location.source_file` is `path:line`. That line is your anchor.
 
 Work worst-first: critical → high → medium → low.
 
 **Do not dismiss a finding as a false positive without reading the code yourself.** A
-`not_reachable` triage verdict is *reasoning over source*, not proof — it is weaker than a
+`not_reachable` / `FALSE_POSITIVE` triage verdict is *reasoning over source*, not proof — it is weaker than a
 reproduction by design. If you disagree with it, say so and give the lines that changed
 your mind. If you agree, stop and report `not_a_bug` with the guard you found quoted. Do
 not patch something that was never broken; a needless diff spends a reviewer's trust.

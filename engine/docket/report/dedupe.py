@@ -156,6 +156,25 @@ def demo() -> None:
     store.add(make("command-injection", "/export", "file"))
     assert len(store) == 2
 
+    # A STATIC finding's identity includes its line, so two hits of one rule in one file
+    # are two findings. This is the vulnshop#20 false negative: they used to collapse
+    # here, the second one never reached the report, and diff_runs — which keys on the
+    # matched snippet precisely to tell them apart — never saw it to compare.
+    def at(line: int) -> Finding:
+        return Finding(
+            rule_id="semgrep/sqli", title="sqli", severity=Severity.HIGH,
+            location=Location(method="STATIC", path="app.py", source_file=f"app.py:{line}"),
+            description="...", poc=PoC(request=f"line {line}", response="match"),
+            discovered_by="semgrep",
+        )
+
+    lines = FindingStore()
+    lines.add(at(31))
+    lines.add(at(66))
+    assert len(lines) == 2, "two hits of one rule in one file are two findings"
+    lines.add(at(66))
+    assert len(lines) == 2, "the SAME line is still one finding"
+
     # ── static merge ────────────────────────────────────────────────────────
     assert rule_leaf("semgrep/python.flask.security.injection.tainted-sql-string"
                      ".tainted-sql-string") == "tainted-sql-string"

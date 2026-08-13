@@ -13,10 +13,13 @@ help:
 install:
 	uv sync
 
-# The console is a Vite/React app; connect.py serves its build output from
-# frontend/dist. Needs Node. `docket connect` prints a build hint if dist/ is absent.
+# The console is a Vite/React app. BOTH servers serve the same build output at
+# app/frontend/dist: connect.py via resource_paths.frontend_dir(), and app/run.py via
+# app.backend.main.FRONTEND_DIST. This target said `cd frontend` until it was noticed —
+# a stale path from when there were two consoles, which cost real debugging time by
+# implying `docket connect` had no UI to serve. It has; it is this one.
 console:
-	cd frontend && npm install && npm run build
+	cd app/frontend && npm install && npm run build
 
 image:
 	docker build -f containers/Dockerfile -t docket-sandbox:latest .
@@ -30,14 +33,20 @@ check:
 	  docket.llm.context_budget docket.llm.compaction \
 	  docket.discovery.models docket.discovery.sources docket.discovery.discover \
 	  docket.static.models docket.static.engines docket.static.correlate \
-	  docket.static.triage docket.tools.source_read.tools \
-	  docket.agents.prompts.triage_static \
+	  docket.static.triage docket.tools.source_read.tools docket.tools.source_write.tools \
+	  docket.agents.prompts.triage_static docket.agents.prompts.fix \
 	  docket.core.triage docket.core.recon \
-	  docket.tools.triage.tool docket.tools.recon.tool docket.tools.source.tools \
+	  docket.tools.triage.tool docket.tools.recon.tool docket.tools.fix.tool docket.tools.source.tools \
 	  docket.report.markdown \
 	  docket.agents.prompts.root \
 	  docket.report.models docket.report.dedupe docket.report.sarif docket.report.writer \
 	  docket.report.state docket.report.usage \
+	  docket.service.gate docket.interface.scm \
+	  docket.core.pull_request docket.core.pr_watcher docket.core.pr_service \
+	  docket.core.remediation docket.report.diff docket.report.pr_report \
+	  docket.interface.session_store \
+	  app.backend.routers.service \
+	  docket.service.store docket.service.poll docket.service.delivery docket.service.validate docket.service.fix \
 	  docket.tools.output_store docket.tools.shell.tools docket.tools.http_request.tools \
 	  docket.tools.reporting.tool docket.tools.notes.tools docket.tools.todo.tools \
 	  docket.tools.thinking.tool docket.tools.respond.tool docket.tools.web_search.tool \
@@ -62,7 +71,10 @@ test: image
 test-fast:
 	@set -e; for f in tests/test_report.py tests/test_coordinator.py tests/test_tools.py \
 	                  tests/test_agent_loop_mock.py tests/test_multiagent_mock.py \
-	                  tests/test_budget.py tests/test_viewer.py ; do \
+	                  tests/test_budget.py tests/test_viewer.py tests/test_gate.py \
+	                  tests/test_diff_scope.py tests/test_scm.py \
+	                  tests/test_service_store.py tests/test_source_write.py \
+	                  tests/test_validate.py tests/test_fix.py ; do \
 	  uv run python $$f >/dev/null 2>&1 && echo "ok   $$f" || { echo "FAIL $$f"; exit 1; }; \
 	done
 

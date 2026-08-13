@@ -39,7 +39,17 @@ def cmd_doctor(args) -> int:
 
 
 def cmd_scan(args) -> int:
-    env = check_environment(require_sandbox=not args.no_sandbox, require_llm=not args.static_only)
+    # --triage/--recon/--fix are agents pointed at source, so they need an LLM even under
+    # --static-only. Checking that here means a CI job that asked for verdicts is told it
+    # has no model up front, rather than producing an unjudged report that looks complete.
+    # --fix belongs in this set for a second reason too: without it, `--static-only --fix`
+    # gets Config.static_only() below, whose llm is "" — LitellmModel(model="") dies on its
+    # first call — and whose max_cost_usd is 0.0, which `spent >= budget` turns into a
+    # refusal of every agent before its first turn. The run would report no patches as
+    # though it had tried and found nothing to do.
+    wants_agents = bool(args.triage or args.recon or args.fix)
+    env = check_environment(require_sandbox=not args.no_sandbox,
+                            require_llm=not args.static_only or wants_agents)
     if not env.ok:
         print(format_report(env), file=sys.stderr)
         return EXIT_ERROR
@@ -58,7 +68,12 @@ def cmd_scan(args) -> int:
             out_dir=args.out_dir, use_sandbox=not args.no_sandbox,
             source_path=args.source, static_only=args.static_only,
         )
-        config = Config.static_only() if args.static_only else Config.from_env()
+        # Config.static_only() carries llm="" AND max_cost_usd=0.0, and over_budget() is
+        # `spent >= budget`, so handing it to a run that spawns triage/recon agents kills
+        # every one of them before its first turn. run_scan() defends against this too;
+        # deciding it here keeps the two agreeing rather than relying on the repair.
+        config = (Config.static_only() if args.static_only and not wants_agents
+                  else Config.from_env())
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -89,6 +104,28 @@ def cmd_scan(args) -> int:
             sarif_path=args.sarif,
             discovery=not args.no_discovery,
             static_only=setup.static_only,
+            # Every one of these was already a run_scan parameter with no way for a CI job
+            # to reach it: scanners were wired to the CLI, the AI triage that turns their
+            # output into verdicts was not.
+            changed_files=args.changed_files,
+            triage_max=args.triage,
+            # `triage_max` drives core/triage.py, which judges PROVEN findings, and
+            # runner.py gates it on `len(store)`. Under --static-only there is no sandbox,
+            # so no Finding is ever constructed and that store is empty — every scanner hit
+            # is a CANDIDATE, judged by static/triage.py behind `static_triage`. So
+            # `--triage N` on the one shape a CI job uses reached nothing at all. Setting
+            # both means the flag judges whichever population the run actually produced,
+            # which is what the operator asked for either way.
+            static_triage=bool(args.triage),
+            # No `static_fix` twin is needed, and that is deliberate rather than an
+            # oversight: the trap above exists because core/triage.py judges PROVEN findings
+            # and runner.py gates it on `len(store)`, which is empty under --static-only.
+            # service/fix.py reads gate._all_rows instead, which normalises `findings[]` AND
+            # `flagged_not_proven[]` into one list, so `--fix N` reaches whichever population
+            # the run produced. runner.py gates it on the source tree, not on the store.
+            fix_max=args.fix,
+            budget_usd=args.budget,
+            recon=args.recon,
         )
     except KeyboardInterrupt:
         print("\ninterrupted — writing what was confirmed so far", file=sys.stderr)
@@ -107,7 +144,18 @@ def cmd_scan(args) -> int:
 
     kwargs |= dict(summary=result.summary, cost_usd=result.cost_usd,
                    agents_spawned=result.agents_spawned, success=result.success,
-                   leads=result.leads, triage=result.triage)
+                   leads=result.leads, triage=result.triage,
+                   status=result.status, stages=result.stages,
+                   # "4 leads" over a diff-scoped scan and "4 leads" over a whole-repo scan
+                   # are different claims; the suppressed count is what separates them.
+                   suppressed_outside_diff=result.suppressed_outside_diff,
+                   # The CAP, not a demand. build_report clamps it to how many rows were
+                   # actually judgeable, because `--triage 20` on a PR with 3 candidates is
+                   # a request to judge 3, not a shortfall of 17.
+                   triage_requested=args.triage,
+                   # Refusals included. Each row carries the agent's claim next to the
+                   # scanner's verdict, so a patch that did not verify is visible as that.
+                   patches=result.patches)
     paths = write_report(store, setup.run_dir, **kwargs)
     print(format_summary(build_report(store, **kwargs), paths=paths))
     return exit_code(store, result.success)

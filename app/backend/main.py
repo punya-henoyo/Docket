@@ -16,19 +16,35 @@ fires real exploit payloads, so it must never be reachable from anything but thi
 """
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.backend.routers import github, runs
+from app.backend.routers import github, runs, service
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 
+log = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Reload the saved GitHub session BEFORE serving. Without this the OAuth token
+    # lives only in connect.SESSION, so every restart of this console logs the operator
+    # out: /api/session reports connected:false, the repo list comes back empty, and the
+    # scan form has nothing to offer. connect.py already restores on its own startup;
+    # this console never did, which is the twin-server divergence again.
+    try:
+        from docket.interface import connect
+
+        if connect.restore_session():
+            log.info("restored the saved GitHub session")
+    except Exception as exc:  # noqa: BLE001 - a console that cannot restore must still boot
+        log.warning("could not restore the saved session: %s", exc)
     yield
     # A scan outliving the server would keep a container up and keep writing to a run
     # directory nothing is watching.
@@ -38,6 +54,9 @@ async def lifespan(_: FastAPI):
 api = FastAPI(title="docket console", lifespan=lifespan)
 api.include_router(runs.router)
 api.include_router(github.router)
+# The control plane: watched repos, policy, the PR-scan inbox, the poller. Included here,
+# BEFORE the static mount below, for the reason stated there.
+api.include_router(service.router)
 
 # Mounted LAST: a catch-all static mount at "/" would otherwise shadow every API route.
 # html=True serves index.html for unknown paths, which is what the hash router needs.
@@ -55,9 +74,15 @@ def demo() -> None:
 
         # Both halves are mounted, and neither shadows the other. Read off the routers
         # rather than api.routes, which wraps included routers in an opaque object.
-        paths = {r.path for r in (*runs.router.routes, *github.router.routes)}
+        paths = {r.path for r in (*runs.router.routes, *github.router.routes,
+                                  *service.router.routes)}
         assert {"/api/health", "/api/runs", "/api/scans"} <= paths, paths
         assert {"/api/session", "/api/repos", "/api/scan"} <= paths, paths
+        assert {"/api/service/status", "/api/service/repos",
+                "/api/service/scans"} <= paths, paths
+        # The control plane degrades to a 503 naming the missing half rather than a 500,
+        # which is the state every machine is in until the service store is built.
+        assert client.get("/api/service/status").status_code in (200, 503)
 
         # The GitHub half degrades to a clear 401/503 rather than a 500 when nothing is
         # configured — this is the state a first-time user actually opens the console in.

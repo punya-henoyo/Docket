@@ -83,7 +83,12 @@ def test_viewer_serves_a_real_run() -> None:
             assert data["has_sarif"] is True
             sarif = json.loads(urllib.request.urlopen(base + "/report.sarif", timeout=5).read())
             assert sarif["version"] == "2.1.0"
-            assert len(sarif["runs"][0]["results"]) == 3
+            # These three scripted findings are route-only (no location.source_file), and
+            # SARIF results without a source file are omitted rather than anchored to a
+            # route that is not a path in the tree — see report/sarif.py:_location. The
+            # drop is COUNTED, and report.json (asserted above) still carries all three.
+            assert len(sarif["runs"][0]["results"]) == 0
+            assert sarif["runs"][0]["properties"]["omitted-no-source-file"] == 3
 
             # Traversal out of the run directory must not be possible.
             try:
