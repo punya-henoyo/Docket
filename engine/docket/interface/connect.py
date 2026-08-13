@@ -213,6 +213,40 @@ def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def open_fix_pr(full_name: str, token: str, *, base_sha: str, base_ref: str,
+                path: str, content: str, title: str, body: str,
+                branch: str) -> dict[str, Any]:
+    """Create a branch, commit one file, open a pull request. Returns the PR payload.
+
+    Uses the contents API rather than git so no clone, no working tree and no
+    credential helper are involved — docket already holds a token and this is three
+    calls.
+    """
+    import base64
+
+    if not _FULL_NAME.match(full_name):
+        raise ValueError(f"refusing suspicious repository name: {full_name!r}")
+    if not valid_ref(branch) or not valid_ref(base_ref):
+        raise ValueError("refusing suspicious branch name")
+
+    # Branch from the exact commit that was scanned and verified, never from the tip
+    # of base — the tip may have moved since, and the proof applies to what was tested.
+    _api(f"/repos/{full_name}/git/refs", token,
+         body={"ref": f"refs/heads/{branch}", "sha": base_sha})
+
+    existing = _api(f"/repos/{full_name}/contents/{path}?ref={branch}", token)
+    _api(f"/repos/{full_name}/contents/{path}", token, method="PUT", body={
+        "message": title,
+        "content": base64.b64encode(content.encode()).decode(),
+        "sha": (existing or {}).get("sha"),
+        "branch": branch,
+    })
+
+    return _api(f"/repos/{full_name}/pulls", token, body={
+        "title": title, "body": body, "head": branch, "base": base_ref,
+    })
+
+
 def _post_for_pr(ref: Any, verdict: dict[str, Any]) -> dict[str, str]:
     if not SESSION.token:
         return {"status": "skipped: not connected"}
