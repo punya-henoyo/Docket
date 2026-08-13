@@ -39,6 +39,9 @@ check:
 	  docket.report.models docket.report.dedupe docket.report.sarif docket.report.writer \
 	  docket.report.state docket.report.usage \
 	  docket.service.gate docket.interface.scm \
+	  docket.core.pull_request docket.core.pr_watcher docket.core.pr_service \
+	  docket.core.remediation docket.report.diff docket.report.pr_report \
+	  docket.interface.session_store \
 	  app.backend.routers.service \
 	  docket.service.store docket.service.poll docket.service.delivery docket.service.validate docket.service.fix \
 	  docket.tools.output_store docket.tools.shell.tools docket.tools.http_request.tools \

@@ -63,7 +63,7 @@ _DENY_GLOBS = (".env*", "*.pem", "*.key", "*.p12", "*.keystore")
 
 # Removing a secret from a file does not un-leak it (workflow.md phase 4: rotation is the
 # fix), and editing a key file is how a patch breaks every deployment that reads it.
-_SUPPRESSIONS = ("nosemgrep", "noqa", "# type: ignore", "eslint-disable",
+SUPPRESSIONS = ("nosemgrep", "noqa", "# type: ignore", "eslint-disable",
                  "@SuppressWarnings")
 
 _SKIP_TREE_PARTS = frozenset({".git"})
@@ -172,7 +172,7 @@ def _locate(text: str, anchor: str) -> tuple[str, int, list[str], bool]:
 
 
 def _refuse_suppression(anchor: str, replacement: str) -> None:
-    for marker in _SUPPRESSIONS:
+    for marker in SUPPRESSIONS:
         if replacement.count(marker) > anchor.count(marker):
             raise EditRefused("suppression_not_a_fix", (
                 f"refused: your replacement adds `{marker}`, which silences the check "
