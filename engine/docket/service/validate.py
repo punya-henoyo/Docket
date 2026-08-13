@@ -1,0 +1,471 @@
+"""The seven gates. The only place `verified_fixed` is allowed to come from.
+
+`service/delivery.py` opens a fix pull request on exactly one condition:
+`patch.status == "verified_fixed"` (delivery.py:41). Nothing else in the codebase may
+produce that string, and in particular no model may: an LLM asked whether its own patch
+worked will say yes, and its answer is a claim, not a proof. This module is a pure
+function over two directories.
+
+THE TRAP THIS EXISTS TO CLOSE
+-----------------------------
+From skills/fix/workflow.md phase 3: "A patch that breaks the file's syntax makes the
+scanner emit zero findings for that file, which reads as a perfect fix and is the opposite
+of one." So absence of the finding is not evidence. A clean re-scan only counts alongside
+proof that the scan happened and covered the file, which is why there are seven gates and
+not one:
+
+  1. positive_control            the target IS in the pristine scan
+  2. target_absent               the target's rule fires nowhere in that file any more
+  3. nothing_else_vanished       ONLY the target disappeared
+  4. no_new_findings             the patch introduced none
+  5. parse_errors_not_increased  a rise means you broke the file
+  6. files_scanned_not_dropped   a drop means your file fell out of coverage
+  7. tests_pass                  see GATE 7 below
+
+Gates 3, 5 and 6 are three independent nets under the same syntax error, on purpose. A
+broken file usually trips all three; a broken file that trips only one is still caught.
+
+WHAT EACH GATE COMPARES, AND WHY THE LINE NUMBER IS NOT IN GATES 2, 3 AND 4
+--------------------------------------------------------------------------
+A finding key is `(rule_id, file, line)`. Gate 1 compares the WHOLE key, because that is
+identification and it must be exact. Gates 2, 3 and 4 compare `(rule_id, file)` and the
+per-`(rule_id, file)` COUNT, because a line number is noise for the question "did anything
+else change" — and two live reproductions proved that comparing it there rejects correct
+fixes:
+
+  * `p/default` has overlapping rules by design. `os.system("ping " + host)` fires BOTH
+    `os-system-injection` and `dangerous-system-call` on the same line. A correct fix clears
+    both, and a key-level gate 3 read the second one as collateral damage. Two rules on one
+    line are one defect seen twice, so gate 3 exempts any rule that fired at the target's
+    EXACT `(file, line)` — that exact line only, nothing else in the file.
+  * Adding an import (`import subprocess`, `import shlex`, `from markupsafe import escape`)
+    is the most common shape a security fix takes, and it shifts every line below it down.
+    A key-level comparison counted an untouched finding as BOTH vanished (at its old line)
+    and new (at its new line), so gates 3 and 4 both failed. Between them these two shapes
+    meant almost no real fix could ever reach `verified_fixed`.
+
+The count is compared as well as the set, so losing one of three same-rule hits in a file
+is still a visible disappearance rather than something dropping the line hides.
+
+Gate 2 is `(rule_id, file)` for a second, independent reason, and it is a fail-open this
+closes rather than a convenience: a patch that moves the vulnerable call to another line
+without fixing it satisfies an exact-key gate 2, and once gates 3 and 4 stop comparing line
+numbers nothing else notices either. File-level is also what workflow.md:50-52 asks for —
+"A patch that fixes the flagged line and leaves its three siblings is a patch that closes a
+ticket without closing a hole." The consequence is deliberate: a fix must clear that rule
+from the whole file, and a partial fix reports `not_fixed`.
+
+WHY A SCANNER ERROR IS ITS OWN OUTCOME
+--------------------------------------
+"A scanner that cannot fail loudly cannot supply a proof" (workflow.md:117). An empty
+report from a crashed scanner is indistinguishable from a clean one, so every way the scan
+can fail to happen — semgrep absent, timed out, unable to start, non-JSON output — returns
+`validation_inconclusive`. Never `verified_fixed`, and never `not_fixed` either: you cannot
+say a fix failed on evidence you do not have.
+
+`static/engines.run_semgrep` cannot be used here for that reason and one other: it swallows
+each of those failures into `report.notes` as a string and returns an empty report, and it
+runs with `--sarif`, which carries findings but not the two coverage numbers gates 5 and 6
+need. So the scan below runs semgrep once with `--json` — one invocation yields `results[]`,
+`errors[]` and `paths.scanned`, so findings and coverage can never disagree — and reports
+its own failures as a value. The args are derived from `engines.SEMGREP_ARGS` so the
+config, the rule pack and the metrics-off promise stay identical to the pipeline's scan.
+
+Both trees are scanned inside this one function, with the same args and the same timeout.
+That is deliberate: a caller handed two scan results could mismatch their configs, and a
+comparison between two different configs is not evidence of anything.
+
+GATE 7, AND THE READING OF THE OUTCOME TABLE (workflow.md:126-132)
+-----------------------------------------------------------------
+The table says `verified_fixed` requires "every gate above", `unverified_plausible` is for
+when "a gate could not be established", and `not_fixed` is "the finding survives, or the
+patch breaks the build". Gate 7 itself reads "The build and test suite still pass, WHERE
+THEY EXIST".
+
+This module never runs a repository's tests, and that is not laziness: executing a test
+command out of the pull request under review is arbitrary code execution from an untrusted
+source on the host, which AGENTS.md rule 2 forbids outright. So gate 7 is recorded `None`,
+honestly, in `gates` and in `evidence["tests"]`, and the report must say tests were not
+run. It does NOT block `verified_fixed`, on the "where they exist" clause: treating it as
+blocking would collapse every possible outcome to `unverified_plausible` and make the
+other six gates decorative. The fix branch is cut from the pull request's own head
+(delivery.py), so the repository's CI runs its tests on the fix commit anyway — by a
+runner that is meant to execute that code, which this host is not.
+
+A gate that is `None` for any OTHER reason does cap the outcome at
+`unverified_plausible`: an unestablished gate is the absence of evidence, which is what
+that status means. A gate that is `False` is evidence AGAINST, which is `not_fixed`. False
+is checked before None, because a demonstrated failure outranks an unknown.
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+
+from docket.static.engines import SEMGREP_ARGS, semgrep_available
+from docket.tools.scanners.semgrep import parse_coverage
+
+VERIFIED = "verified_fixed"
+PLAUSIBLE = "unverified_plausible"
+NOT_FIXED = "not_fixed"
+INCONCLUSIVE = "validation_inconclusive"
+
+# The workflow's order. This is the order the report shows, and `gates` is built in it.
+GATES = ("positive_control", "target_absent", "nothing_else_vanished", "no_new_findings",
+         "parse_errors_not_increased", "files_scanned_not_dropped", "tests_pass")
+
+# Attribution order, which is NOT the display order: `failed_gate` must name the most
+# DIAGNOSTIC failure, not the first one in the list. A broken file trips several gates at
+# once, and "you broke the file" explains "other findings vanished" — the reverse is not
+# true, so the coverage gates are named first. `positive_control` is absent because it
+# returns before anything else is computed, and `tests_pass` because it is never False.
+_DIAGNOSTIC_ORDER = ("parse_errors_not_increased", "files_scanned_not_dropped",
+                     "target_absent", "nothing_else_vanished", "no_new_findings")
+
+# The pipeline's own semgrep invocation with --sarif swapped for --json. Derived rather
+# than retyped so the two can never drift into scanning with different rules.
+SEMGREP_JSON_ARGS = tuple("--json" if arg == "--sarif" else arg for arg in SEMGREP_ARGS)
+
+# Long lists in `evidence` end up in a pull-request comment; the counts stay exact.
+MAX_LISTED = 20
+
+Key = tuple[str, str, int]
+
+
+@dataclass
+class Validation:
+    status: str                       # verified_fixed | unverified_plausible |
+                                      # not_fixed | validation_inconclusive
+    gates: dict[str, bool | None]     # None = could not be established
+    failed_gate: str | None
+    evidence: dict                    # the before/after numbers, for the report
+
+
+@dataclass(frozen=True)
+class ScanOutcome:
+    """One scan of one tree. `error` is the loud failure; when it is set nothing else
+    here means anything. `files_scanned`/`parse_errors` are None when the scanner did not
+    report coverage at all, which is different from reporting zero."""
+
+    keys: frozenset[Key] = frozenset()
+    files_scanned: int | None = None
+    parse_errors: int | None = None
+    error: str | None = None
+    coverage: dict = field(default_factory=dict)
+
+
+def _pair(key: Key) -> tuple[str, str]:
+    """(rule_id, file) — a finding's identity with the line dropped. See the module
+    docstring for why gates 2, 3 and 4 compare at this level."""
+    return (key[0], key[1])
+
+
+def _norm_key(key: tuple) -> Key:
+    """Keys arrive from two vocabularies: `StaticFinding.key` carries semgrep's bare
+    check_id, `report.models.Finding.rule_id` prefixes it with "semgrep/". Normalising
+    both ends means a caller holding either shape still gets a positive control."""
+    rule_id, file, line = key
+    return (str(rule_id).removeprefix("semgrep/"),
+            PurePosixPath(str(file)).as_posix(), int(line))
+
+
+def _relative(path: str, root: Path) -> str:
+    """Semgrep reports the path it was given, which is absolute here. Rebase it so keys
+    from two different temporary trees are comparable at all."""
+    try:
+        return Path(path).resolve().relative_to(root.resolve()).as_posix()
+    except (ValueError, OSError):
+        return str(path)
+
+
+def parse_scan_json(text: str, root: str | Path) -> ScanOutcome:
+    """Semgrep `--json` output -> findings AND coverage. Pure, so it is demo-testable
+    without semgrep installed."""
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError:
+        return ScanOutcome(error="semgrep output was not valid JSON")
+    if not isinstance(doc, dict):
+        return ScanOutcome(error="semgrep output was not a JSON object")
+
+    root = Path(root)
+    keys = set()
+    for result in doc.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        line = (result.get("start") or {}).get("line")
+        if not result.get("check_id") or not line:
+            continue
+        keys.add(_norm_key((result["check_id"],
+                            _relative(str(result.get("path", "")), root), line)))
+
+    coverage = parse_coverage(text)
+    paths = doc.get("paths")
+    scanned_reported = isinstance(paths, dict) and isinstance(paths.get("scanned"), list)
+    return ScanOutcome(
+        keys=frozenset(keys),
+        files_scanned=coverage.get("files_scanned") if scanned_reported else None,
+        parse_errors=coverage.get("error_count") if "errors" in doc else None,
+        coverage=coverage,
+    )
+
+
+def scan_tree(root: str | Path, *, timeout_sec: int = 600) -> ScanOutcome:
+    """One semgrep run, host-side, no Docker — `semgrep_available()` finds a real binary
+    or uvx. Every failure is returned as `error`, never as an empty result."""
+    root = Path(root)
+    if not root.is_dir():
+        return ScanOutcome(error=f"source path is not a directory: {root}")
+    binary = semgrep_available()
+    if binary is None:
+        return ScanOutcome(error=(
+            "semgrep is not installed, so nothing was verified. This is NOT a clean "
+            "result. Install it (`uv tool install semgrep`)."))
+    argv = ([binary, *SEMGREP_JSON_ARGS, str(root)] if binary != "uvx"
+            else ["uvx", "semgrep", *SEMGREP_JSON_ARGS, str(root)])
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        return ScanOutcome(error=f"semgrep timed out after {timeout_sec}s on {root}")
+    except OSError as exc:
+        return ScanOutcome(error=f"could not start semgrep: {exc}")
+    if not done.stdout.strip():
+        # Exit 1 is normal (semgrep found something). No output at all is not.
+        tail = (done.stderr or "").strip().splitlines()[-1:] or ["no diagnostics"]
+        return ScanOutcome(error=(f"semgrep produced no JSON (exit {done.returncode}): "
+                                  f"{tail[0][:200]}"))
+    return parse_scan_json(done.stdout, root)
+
+
+def validate_patch(*, base_root: str | Path, patched_root: str | Path,
+                   target_key: tuple[str, str, int], timeout_sec: int = 600,
+                   scan: Callable[..., ScanOutcome] = scan_tree) -> Validation:
+    """target_key is StaticFinding.key — (rule_id, file, line).
+
+    `scan` is injectable so the gates are testable with no semgrep installed. It is
+    keyword-only and defaults to the real runner: a caller cannot accidentally supply a
+    different scanner for one tree, because it is used for both.
+    """
+    target = _norm_key(target_key)
+    before = scan(base_root, timeout_sec=timeout_sec)
+    after = scan(patched_root, timeout_sec=timeout_sec)
+
+    evidence: dict = {
+        "target": list(target),
+        "scanner_args": list(SEMGREP_JSON_ARGS),
+        "tests": ("not run — executing a pull request's own test command on this host is "
+                  "arbitrary code execution from an untrusted source. Gate 7 is recorded "
+                  "as not established; the repository's CI runs it on the fix branch."),
+    }
+
+    if before.error or after.error:
+        evidence["scanner_error"] = {"pristine": before.error, "patched": after.error}
+        # No gate was established, so no gate failed. The status carries the whole story.
+        return Validation(INCONCLUSIVE, dict.fromkeys(GATES), None, evidence)
+
+    evidence |= {
+        "findings_before": len(before.keys), "findings_after": len(after.keys),
+        "parse_errors_before": before.parse_errors,
+        "parse_errors_after": after.parse_errors,
+        "files_scanned_before": before.files_scanned,
+        "files_scanned_after": after.files_scanned,
+        "coverage_before": before.coverage, "coverage_after": after.coverage,
+    }
+
+    gates: dict[str, bool | None] = dict.fromkeys(GATES)
+    gates["positive_control"] = target in before.keys
+    if not gates["positive_control"]:
+        # The bug was never measurable, so the comparison proves nothing in either
+        # direction. Calling this not_fixed would blame a patch for a broken baseline.
+        evidence["why"] = ("the target finding is absent from the PRISTINE scan, so this "
+                           "comparison cannot prove anything: the scanner config changed, "
+                           "the anchor was never there, or the key is wrong.")
+        return Validation(INCONCLUSIVE, gates, "positive_control", evidence)
+
+    before_pairs = Counter(_pair(key) for key in before.keys)
+    after_pairs = Counter(_pair(key) for key in after.keys)
+
+    # Rules that fired at the target's EXACT (file, line): one defect seen twice by two
+    # overlapping rules. Their joint disappearance is corroboration, not collateral, so
+    # gate 3 forgives one lost hit per rule — the one on that line. The same rule losing a
+    # hit ELSEWHERE in the file is still a real disappearance and still fails.
+    # ponytail: that exactness has a known cost. A root-cause fix that also clears a
+    # DIFFERENT rule at OTHER lines in the same file fails gate 3 and reports not_fixed —
+    # conservative (nothing ships, nothing is claimed) rather than fail-open. Widen the
+    # exemption to the whole file only with evidence that it costs real fixes, because
+    # doing so also stops gate 3 noticing a file that quietly stopped being parsed.
+    exempt = Counter(_pair(key) for key in before.keys
+                     if (key[1], key[2]) == (target[1], target[2]))
+    target_pair = _pair(target)
+    # The target's own rule in that file is gate 2's business, and gate 2 demands it reach
+    # zero everywhere in the file (workflow.md:50-52, fix the siblings too). Gate 3 must
+    # not punish the fix for obeying that.
+    exempt[target_pair] = before_pairs[target_pair]
+
+    lost = {pair: count - after_pairs[pair] for pair, count in before_pairs.items()
+            if after_pairs[pair] < count}
+    gained = {pair: count - before_pairs[pair] for pair, count in after_pairs.items()
+              if count > before_pairs[pair]}
+    unexpected = {pair: count for pair, count in lost.items() if count > exempt[pair]}
+    still_firing = sorted(key for key in after.keys if _pair(key) == target_pair)
+
+    evidence |= {
+        # [rule_id, file, how many hits were lost/gained], not keys: the comparison is at
+        # pair level, so reporting keys here would imply a precision that is not there.
+        "vanished_count": sum(lost.values()), "appeared_count": sum(gained.values()),
+        "vanished": [[*pair, count] for pair, count in sorted(lost.items())[:MAX_LISTED]],
+        "appeared": [[*pair, count] for pair, count in sorted(gained.items())[:MAX_LISTED]],
+        "vanished_unexpected": [[*pair, count]
+                                for pair, count in sorted(unexpected.items())[:MAX_LISTED]],
+        "colocated_exempt": [list(pair) for pair in sorted(exempt)
+                             if pair != target_pair],
+        # The lines the target's rule still fires at, which is what gate 2 rejects and the
+        # one thing the agent can act on.
+        "target_still_firing_at": [key[2] for key in still_firing],
+    }
+
+    gates["target_absent"] = not still_firing
+    gates["nothing_else_vanished"] = not unexpected
+    gates["no_new_findings"] = not gained
+    if before.parse_errors is not None and after.parse_errors is not None:
+        gates["parse_errors_not_increased"] = after.parse_errors <= before.parse_errors
+    if before.files_scanned is not None and after.files_scanned is not None:
+        gates["files_scanned_not_dropped"] = after.files_scanned >= before.files_scanned
+    # Gate 7 stays None. See GATE 7 in the module docstring.
+
+    # Diagnostic order first; the GATES fallback is the belt-and-braces that stops a gate
+    # added later, and forgotten in _DIAGNOSTIC_ORDER, from falling through to VERIFIED.
+    failed = next((name for name in _DIAGNOSTIC_ORDER if gates[name] is False),
+                  next((name for name in GATES if gates[name] is False), None))
+    if failed is not None:
+        return Validation(NOT_FIXED, gates, failed, evidence)
+    unestablished = next((name for name in _DIAGNOSTIC_ORDER if gates[name] is None), None)
+    if unestablished is not None:
+        return Validation(PLAUSIBLE, gates, unestablished, evidence)
+    return Validation(VERIFIED, gates, None, evidence)
+
+
+def demo() -> None:
+    target: Key = ("python.lang.security.sqli", "app/db.py", 5)
+    other: Key = ("python.lang.security.cmdi", "app/shell.py", 12)
+
+    def scanner(pristine: ScanOutcome, patched: ScanOutcome) -> Callable[..., ScanOutcome]:
+        seen: list[ScanOutcome] = [pristine, patched]
+        return lambda root, *, timeout_sec=0: seen.pop(0)
+
+    def outcome(*keys: Key, files: int = 10, errors: int = 0) -> ScanOutcome:
+        return ScanOutcome(keys=frozenset(keys), files_scanned=files, parse_errors=errors)
+
+    clean = outcome(target, other)
+
+    # --- the honest fix ------------------------------------------------------------
+    fixed = validate_patch(base_root="a", patched_root="b", target_key=target,
+                           scan=scanner(clean, ScanOutcome(keys=frozenset({other}),
+                                                           files_scanned=10,
+                                                           parse_errors=0)))
+    assert fixed.status == VERIFIED, fixed
+    assert fixed.failed_gate is None and fixed.gates["tests_pass"] is None, fixed.gates
+    assert "not run" in fixed.evidence["tests"]
+
+    # --- the two shapes a key-level comparison rejected (see the module docstring) ---
+    # Two overlapping rules on the target's own line; a correct fix clears both.
+    twinned = ("python.lang.security.audit.dangerous-system-call", "app/db.py", 5)
+    both = validate_patch(base_root="a", patched_root="b", target_key=target,
+                          scan=scanner(outcome(target, twinned, other),
+                                       outcome(other)))
+    assert both.status == VERIFIED, both
+    assert both.evidence["colocated_exempt"] == [list(_pair(twinned))], both.evidence
+
+    # A fix that adds an import shifts every finding below it down one line.
+    moved = (other[0], other[1], other[2] + 1)
+    shifted = validate_patch(base_root="a", patched_root="b", target_key=target,
+                             scan=scanner(outcome(target, other), outcome(moved)))
+    assert shifted.status == VERIFIED, shifted
+    assert shifted.evidence["appeared_count"] == 0, shifted.evidence
+
+    # The same rule still firing in that file is NOT fixed, wherever it moved to.
+    unfixed = validate_patch(base_root="a", patched_root="b", target_key=target,
+                             scan=scanner(outcome(target, other),
+                                          outcome((target[0], target[1], 9), other)))
+    assert unfixed.status == NOT_FIXED and unfixed.failed_gate == "target_absent", unfixed
+    assert unfixed.evidence["target_still_firing_at"] == [9], unfixed.evidence
+
+    # --- THE TRAP: a syntax error makes the file report zero findings ---------------
+    # Every finding in the file vanishes, so gate 3 catches what gate 2 alone would have
+    # read as a perfect fix.
+    broken = validate_patch(base_root="a", patched_root="b", target_key=target,
+                            scan=scanner(clean, ScanOutcome(keys=frozenset(),
+                                                            files_scanned=10,
+                                                            parse_errors=0)))
+    assert broken.status == NOT_FIXED, broken
+    assert broken.failed_gate == "nothing_else_vanished", broken.failed_gate
+
+    # A file that falls out of coverage is caught even when it held only the target.
+    only_target = ScanOutcome(keys=frozenset({target}), files_scanned=10, parse_errors=0)
+    dropped = validate_patch(base_root="a", patched_root="b", target_key=target,
+                             scan=scanner(only_target,
+                                          ScanOutcome(keys=frozenset(), files_scanned=9,
+                                                      parse_errors=0)))
+    assert dropped.failed_gate == "files_scanned_not_dropped", dropped
+    assert dropped.status == NOT_FIXED, dropped
+
+    # --- no positive control: inconclusive, never not_fixed ------------------------
+    no_control = validate_patch(base_root="a", patched_root="b", target_key=target,
+                                scan=scanner(ScanOutcome(keys=frozenset({other}),
+                                                         files_scanned=10, parse_errors=0),
+                                             ScanOutcome(keys=frozenset({other}),
+                                                         files_scanned=10, parse_errors=0)))
+    assert no_control.status == INCONCLUSIVE, no_control
+    assert no_control.failed_gate == "positive_control"
+
+    # --- a scanner that could not run is never a verdict --------------------------
+    crashed = validate_patch(base_root="a", patched_root="b", target_key=target,
+                             scan=scanner(ScanOutcome(error="semgrep is not installed"),
+                                          clean))
+    assert crashed.status == INCONCLUSIVE, crashed
+    assert set(crashed.gates.values()) == {None}, crashed.gates
+
+    # --- coverage the scanner never reported caps the outcome ---------------------
+    unknown = validate_patch(base_root="a", patched_root="b", target_key=target,
+                             scan=scanner(ScanOutcome(keys=frozenset({target, other})),
+                                          ScanOutcome(keys=frozenset({other}))))
+    assert unknown.status == PLAUSIBLE, unknown
+    assert unknown.failed_gate == "parse_errors_not_increased", unknown.failed_gate
+
+    # --- the real parser: findings AND coverage out of one --json run -------------
+    document = json.dumps({
+        "results": [{"check_id": "python.lang.security.sqli", "path": "/tmp/tree/app/db.py",
+                      "start": {"line": 5}, "extra": {"lines": "q = f'...'"}}],
+        "paths": {"scanned": ["app/db.py", "app/shell.py"]},
+        "errors": [{"message": "Syntax error at line app/db.py:5"}],
+    })
+    parsed = parse_scan_json(document, "/tmp/tree")
+    assert parsed.error is None, parsed.error
+    assert parsed.keys == frozenset({("python.lang.security.sqli", "app/db.py", 5)}), parsed
+    assert parsed.files_scanned == 2 and parsed.parse_errors == 1, parsed
+    # A crashed scanner must not be mistaken for a clean tree.
+    assert parse_scan_json("Traceback (most recent call last)", "/tmp").error
+    assert parse_scan_json("[]", "/tmp").error
+    # No paths key at all: coverage is UNKNOWN, not zero.
+    assert parse_scan_json('{"results": []}', "/tmp").files_scanned is None
+
+    # Every gate that can be False must have a place in the attribution order, or a
+    # failure added later falls through to VERIFIED.
+    assert set(_DIAGNOSTIC_ORDER) | {"positive_control", "tests_pass"} == set(GATES)
+
+    # The scan config must stay the pipeline's, with json instead of sarif.
+    assert "--json" in SEMGREP_JSON_ARGS and "--sarif" not in SEMGREP_JSON_ARGS
+    assert "--metrics=off" in SEMGREP_JSON_ARGS, SEMGREP_JSON_ARGS
+    assert "--config=p/default" in SEMGREP_JSON_ARGS, SEMGREP_JSON_ARGS
+
+    # Only this module may produce the string delivery.py branches on.
+    assert VERIFIED == "verified_fixed"
+    print("service.validate: ok")
+
+
+if __name__ == "__main__":
+    demo()

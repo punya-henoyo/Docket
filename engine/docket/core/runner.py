@@ -104,6 +104,47 @@ def _run_scanner_prescans(
         stage("semgrep", "skipped")
 
 
+def _norm_path(raw: str) -> str:
+    """One spelling for one file, so a scope entry and a scanner's path can be compared.
+    Semgrep paths are rebased onto the source root (static/engines.py) and git prints
+    repo-relative paths, so the two already agree apart from a "./" or leading "/"."""
+    return raw.strip().removeprefix("./").lstrip("/")
+
+
+def load_diff_scope(path: str | Path) -> set[str]:
+    """Repo-relative paths from --changed-files, one per line, blank lines ignored.
+
+    A missing or unreadable file RAISES, deliberately. strix's CI skill states the rule as
+    "fail loudly rather than silently narrowing scope"; the inverse is just as wrong.
+    Treating an unreadable scope file as "no scope given" would widen a PR check to the
+    whole repository, or — worse in a gate — report a pass over findings nobody scoped.
+    An EMPTY file is not an error: it means the PR changed nothing scannable, and the
+    honest result for that is zero leads.
+    """
+    return {_norm_path(line) for line in Path(path).read_text().splitlines() if line.strip()}
+
+
+def apply_diff_scope(static, scope: set[str]) -> int:
+    """Keep only findings in files the PR touched; return how many were suppressed.
+
+    POST-HOC on purpose, and not a path filter in semgrep's argv. The engines keep
+    scanning the whole tree, so run-to-run counts stay comparable and the suppressed
+    number is a real measurement rather than something invisible in a subprocess's
+    arguments. It also has to be post-hoc to be safe: static/engines.py's collect()
+    falls through to run_semgrep(source_root) over the ENTIRE tree whenever a supplied
+    --sarif parses to zero findings, so this filter is the only thing between that
+    fall-through and a full-repo result set.
+    """
+    kept = [f for f in static.findings if _norm_path(f.file) in scope]
+    suppressed = len(static.findings) - len(kept)
+    static.findings = kept
+    static.notes.append(
+        f"diff scope: {len(scope)} changed file(s), {len(kept)} candidate(s) kept, "
+        f"{suppressed} suppressed as outside the diff"
+    )
+    return suppressed
+
+
 @dataclass(slots=True)
 class ScanResult:
     success: bool
@@ -120,6 +161,15 @@ class ScanResult:
     # exactly this reason; docket had no equivalent field.
     status: str = "completed"          # completed | stopped | error
     stages: dict = field(default_factory=dict)
+    # How many static candidates were dropped for living outside --changed-files. Carried
+    # out of the run so the report can state it: "3 leads" over a filtered scan and "3
+    # leads" over an unfiltered one are different claims, and a suppressed count is the
+    # only thing that distinguishes them.
+    suppressed_outside_diff: int = 0
+    # service.fix.Patch per finding the fix agent attempted, refusals included. `.status`
+    # comes from a scanner re-run over the patched copy, never from the agent, and
+    # service/delivery.py ships only the verified ones.
+    patches: list = field(default_factory=list)
 
 
 def run_scan(
@@ -142,6 +192,7 @@ def run_scan(
     static_triage: bool = False,
     on_stage: Callable[[str, str], None] | None = None,
     triage_max: int = 0,
+    fix_max: int = 0,
     on_progress: Callable[[], None] | None = None,
     recon: bool = False,
     on_surface: Callable[[dict], None] | None = None,
@@ -149,6 +200,7 @@ def run_scan(
     on_agent: Callable[[dict], None] | None = None,
     surface: dict | None = None,
     budget_usd: float | None = None,
+    changed_files: str | None = None,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -164,14 +216,35 @@ def run_scan(
     becomes optional. For a CI gate that wants "check my dependencies/source" without
     spending LLM budget or needing a live app in the same job.
     """
-    # static_only means "no agents attacking a live target". Triage IS agents, just
-    # pointed at source, so it still needs a real model — Config.static_only() has an
+    # Scope is loaded FIRST, before a container starts or a single turn is paid for: a
+    # typo'd --changed-files must fail the run, not fail it after the bill.
+    scope = load_diff_scope(changed_files) if changed_files is not None else None
+
+    # static_only means "no agents attacking a live target". Triage and recon ARE agents,
+    # just pointed at source, so they still need a real model — Config.static_only() has an
     # empty llm and would build a LitellmModel(model="") that fails on every call.
+    # static_triage counts too: it is a third agent path, and it was missing here. So does
+    # fix_max — it is a fourth, and it is the one shape a PR check actually runs
+    # (--static-only --no-sandbox --fix N), where Config.static_only()'s empty llm and
+    # max_cost_usd=0.0 would refuse every fix agent before its first turn.
+    wants_agents = bool(triage_max or recon or static_triage or fix_max)
     cfg = config or (
         Config.static_only()
-        if static_only and not triage_max and not recon
+        if static_only and not wants_agents
         else Config.from_env()
     )
+    # VERIFIED fail-open, not a theory: Config.static_only() sets max_cost_usd=0.0
+    # (config/settings.py) and AgentCoordinator.over_budget is `spent >= budget`
+    # (core/agents.py), so 0.0 >= 0.0 is True and EVERY triage/recon agent is refused
+    # before its first turn — the run then reports "0 judged" as though the findings were
+    # examined and nothing came back. A zero budget must never silently mean "everything
+    # fails unjudged". The ternary above is not enough on its own: interface/main.py hands
+    # us a Config.static_only() explicitly for --static-only, and an explicit config wins.
+    # max_child_cost_usd=0.0 is the same trap one level down (register() gives each child a
+    # reserve of min(child_cap, remaining)), and max_agents=0 refuses the spawn outright,
+    # so the whole config is swapped rather than patched field by field.
+    if wants_agents and (not cfg.llm or cfg.max_cost_usd <= 0):
+        cfg = Config.from_env()          # DOCKET_MAX_COST_USD, default $2.00
     # A per-scan ceiling from the operator overrides DOCKET_MAX_COST_USD. Replacing
     # the value on the config is what makes it real: the pre-turn gate in core/hooks
     # reads coordinator.budget_usd, which is built from this, so a budget set here
@@ -184,6 +257,8 @@ def run_scan(
     # Bound here so the name exists whether or not recon runs — root reads it much
     # later, and `if recon:` is otherwise the only binder.
     recon_surface: dict | None = None
+    # Same reason: bound here so ScanResult can read it whether or not --fix ran.
+    patches: list = []
     # Every stage transition already flowed to on_stage and was then dropped on the floor:
     # the state lived only in the console's in-memory SESSION, so report.json could not
     # distinguish "semgrep found nothing" from "semgrep never started". That is the
@@ -341,8 +416,16 @@ def run_scan(
         # a sink is only actionable once we know which request reaches it.
         leads = []
         triage_report = None
+        suppressed_outside_diff = 0
         if sarif_path or whitebox_path:
             static = collect_static(sarif_path=sarif_path, source_root=whitebox_path)
+            # Straight after collect_static, so everything downstream — correlation,
+            # triage's bill, static.json, the leads in the report — sees the scoped set and
+            # only the scoped set. An empty scope keeps NOTHING: "the PR changed nothing
+            # scannable" is a real answer, and widening it back to the repo would be the
+            # silent-scope-change this flag exists to prevent.
+            if scope is not None:
+                suppressed_outside_diff = apply_diff_scope(static, scope)
             static.save(directory)
             leads = correlate(static.findings, surface, whitebox_path)
             for note in static.notes:
@@ -352,13 +435,18 @@ def run_scan(
             # Agent triage: read the code around each candidate and rule on it. This is
             # the whole value over running Semgrep directly — a candidate with a verdict
             # and a quoted guard is actionable where a candidate alone is a queue item.
-            # Needs the source, and a model, so it is skipped for --static-only.
+            # Needs the source, and a model. It used to also be gated on `not static_only`,
+            # which made static_triage=True a silent no-op there — and combined with the
+            # missing static_triage in the cfg ternary above, asking for it under
+            # --static-only got you neither a model nor a triage pass, with no error. The
+            # config swap above now guarantees a real model and a real budget whenever it
+            # is requested, so the request is honoured instead of dropped.
             # Kept, deliberately OFF by default: core/triage.py above is the wired
             # triage. Two triage agents were built in parallel; running both would
             # double the model spend and produce two verdicts per finding with no
             # rule for which wins.
             # ponytail: pick a winner after a real run and delete the loser.
-            if static_triage and whitebox_path and leads and not static_only:
+            if static_triage and whitebox_path and leads:
                 triage_context = ScanContext(
                     target_url=agent_target or "", run_dir=directory,
                     on_finding=None, agent_id="triage", role="triage",
@@ -371,6 +459,38 @@ def run_scan(
                 for note in verdicts.notes:
                     emitter.log_static(note)
                 emitter.log_static(verdicts.summary())
+
+        # AUTOFIX, after the static pass so it can see the candidates, and after triage so
+        # it does not spend a turn patching something already ruled not reachable.
+        #
+        # Gated on `whitebox_path`, NOT on `sandbox` and NOT on `len(store)`. The shape a PR
+        # check actually runs is `--static-only --no-sandbox --fix N`: there is no sandbox,
+        # no Finding is ever constructed, and every scanner hit is a CANDIDATE. Either of
+        # those gates would make --fix a silent no-op on exactly the invocation it exists
+        # for — the same trap `static_triage` hit (interface/main.py:114). The agent needs
+        # source and a model; it needs no container, because it runs no commands.
+        if fix_max and whitebox_path:
+            from docket.service.fix import fix_findings, report_for_fix
+
+            if on_stage:
+                on_stage("fix", "running")
+            patches = fix_findings(
+                report_for_fix(store, leads),
+                source_root=whitebox_path, run_dir=directory, config=cfg,
+                max_fixes=fix_max, model_override=model_override, cancel=cancel,
+                on_agent=on_agent,
+            )
+            if on_stage:
+                # "skipped", not "error", when nothing came back: an empty list means
+                # nothing was fixable (no file:line anchor, or triage already cleared it),
+                # and a fix agent that FAILS still produces a Patch record. Reporting that
+                # as "error" would turn every such pull request red — service/gate.py reads
+                # an errored stage as action_required.
+                on_stage("fix", "done" if patches else "skipped")
+            if on_progress is not None:
+                on_progress()
+        elif on_stage:
+            on_stage("fix", "skipped")
 
         if static_only:
             # Was an unconditional success=True, so a static-only run could return 0 or 2
@@ -424,7 +544,13 @@ def run_scan(
     # the whole point — a caller may show them while a gate refuses to call them clean.
     if any(v == "error" for v in stages.values()):
         status = "error"
-    elif cancel.cancelled or coordinator.over_budget("root") is not None:
+    # The `max_cost_usd > 0` guard is the same zero-budget trap one field over, and it was
+    # firing: over_budget() is `spent >= budget`, so a --static-only run (budget 0.0, spent
+    # 0.0, no agent even built) reported status="stopped" — every scanner-only PR check
+    # looked like a scan that ran out of money halfway. Verified with a real CLI run before
+    # this guard. A run that needed no budget did not stop early.
+    elif cancel.cancelled or (cfg.max_cost_usd > 0
+                               and coordinator.over_budget("root") is not None):
         status = "stopped"
     else:
         status = "completed"
@@ -439,4 +565,6 @@ def run_scan(
         triage=triage_report,
         status=status,
         stages=dict(stages),
+        suppressed_outside_diff=suppressed_outside_diff,
+        patches=patches,
     )

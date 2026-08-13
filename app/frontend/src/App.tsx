@@ -7,10 +7,11 @@ import { Scan } from "./views/Scan";
 import { Surface } from "./views/Surface";
 import { Findings } from "./views/Findings";
 import { Repositories } from "./views/Repositories";
+import { PullRequests } from "./views/PullRequests";
 import { Integrations } from "./views/Integrations";
 import { useHashRoute } from "./hooks/useHashRoute";
 
-type View = "overview" | "scan" | "surface" | "findings" | "repos" | "integrations";
+type View = "overview" | "scan" | "surface" | "findings" | "prs" | "repos" | "integrations";
 
 // Ordered by who asks the question: posture first (a security lead), then the live
 // run, then the map, then the detail an engineer works from.
@@ -19,6 +20,9 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "scan", label: "Scan" },
   { id: "surface", label: "Attack surface" },
   { id: "findings", label: "Findings" },
+  // The control plane. Sits with the manual half rather than in its own product: an
+  // operator switching a repo on and an operator scanning one by hand are the same person.
+  { id: "prs", label: "Pull requests" },
   { id: "repos", label: "Repositories" },
   { id: "integrations", label: "Integrations" },
 ];
@@ -365,6 +369,11 @@ export default function App() {
             verdictFilter={verdictFilter}
             onVerdictSelect={setVerdictFilter}
           />
+        ) : view === "prs" ? (
+          // Fetches its own state: the poller runs whether or not this tab is open, and a
+          // 503 from an unbuilt service store must stay on this page rather than becoming
+          // a boot error for the whole console.
+          <PullRequests />
         ) : view === "repos" ? (
           <Repositories
             session={session}

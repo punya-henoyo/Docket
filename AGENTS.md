@@ -113,6 +113,6 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
 
 ## Before you commit
 ```bash
-make check      # 57 module self-checks, fast
+make check      # 74 module self-checks, fast
 make test       # 12 test scripts (Docker)
 ```

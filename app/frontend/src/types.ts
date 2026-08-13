@@ -281,3 +281,147 @@ export interface Health {
   loopback_only: boolean;
   active_scan?: string | null;
 }
+
+
+/* ---------------------------------------------------------------------------------
+ * The CONTROL PLANE. The types above describe scans an operator started; these
+ * describe the ones that happen on their own — a pull request opens, the poller
+ * notices, docket scans the diff, the gate decides. Served by
+ * app/backend/routers/service.py over engine/docket/service/store.py's schema.
+ * --------------------------------------------------------------------------------- */
+
+export type AutofixMode = "off" | "suggest" | "open_pr";
+
+/** Per-repo policy. TRI-STATE: `null` on any member means INHERIT the org default,
+ *  which is a different answer from "off". `autofix_mode: null` inherits;
+ *  `autofix_mode: "off"` is an operator saying no. Every key is always present — the
+ *  backend fills the absent ones with null rather than omitting them, because an
+ *  `undefined` read in a form control is what silently loses a setting. */
+export interface Policy {
+  autofix_mode: AutofixMode | null;
+  max_files_changed: number | null;
+  require_verified_validation: boolean | null;
+  enabled_classes: string[] | null;
+  /** 0 is a real setting (judge nothing); null inherits. */
+  triage_max: number | null;
+  /** null inherits. 0 is rejected by the backend: a $0 ceiling makes every triage
+   *  agent trip its budget before its first turn and record `uncertain`, which is a
+   *  fail-open wearing a green check. */
+  budget_usd: number | null;
+  label: string | null;
+}
+
+export const EMPTY_POLICY: Policy = {
+  autofix_mode: null,
+  max_files_changed: null,
+  require_verified_validation: null,
+  enabled_classes: null,
+  triage_max: null,
+  budget_usd: null,
+  label: null,
+};
+
+export interface WatchedRepo {
+  full_name: string;
+  enabled: boolean;
+  policy: Policy;
+  added_at: string | null;
+}
+
+/** store.py's state machine. Named PrScanState because `ScanState` above is the
+ *  repo-scan payload and the two must not be confused. */
+export type PrScanState = "queued" | "scanning" | "delivered" | "failed" | "abandoned";
+
+/** GitHub check-run vocabulary, from service/gate.py. `action_required` means a human
+ *  must look: the scan did not fail, it did not finish being trustworthy. */
+export type GateConclusion = "success" | "failure" | "action_required";
+
+export interface PrScan {
+  id: number | string;
+  repo: string;
+  pr: number | null;
+  /** Not in store.py's documented schema yet, so read as optional. */
+  title?: string | null;
+  head_sha: string;
+  base_sha: string;
+  state: PrScanState;
+  run_name: string | null;
+  /** null = the gate has not reported yet. Widened to string because the column is
+   *  free text and a value this console has never heard of must render, not crash. */
+  conclusion: GateConclusion | string | null;
+  /** ISO string or epoch seconds — store.py's column type is its own choice. */
+  created_at: string | number | null;
+  updated_at: string | number | null;
+  lease_owner: string | null;
+  lease_expires_at: string | number | null;
+  /** Joined from the run's report.json. Always present, always a number. */
+  finding_count?: number;
+  cost_usd?: number;
+  severity_counts?: Partial<Record<Severity, number>>;
+  /** Columns store.py grows that this console has not been taught. */
+  extra?: Record<string, unknown>;
+}
+
+/** The gate's verdict, re-evaluated from report.json. `reasons` is the argument for the
+ *  conclusion, which the stored column does not keep. */
+export interface GateVerdict {
+  conclusion: GateConclusion | string;
+  exit_code: number;
+  reasons: string[];
+  annotation_count: number;
+}
+
+/** A proposed fix. `verified` false covers "proof failed" AND "nobody tried" — the
+ *  backend collapses unknown into false on purpose, so the UI can only ever err
+ *  towards calling a patch unproven. */
+export interface Patch {
+  name: string;
+  diff: string;
+  truncated: boolean;
+  verified: boolean;
+  source: string;
+  /** delivery.py's vocabulary. Only "verified_fixed" earns a branch and a fix PR. */
+  status?: string | null;
+  title?: string | null;
+  summary?: string | null;
+  /** Paths this patch rewrites. Compared against the policy's max_files_changed. */
+  files?: string[];
+}
+
+export interface PrScanDetail extends PrScan {
+  /** False means the run produced no report.json. "No findings" and "never scanned"
+   *  look identical without this, and only one of them is good news. */
+  report_found: boolean;
+  findings: Finding[];
+  triaged: unknown[];
+  summary?: string | null;
+  gate: GateVerdict | null;
+  patches: Patch[];
+}
+
+/** What one poll pass found. poll.tick() records per-repo failures in `errors` and
+ *  keeps going, so a pass can report success while a repo is not being watched at all —
+ *  which is why this is surfaced rather than reduced to a boolean. */
+export interface PollSummary {
+  repos?: number;
+  pull_requests?: number;
+  enqueued?: unknown[];
+  errors?: { repo?: string; error?: string }[];
+}
+
+export interface ServiceStatus {
+  running: boolean;
+  /** Epoch seconds, or null when the poller has never completed a pass. */
+  last_tick: number | null;
+  ticks: number;
+  /** The last tick's failure. A poller that keeps running while every tick fails looks
+   *  identical to a healthy one without this. */
+  error: string | null;
+  interval_sec: number | null;
+  last_summary: PollSummary | null;
+  watched: number;
+  enabled: number;
+  queue_depth: number;
+  scanning: number;
+  states: Partial<Record<PrScanState, number>>;
+}

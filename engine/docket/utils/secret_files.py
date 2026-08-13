@@ -22,7 +22,12 @@ _PATTERNS = [
     # puts the VERBATIM matched source line into poc.request, and report/sarif.py:103
     # copies it into the alert message. So an unredacted key does not merely sit in a
     # local file, it is published wherever findings are published.
-    re.compile(r"\b(sk-[A-Za-z0-9_\-]{20,})"),              # OpenAI, incl. sk-proj-
+    # Enumerate OpenAI's prefixes instead of allowing hyphens anywhere after `sk-`. The
+    # broad version matched any hyphenated identifier of length 20+, so a CSS class
+    # `.sk-spinner-pulse-loader-inner` was redacted to `.[REDACTED]`. A real key is
+    # `sk-` or `sk-<kind>-` followed by an unbroken alphanumeric run.
+    re.compile(r"\b(sk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{20,})"),
+    re.compile(r"\b(sk-[A-Za-z0-9]{20,})"),                 # classic OpenAI
     re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{16,})"),          # GitHub classic PAT / OAuth
     re.compile(r"\b(github_pat_[A-Za-z0-9_]{20,})"),        # GitHub fine-grained PAT
     re.compile(r"\b(glpat-[A-Za-z0-9_\-]{16,})"),           # GitLab PAT
@@ -35,20 +40,71 @@ _PATTERNS = [
     re.compile(r"\b((?:AKIA|ASIA)[0-9A-Z]{16})\b"),         # AWS access key / session id
     # A private key is the one case where the MARKER is the secret's giveaway and the body
     # is multi-line, so it needs DOTALL and its own pattern rather than a token shape.
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
-               re.DOTALL),
-    re.compile(r"(?i)\b(bearer)\s+([A-Za-z0-9._\-]{12,})"), # bearer tokens
+    # `[A-Z ]*` could not match the digits in some headers nor PGP's trailing "BLOCK".
+    # The unterminated variant is second and greedy to end-of-string: a snippet truncated
+    # mid-key has no END marker, and leaking most of a private key is still leaking it.
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z ]*-----"
+               r".*?-----END [A-Z0-9 ]*PRIVATE KEY[A-Z ]*-----", re.DOTALL),
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z ]*-----[\s\S]*"),
+    # `Authorization: Basic YWRtaW46…` leaked: the keyword pattern's value class needs 6+
+    # chars and stops at whitespace, so it tried to match "Basic" (5) and failed outright.
+    re.compile(r"(?i)\b(bearer|basic|digest|token)\s+([A-Za-z0-9._\-+/=]{8,})"),
+    # A credential inside a URL. No keyword pattern can catch this: the variable is called
+    # DATABASE_URL or MONGO_URI, which contains none of the keywords, and the secret is a
+    # path component rather than an assigned value. The empty third group fills the "quote"
+    # slot so this reuses the same keep-name-replace-value substitution.
+    re.compile(r"\b([a-z][a-z0-9+.\-]*://[^\s:/@]+)(:)()([^\s@/]{3,})(?=@)"),
     # Session cookies were the gap here: a captured `Cookie: session=abc123` is a
     # credential every bit as usable as a bearer token, and it survived every pattern
     # above. set-cookie covers the response side. The cookie NAME goes with the value —
     # keeping it would mean a cookie-aware sub-parser for no security gain.
     re.compile(r"(?i)\b(cookie|set-cookie|x-api-key|x-auth-token)"
                r"(\s*[:=]\s*)([\"']?)([^\s\"']{4,})"),
-    re.compile(r"(?i)\b(authorization|api[_-]?key|password|secret|token)"
-               r"(\s*[:=]\s*)([\"']?)([^\s\"',;&]{6,})"),   # key: value pairs
+    # `\b(password)` could not match DB_PASSWORD or aws_secret_access_key, because `_` is
+    # a word character so there is no boundary before the keyword. Allowing word chars on
+    # both sides is what makes the prefixed forms — which are the COMMON forms in real
+    # config and real code — match at all.
+    re.compile(r"(?i)\b(\w*(?:authorization|api[_-]?key|passwd|password|secret|token"
+               r"|credential)\w*)(\s*[:=]\s*)([\"']?)([^\s\"',;&]{6,})"),
 ]
 
 _SENSITIVE_ENV = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+
+
+_CODE_ATTRIBUTE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
+
+
+def _looks_like_code(value: str) -> bool:
+    """Is this matched `value` a source-code expression rather than a literal secret?
+
+    `password = request.form["password"]` used to become
+    `password = [REDACTED]"password"]` — the value class stops at the quote, so it ate
+    `request.form[` and left the rest. That is not over-caution, it is DESTRUCTION of
+    evidence: measured on 5 of 16 real static.json snippets, and the mangled line was the
+    taint proof of the SQL-injection finding it belonged to. A report that hides the code
+    it is reporting on is worse than one that shows a variable name.
+
+    Two signals, both cheap and both specific to code rather than to configuration:
+    a bracket or paren cannot appear in a credential, and a short dotted identifier is
+    attribute access. The length bound keeps a long dotted token (a JWT) redactable.
+    """
+    # `{` matters as much as `(`: the commonest mangled real snippet was an f-string SQL
+    # query, `... AND password = '{password}'`, where the value is a PLACEHOLDER. Redacting
+    # it destroys the exact interpolation that makes the finding a finding.
+    if any(ch in value for ch in "([{"):
+        return True
+    # A value that is only an interpolation or a bare template marker is never a literal.
+    if value.startswith("$") or value.startswith("%"):
+        return True
+    return bool(_CODE_ATTRIBUTE.match(value)) and len(value) < 60
+
+
+def _redact_key_value(match: re.Match) -> str:
+    """Keep the name and the separator, replace the value — unless it is code."""
+    value = match.group(match.lastindex)
+    if _looks_like_code(value):
+        return match.group(0)
+    return f"{match.group(1)}{match.group(2)}{match.group(3)}{REDACTED}"
 
 
 def redact(text: str) -> str:
@@ -57,7 +113,7 @@ def redact(text: str) -> str:
     result = text
     for pattern in _PATTERNS:
         if pattern.groups >= 3:
-            result = pattern.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{REDACTED}", result)
+            result = pattern.sub(_redact_key_value, result)
         elif pattern.groups == 2:
             result = pattern.sub(lambda m: f"{m.group(1)} {REDACTED}", result)
         else:
@@ -153,6 +209,39 @@ def demo() -> None:
            "-----END RSA PRIVATE KEY-----")
     assert "secretkeymaterialhere" not in redact(pem)
 
+    # The four shapes an adversarial review measured LEAKING into report.json, report.sarif
+    # AND report.md at once. All four are the COMMON way each secret appears in real code:
+    # `\b(password)` cannot match DB_PASSWORD because `_` is a word char and gives no
+    # boundary; "Basic" is 5 chars against a {6,} value class; and a URL credential is a
+    # path component under a variable named URL, which contains no keyword at all.
+    for leak, secret in (
+        ("aws_secret_access_key = wJalrXUtnFEMIK7MDENGbPxRfiCY", "wJalrXUtnFEMIK7MDENGbPxRfiCY"),
+        ("DB_PASSWORD=hunter2000", "hunter2000"),
+        ("DATABASE_URL=postgres://admin:s3cr3tpw@db.host:5432/app", "s3cr3tpw"),
+        ("MONGO_URI=mongodb+srv://svc:Pa55w0rd@c0.abc.mongodb.net", "Pa55w0rd"),
+        ("Authorization: Basic YWRtaW46cGFzc3dvcmQxMjM=", "YWRtaW46cGFzc3dvcmQxMjM="),
+    ):
+        assert secret not in redact(leak), leak
+    # PGP says "PRIVATE KEY BLOCK", which `[A-Z ]*` could not reach past; and a snippet
+    # truncated mid-key has no END marker, where leaking most of a key still leaks it.
+    assert "mQINBF" not in redact(
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----\nmQINBFsecret\n-----END PGP PRIVATE KEY BLOCK-----")
+    assert "MIIEow" not in redact("-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA")
+
+    # OVER-redaction, which is the other half and was ALSO measured wrong: 5 of 16 real
+    # static.json snippets came out mangled, and the mangled line was the taint evidence of
+    # the SQLi finding it belonged to. A report that hides the code it reports on is worse
+    # than one that shows a variable name. These must survive BYTE-IDENTICAL.
+    for code in (
+        'password = request.form["password"]',
+        'query = "SELECT * FROM u WHERE p=" + request.form.get("password")',
+        "token = os.environ.get('API_TOKEN')",
+        ".sk-spinner-pulse-loader-inner { color: red; }",
+        "see https://github.com/usestrix/strix for details",
+        "target = http://127.0.0.1:8765/api",
+    ):
+        assert redact(code) == code, code
+
     # Ordinary text is untouched — over-redaction would gut a report.
     assert redact("GET /login returned 401") == "GET /login returned 401"
     assert redact("") == ""
@@ -169,14 +258,19 @@ def demo() -> None:
     # --- redact_document: whole-document coverage that cannot break the encoding ------
     import json as _json
 
-    # The exact input that produced invalid JSON via redact(json.dumps(...)).
-    snippet = 'password = request.form["password"]'
-    broken = redact(_json.dumps({"snippet": snippet}))
-    try:
-        _json.loads(broken)
-        raise AssertionError("the old pattern is expected to corrupt this; it did not")
-    except _json.JSONDecodeError:
-        pass                                  # reproduces the bug this function replaces
+    # This assert used to REQUIRE that redact(json.dumps(...)) corrupt this input, to
+    # justify redact_document's existence. It no longer corrupts, because _looks_like_code
+    # now leaves the expression alone — so the assertion was demanding a bug. Replaced with
+    # the property that actually matters, on an input that still exercises the escape path:
+    # a value that IS redacted, sitting next to an escaped quote.
+    snippet = 'DB_PASSWORD=hunter2000  # and a quote: \\"'
+    round_tripped = _json.loads(_json.dumps(redact_document({"snippet": snippet})))
+    assert REDACTED in round_tripped["snippet"]
+    assert "hunter2000" not in round_tripped["snippet"]
+    # And the case that motivated the function is now untouched rather than mangled, which
+    # is the stronger outcome: the taint evidence of a SQLi finding survives intact.
+    code = 'password = request.form["password"]'
+    assert redact_document({"snippet": code})["snippet"] == code
 
     fixed = _json.dumps(redact_document({"snippet": snippet}))
     parsed = _json.loads(fixed)               # must parse, which is the whole point

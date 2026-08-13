@@ -61,6 +61,35 @@ def add_scan_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--no-discovery", action="store_true",
                         help="Skip attack-surface discovery. Root then starts with no "
                              "route list and must probe for itself.")
+    parser.add_argument("--changed-files", default=None, metavar="PATH",
+                        help="File listing the PR's changed files, one repo-relative path "
+                             "per line (e.g. `git diff --name-only base...head`). Static "
+                             "findings outside that set are suppressed and counted. The "
+                             "scanners still run whole-tree, so counts stay comparable "
+                             "run-to-run and the suppressed number is honest. An "
+                             "unreadable file is a hard error, never a silent full-repo "
+                             "scan; an empty one legitimately means nothing scannable "
+                             "changed, so nothing is reported.")
+    parser.add_argument("--triage", type=int, default=0, metavar="N",
+                        help="Have an agent read the code around the first N findings and "
+                             "rule on each (default: 0, off). This is what turns a queue "
+                             "of maybes into verdicts, and it needs a model even under "
+                             "--static-only, so passing it implies an LLM is configured.")
+    parser.add_argument("--fix", type=int, default=0, metavar="N",
+                        help="Have an agent patch the first N findings, worst-first "
+                             "(default: 0, off). Each one edits a COPY of the source, and "
+                             "a scanner re-run over that copy decides whether it worked — "
+                             "the agent never certifies its own fix, and only a patch that "
+                             "verifies is ever offered as one. Needs a model, so passing it "
+                             "implies an LLM is configured even under --static-only.")
+    parser.add_argument("--budget", type=float, default=None, metavar="USD",
+                        help="Spend ceiling for this scan, overriding "
+                             "DOCKET_MAX_COST_USD. Enforced before every model turn.")
+    parser.add_argument("--recon", action="store_true",
+                        help="Map the application by reading its source before triage. "
+                             "Cheap and flat-cost, and it surfaces candidates no pattern "
+                             "match can see (a route with no auth, a guard an env var "
+                             "disables). Also needs a model.")
     return parser
 
 
@@ -109,6 +138,17 @@ def demo() -> None:
     # --target is optional so --static-only can run with no live target at all.
     static = parser.parse_args(["scan", "--static-only", "--source", "/repo"])
     assert static.target is None and static.static_only is True
+
+    # Defaults for the CI flags: NO AI triage, no recon, no autofix, no budget override,
+    # no diff scope. Every one is opt-in, so a plain `docket scan` costs what it did.
+    assert (static.triage, static.recon, static.fix, static.budget, static.changed_files) \
+        == (0, False, 0, None, None)
+    ci = parser.parse_args(["scan", "--static-only", "--source", "/repo",
+                            "--changed-files", "changed.txt", "--triage", "12",
+                            "--budget", "1.50", "--recon", "--fix", "3"])
+    assert ci.changed_files == "changed.txt"
+    assert ci.triage == 12 and ci.budget == 1.5 and ci.recon is True
+    assert ci.fix == 3
 
     view = parser.parse_args(["view", "baseline", "--format", "sarif", "--full"])
     assert view.run_name == "baseline" and view.format == "sarif" and view.full is True
