@@ -109,8 +109,24 @@ class RunDiff:
         return f"{len(self.new)} new finding(s){detail}"
 
 
-def diff_runs(base: dict[str, Any] | None, head: dict[str, Any]) -> RunDiff:
+def _in_scope(finding: dict[str, Any], scope: set[str]) -> bool:
+    location = (finding.get("location") or {})
+    path = str(location.get("path") or "").replace("/work/source/", "").lstrip("/")
+    return path in scope
+
+
+def diff_runs(base: dict[str, Any] | None, head: dict[str, Any],
+              scope: list[str] | None = None) -> RunDiff:
     """Compare two report.json documents. `base` is what the branch looked like before.
+
+    `scope` restricts BOTH sides to a set of repo-relative paths, and exists for the
+    pull-request case where the head scan only covered the changed files. Without it
+    the comparison is silently wrong in the most damaging direction: a base finding in
+    a file the head scan never looked at has no counterpart, so it reports as FIXED.
+    A PR would be credited with fixing everything it did not touch.
+
+    Scoping both sides makes "fixed" mean "fixed among the files this change touched",
+    which is the only claim the evidence supports.
 
     Passing None for `base` is legitimate — it is the first scan of a repository — and
     produces every finding as `new` WITH a caveat, so a caller cannot mistake a
@@ -118,6 +134,11 @@ def diff_runs(base: dict[str, Any] | None, head: dict[str, Any]) -> RunDiff:
     """
     head_findings = head.get("findings", []) or []
     base_findings = (base or {}).get("findings", []) or []
+
+    if scope is not None:
+        wanted = {str(p).strip().lstrip("/") for p in scope if isinstance(p, str)}
+        head_findings = [f for f in head_findings if _in_scope(f, wanted)]
+        base_findings = [f for f in base_findings if _in_scope(f, wanted)]
 
     base_keys = {finding_key(f) for f in base_findings}
     head_keys = {finding_key(f) for f in head_findings}
@@ -287,6 +308,33 @@ def demo() -> None:
     # No coverage recorded means no evidence anything was examined.
     blind = diff_runs(report([]), {"findings": [], "success": True})
     assert not blind.trustworthy and any("no coverage" in c for c in blind.caveats)
+
+    # ── scoped to a pull request's changed files ────────────────────────────
+    # The trap this closes: the head scan only covered changed files, so a base
+    # finding in an untouched file has no counterpart and reports as FIXED. The PR
+    # gets credit for fixing everything it did not touch.
+    untouched = finding("semgrep/old", "app/legacy.py")
+    touched = finding("semgrep/sqli", "app/auth.py")
+    base_report = report([untouched, touched])
+    head_report = report([touched])          # head only scanned app/auth.py
+
+    unscoped = diff_runs(base_report, head_report)
+    assert len(unscoped.fixed) == 1, "without scope the untouched file looks fixed"
+
+    scoped = diff_runs(base_report, head_report, scope=["app/auth.py"])
+    assert scoped.fixed == [], "scoping must not credit a PR for untouched files"
+    assert scoped.new == [] and len(scoped.unchanged) == 1
+
+    # A genuine fix INSIDE the scope is still reported.
+    real_fix = diff_runs(report([untouched, touched]), report([untouched]),
+                         scope=["app/auth.py"])
+    assert len(real_fix.fixed) == 1 and real_fix.fixed[0]["rule_id"] == "semgrep/sqli"
+
+    # A leading slash or mount prefix on either side must not defeat the match.
+    prefixed = dict(touched)
+    prefixed["location"] = dict(touched["location"], path="/work/source/app/auth.py")
+    assert diff_runs(report([prefixed]), report([prefixed]),
+                     scope=["app/auth.py"]).unchanged, "mount prefix must be stripped"
 
     # First scan of a repository: everything is new, which is TRUE and useless. It
     # must not read as a regression, or the first PR blocks on the whole backlog.

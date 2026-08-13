@@ -46,6 +46,7 @@ def _run_scanner_prescans(
     on_finding: Callable[[Finding], None] | None,
     on_stage: Callable[[str, str], None] | None = None,
     cancel: CancelToken = NEVER,
+    scope_paths: list[str] | None = None,
 ) -> None:
     """Deterministic scanner pass, BEFORE any agent turn runs. nuclei needs a real
     target (skipped when None — e.g. a --static-only, --source-only run with nothing
@@ -98,7 +99,10 @@ def _run_scanner_prescans(
         stage("trivy", "running")
         drain("trivy", lambda: run_trivy(sandbox, run_dir_))
         stage("semgrep", "running")
-        drain("semgrep", lambda: run_semgrep(sandbox, run_dir_))
+        # Scoped to a pull request's changed files when given. Only semgrep takes a
+        # scope: trivy reads dependency manifests, and a PR that changes none of them
+        # still inherits every advisory from the ones it did not touch.
+        drain("semgrep", lambda: run_semgrep(sandbox, run_dir_, paths=scope_paths))
     else:
         stage("trivy", "skipped")
         stage("semgrep", "skipped")
@@ -142,6 +146,7 @@ def run_scan(
     on_agent: Callable[[dict], None] | None = None,
     surface: dict | None = None,
     budget_usd: float | None = None,
+    scope_paths: list[str] | None = None,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -221,7 +226,7 @@ def run_scan(
             # level up and found nothing — confirmed by an end-to-end CLI run before
             # this fix, not assumed.
             _run_scanner_prescans(sandbox, agent_target, sandbox.run_dir, on_finding,
-                              on_stage, cancel=cancel)
+                              on_stage, cancel=cancel, scope_paths=scope_paths)
 
             # Recon BEFORE triage, deliberately. It maps the application once and
             # cheaply (~$0.06 regardless of finding count), and the candidates it
