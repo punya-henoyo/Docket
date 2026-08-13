@@ -81,6 +81,9 @@ export interface PrResult {
   head_sha: string;
   base_ref: string;
   at: number;
+  /** True while the scan is still running. A PR appears the moment it is picked up,
+   *  not minutes later when the verdict lands. */
+  scanning?: boolean;
   error: string | null;
   exit_code: number | null;
   reason: string;

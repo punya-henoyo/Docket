@@ -137,8 +137,13 @@ def watch_state() -> dict[str, Any]:
 
 
 def record_watch_result(ref: Any, verdict: dict[str, Any], posted: dict[str, str],
-                        error: str | None = None) -> None:
-    """Prepend one pull-request verdict to what the console shows."""
+                        error: str | None = None, scanning: bool = False) -> None:
+    """Record a pull request's state: in progress, or the finished verdict.
+
+    Called TWICE per pull request — once when the scan starts and once when it ends —
+    because a scan takes minutes and a screen that shows nothing for minutes reads as
+    broken. The second call replaces the first rather than appending.
+    """
     entry = {
         "repo": getattr(ref, "repo", "?"),
         "number": getattr(ref, "number", 0),
@@ -146,6 +151,7 @@ def record_watch_result(ref: Any, verdict: dict[str, Any], posted: dict[str, str
         "head_sha": (getattr(ref, "head_sha", "") or "")[:7],
         "base_ref": getattr(ref, "base_ref", ""),
         "at": time.time(),
+        "scanning": scanning,
         "error": error,
         "exit_code": verdict.get("exit_code"),
         "reason": verdict.get("reason", ""),
@@ -166,6 +172,12 @@ def record_watch_result(ref: Any, verdict: dict[str, Any], posted: dict[str, str
     }
     with SESSION.lock:
         results = SESSION.watch.setdefault("results", [])
+        for index, existing in enumerate(results):
+            if (existing.get("repo"), existing.get("number"),
+                    existing.get("head_sha")) == (entry["repo"], entry["number"],
+                                                  entry["head_sha"]):
+                results[index] = entry     # the in-progress row becomes the verdict
+                return
         results.insert(0, entry)
         del results[MAX_WATCH_RESULTS:]
 
@@ -266,10 +278,16 @@ def _watch_loop() -> None:
     seen = SeenStore(runs_root() / ".pr-seen.json")
 
     def list_pulls(repo: str):
+        # Stamped here, not in sleeper(): a cycle that starts a multi-minute scan does
+        # not reach sleeper for minutes, so "last checked" sat at never while docket
+        # was demonstrably working.
+        with SESSION.lock:
+            SESSION.watch["last_poll"] = time.time()
         payload = _api(f"/repos/{repo}/pulls?state=open&per_page=50", SESSION.token)
         return payload, {}
 
     def handle(ref):
+        record_watch_result(ref, {}, {}, scanning=True)
         outcome = scan_pull_request(
             ref, token=SESSION.token or "", fetch_files=changed_files,
             scan=_scan_for_pr, baselines=baselines, post=_post_for_pr,

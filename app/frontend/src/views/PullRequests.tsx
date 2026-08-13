@@ -27,6 +27,7 @@ const SEV_TONE: Record<string, string> = {
 };
 
 function verdictOf(result: PrResult) {
+  if (result.scanning) return { label: "scanning…", tone: "var(--ok)", mark: "•" };
   if (result.error) return { label: "failed", tone: "var(--crit)", mark: "✕" };
   return VERDICT[(result.exit_code ?? 1) as 0 | 1 | 2] ?? VERDICT[1];
 }
@@ -164,7 +165,7 @@ export function PullRequests({
 function Row({ result }: { result: PrResult }) {
   const [open, setOpen] = useState(false);
   const v = verdictOf(result);
-  const interesting = result.exit_code !== 0 || result.new > 0;
+  const interesting = !result.scanning && (result.exit_code !== 0 || result.new > 0);
 
   return (
     <div style={{ display: "block", padding: 0 }}>
@@ -177,6 +178,7 @@ function Row({ result }: { result: PrResult }) {
         }}
       >
         <span title={v.label} style={{
+          animation: result.scanning ? "pulse 1.4s ease-in-out infinite" : undefined,
           width: 22, height: 22, borderRadius: "50%", flex: "none",
           display: "grid", placeItems: "center",
           font: "600 12px var(--sans)", color: v.tone,
@@ -209,9 +211,11 @@ function Row({ result }: { result: PrResult }) {
               −{result.fixed}
             </span>
           )}
-          {result.new === 0 && result.fixed === 0 && (
+          {result.scanning ? (
+            <span className="note" style={{ fontSize: 12 }}>reading the diff…</span>
+          ) : result.new === 0 && result.fixed === 0 ? (
             <span className="note" style={{ fontSize: 12 }}>no change</span>
-          )}
+          ) : null}
         </span>
 
         <span style={{ flex: "none", minWidth: 96, textAlign: "right",
