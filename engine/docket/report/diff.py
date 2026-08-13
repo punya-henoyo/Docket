@@ -200,11 +200,13 @@ def gate(diff: RunDiff, *, block_on: str = "reachable") -> tuple[int, str]:
     blocking = diff.new if block_on == "any" else diff.new_reachable
     if blocking:
         worst = blocking[0]
-        location = (worst.get("location") or {}).get("source_file") or "?"
+        location = str((worst.get("location") or {}).get("source_file") or "?")
+        # A recon candidate's rule_id is a slug of its own title; the title reads.
+        name = (worst.get("title") if worst.get("discovered_by") == "recon"
+                else str(worst.get("rule_id", "?")).rsplit(".", 1)[-1]) or "?"
         return EXIT_FOUND, (
-            f"{len(blocking)} new finding(s) block this merge. Worst: "
-            f"{worst.get('rule_id', '?').rsplit('.', 1)[-1]} at "
-            f"{str(location).replace('/work/source/', '')}"
+            f"{len(blocking)} new finding(s) block this merge. Worst: {name} at "
+            f"{location.replace('/work/source/', '')}"
         )
 
     if diff.new:

@@ -203,18 +203,95 @@ def oauth_scope() -> str:
     return os.environ.get("DOCKET_GITHUB_SCOPE", "").strip() or "repo"
 
 
-def _api(path: str, token: str, *, timeout: float = 20.0) -> Any:
+def _api(path: str, token: str, *, timeout: float = 20.0,
+         method: str | None = None, body: dict[str, Any] | None = None) -> Any:
+    """One GitHub call. `body` makes it a write; `method` overrides the verb.
+
+    Writes go through the same function as reads on purpose — one place holds the
+    auth header, the API version and the user agent, so a new endpoint cannot
+    accidentally ship without them.
+    """
+    data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(
         f"{GITHUB_API}{path}",
+        data=data,
+        method=method or ("POST" if data is not None else "GET"),
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "docket",
+            **({"Content-Type": "application/json"} if data is not None else {}),
         },
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read() or b"null")
+
+
+def changed_files(full_name: str, token: str, base: str, head: str) -> list[dict[str, Any]]:
+    """The files a pull request touched, from GitHub's compare endpoint.
+
+    Paginated at 300 files by GitHub itself, which is why plan_scan falls back to a
+    whole-repo scan above that count rather than scanning a silently truncated list.
+    """
+    if not _FULL_NAME.match(full_name):
+        raise ValueError(f"refusing suspicious repository name: {full_name!r}")
+    for ref in (base, head):
+        if not valid_ref(ref):
+            raise ValueError(f"refusing suspicious ref: {ref!r}")
+    payload = _api(f"/repos/{full_name}/compare/{base}...{head}", token)
+    return (payload or {}).get("files") or []
+
+
+def post_pr_result(full_name: str, token: str, *, pr_number: int, head_sha: str,
+                   verdict: dict[str, Any], run_url: str | None = None) -> dict[str, str]:
+    """Publish a verdict: commit status, then the summary comment.
+
+    Ordered deliberately. The status is the merge gate and must land even if commenting
+    fails — a PR blocked with no explanation is recoverable, a PR that merges because
+    the comment API rate-limited is not.
+    """
+    from docket.report.pr_report import (
+        COMMENT_MARKER, STATUS_CONTEXT, render_comment, should_comment, status_for,
+    )
+
+    outcome: dict[str, str] = {}
+    state, description = status_for(verdict.get("exit_code", 1), verdict.get("reason", ""))
+    try:
+        _api(f"/repos/{full_name}/statuses/{head_sha}", token, body={
+            "state": state,
+            "context": STATUS_CONTEXT,
+            "description": description,
+            **({"target_url": run_url} if run_url else {}),
+        })
+        outcome["status"] = state
+    except Exception as exc:  # noqa: BLE001 — report the failure, do not mask the verdict
+        outcome["status"] = f"failed: {exc}"
+
+    try:
+        existing = None
+        for comment in _api(f"/repos/{full_name}/issues/{pr_number}/comments", token) or []:
+            if COMMENT_MARKER in (comment.get("body") or ""):
+                existing = comment["id"]
+                break
+
+        if not should_comment(verdict, already_commented=existing is not None):
+            outcome["comment"] = "skipped (clean, nothing said before)"
+            return outcome
+
+        body = {"body": render_comment(verdict, run_url=run_url)}
+        if existing:
+            # Edited in place. A check that appends a comment per push trains people
+            # to collapse the whole conversation.
+            _api(f"/repos/{full_name}/issues/comments/{existing}", token,
+                 method="PATCH", body=body)
+            outcome["comment"] = "updated"
+        else:
+            _api(f"/repos/{full_name}/issues/{pr_number}/comments", token, body=body)
+            outcome["comment"] = "created"
+    except Exception as exc:  # noqa: BLE001
+        outcome["comment"] = f"failed: {exc}"
+    return outcome
 
 
 def exchange_code(code: str) -> tuple[str | None, str | None]:
@@ -1282,6 +1359,77 @@ def demo() -> None:
         finally:
             SESSION.scans.pop("fake", None)
             SESSION.cancels.pop("fake", None)
+
+        # ── reporting a PR verdict ────────────────────────────────────────────
+        # Recorded, not sent: the point is which calls are made and in what order.
+        calls: list = []
+
+        def _fake_api(path, tok, *, timeout=20.0, method=None, body=None):
+            calls.append((method or ("POST" if body else "GET"), path, body))
+            if path.endswith("/comments") and method is None and body is None:
+                return _existing_comments
+            return {}
+
+        from docket.report.pr_report import COMMENT_MARKER, STATUS_CONTEXT
+
+        _g2 = globals()
+        _saved2 = _g2["_api"]
+        _g2["_api"] = _fake_api
+        try:
+            blocked = {"exit_code": 2, "reason": "1 new finding blocks this merge",
+                       "new": [{"rule_id": "r", "severity": "high",
+                                "location": {"path": "a.py", "source_file": "a.py:1"}}],
+                       "fixed": [], "new_reachable": [], "caveats": []}
+
+            # Nothing said before: status posted, comment created.
+            _existing_comments = []
+            calls.clear()
+            out = post_pr_result("o/r", "tok", pr_number=7, head_sha="sha1",
+                                 verdict=blocked)
+            assert out["status"] == "failure" and out["comment"] == "created", out
+            assert calls[0][1] == "/repos/o/r/statuses/sha1", calls[0]
+            assert calls[0][2]["context"] == STATUS_CONTEXT
+            assert calls[-1][0] == "POST" and calls[-1][1].endswith("/issues/7/comments")
+
+            # Said before: the SAME comment is edited, never a second one appended.
+            _existing_comments = [{"id": 99, "body": f"{COMMENT_MARKER}\nold"}]
+            calls.clear()
+            out = post_pr_result("o/r", "tok", pr_number=7, head_sha="sha1",
+                                 verdict=blocked)
+            assert out["comment"] == "updated", out
+            assert calls[-1][0] == "PATCH" and "issues/comments/99" in calls[-1][1]
+
+            # Clean and never spoken on: status only. An unprompted "nothing to
+            # report" on every PR is how a bot gets muted.
+            _existing_comments = []
+            calls.clear()
+            clean = {"exit_code": 0, "reason": "No new findings", "new": [],
+                     "fixed": [], "new_reachable": [], "caveats": []}
+            out = post_pr_result("o/r", "tok", pr_number=7, head_sha="sha1",
+                                 verdict=clean)
+            assert out["status"] == "success" and "skipped" in out["comment"], out
+            assert all("comments" not in c[1] or c[0] == "GET" for c in calls)
+
+            # Clean but a stale failure is on the PR: it MUST be replaced.
+            _existing_comments = [{"id": 99, "body": f"{COMMENT_MARKER}\n1 reachable"}]
+            calls.clear()
+            out = post_pr_result("o/r", "tok", pr_number=7, head_sha="sha1",
+                                 verdict=clean)
+            assert out["comment"] == "updated", "a stale failure must not be left up"
+
+            # The status is the gate and must land even when commenting fails.
+            def _status_ok_comment_dies(path, tok, *, timeout=20.0, method=None, body=None):
+                if "statuses" in path:
+                    return {}
+                raise RuntimeError("rate limited")
+
+            _g2["_api"] = _status_ok_comment_dies
+            out = post_pr_result("o/r", "tok", pr_number=7, head_sha="sha1",
+                                 verdict=blocked)
+            assert out["status"] == "failure", "the gate must survive a comment failure"
+            assert out["comment"].startswith("failed:"), out
+        finally:
+            _g2["_api"] = _saved2
 
         # ── a 404 from GitHub must say WHICH 404 ──────────────────────────────
         # GitHub returns 404 for a missing ref, a repo the token cannot see, and a
