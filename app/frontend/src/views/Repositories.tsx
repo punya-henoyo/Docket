@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Repo, Session, WatchState } from "../types";
 import { Empty, Panel } from "../components/ui";
+import { github } from "../api";
 
 export function Repositories({
   session,
@@ -61,8 +62,15 @@ const APPROX_USD_PER_FINDING = 0.033;
         <Panel>
           <Empty>
             <div>GitHub is not connected, so there are no repositories to list.</div>
-            <button className="btn primary" onClick={onGoIntegrations}>
+            {/* A link straight to the OAuth flow, not a hop to another tab. A button
+                labelled "Connect GitHub" that only navigates elsewhere reads as a
+                dead button — you click it, the page looks the same, nothing happens. */}
+            <a className="btn primary" href={github.AUTH_START}
+               style={{ textDecoration: "none" }}>
               Connect GitHub
+            </a>
+            <button className="btn" onClick={onGoIntegrations}>
+              What access does this grant?
             </button>
           </Empty>
         </Panel>
