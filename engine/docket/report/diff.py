@@ -97,9 +97,31 @@ def _incomplete(report: dict[str, Any] | None, side: str) -> list[str]:
     if (report.get("surface") or {}).get("partial"):
         reasons.append(f"the {side} scan's attack surface map is incomplete "
                        "(the agent ran out of turns)")
-    if not report.get("coverage"):
+    coverage = report.get("coverage") or {}
+    if not coverage:
         reasons.append(f"the {side} scan recorded no coverage, so there is no evidence "
                        "of how much was actually analysed")
+    # COVERAGE THAT CONTRADICTS THE FINDINGS. `rules_fired` is derived from semgrep's own
+    # results (tools/scanners/semgrep.py:87 reads `check_id` off each hit), so a non-empty
+    # value is proof semgrep MATCHED something. If none of those matches is in findings[],
+    # the pipeline dropped them between the scanner and the report, and every downstream
+    # number is computed from a set that is missing its deterministic half.
+    #
+    # Measured on kaizenmantra/vulnshop#20 and #23. `_run_scanner_prescans` binned all 17
+    # semgrep hits at `if on_finding is not None` (fixed in core/runner.py:308), yet
+    # coverage still read `files_scanned: 1, rules_fired: ["python"], error_count: 0` — a
+    # clean-looking scanner run next to an empty findings list. The check passed a live
+    # SQL injection, and later blocked the fix PR for it, for a whole day, because
+    # nothing compared these two numbers against each other.
+    #
+    # Deliberately one-directional: findings without coverage is normal (trivy and recon
+    # report neither), coverage without findings is not.
+    elif (coverage.get("semgrep") or {}).get("rules_fired"):
+        findings = report.get("findings") or []
+        if not any(str(f.get("discovered_by", "")) == "semgrep" for f in findings):
+            reasons.append(
+                f"the {side} scan's semgrep matched rules but not one of its findings "
+                "reached the report, so the scanner half of this comparison is missing")
     return reasons
 
 
@@ -118,14 +140,74 @@ class RunDiff:
         return not self.caveats
 
     @property
+    def gating(self) -> list[dict[str, Any]]:
+        """New findings a merge may be blocked on: the deterministic ones.
+
+        WHY AN AGENT'S FINDING CANNOT GATE A MERGE
+        ------------------------------------------
+        Not a judgement about quality — a structural fact about this diff. The BASE scan
+        runs with `recon=False` (core/pr_service.py, deliberately: running the agent on
+        both sides doubled the wall clock). So the baseline contains NO agent findings,
+        ever. Every agent finding in the head is therefore unmatched, therefore `new`,
+        on every pull request docket will ever scan. "New" for them does not mean
+        "this change introduced it" — it means "there was nothing to compare against".
+
+        Measured on kaizenmantra/vulnshop#25, a fix pull request that changed one line
+        and was blocked on "IDOR on /order/status — no ownership check". That flaw was
+        already in the branch it targeted; the fix had nothing to do with it. The same
+        finding on #24 genuinely WAS new, and nothing in the data distinguishes the two
+        cases, which is exactly why it cannot carry a merge decision.
+
+        Agent findings still reach the pull request comment — see `observations`. They
+        inform a reviewer; they do not stop one.
+        """
+        return [f for f in self.new
+                if str(f.get("discovered_by", "")) in DETERMINISTIC_SOURCES]
+
+    @property
+    def observations(self) -> list[dict[str, Any]]:
+        """New findings from an agent: reported, never blocking. The complement of
+        `gating`, so every new finding appears in exactly one of the two."""
+        return [f for f in self.new
+                if str(f.get("discovered_by", "")) not in DETERMINISTIC_SOURCES]
+
+    @property
     def new_reachable(self) -> list[dict[str, Any]]:
-        """New findings an agent judged reachable by untrusted input.
+        """Gating findings an agent judged reachable by untrusted input.
 
         The subset worth blocking a merge over. A finding nobody triaged is NOT in
         here — absence of a verdict is not a verdict of safe.
         """
-        return [f for f in self.new
+        return [f for f in self.gating
                 if (f.get("triage") or {}).get("verdict") == "exploitable"]
+
+    @property
+    def new_unresolved(self) -> list[dict[str, Any]]:
+        """New findings on which NOBODY established anything.
+
+        `not_reachable` is the only verdict that clears a finding. Missing means no agent
+        judged it; `uncertain` means one tried and could not — and core/triage.py:198
+        records `uncertain` when the budget runs out, so it is also what "we stopped
+        paying" looks like. Neither is safety.
+
+        This exists because `new_reachable` being empty has two very different causes and
+        the gate could not tell them apart. Measured on kaizenmantra/vulnshop#23: triage
+        spent its budget on two PRE-EXISTING semgrep findings at app.py:36-37 (out of the
+        diff scope, correctly excluded from `new`), so the two in-scope findings at
+        app.py:61-68 were never judged at all. `new_reachable` was empty, the check went
+        green, and the comment said "none judged reachable" over two high-severity
+        findings nobody had judged. The same pull request had been BLOCKED an hour
+        earlier, when the scanner was broken and triage's budget happened to land on
+        those same findings instead.
+
+        Scoped to `gating` for the same reason `new_reachable` is. An agent finding is
+        never blocking, so an agent finding nobody triaged cannot make the check
+        inconclusive either — otherwise every pull request goes yellow forever, since
+        triage is capped and agent findings are always the ones left over.
+        """
+        return [f for f in self.gating
+                if (f.get("triage") or {}).get("verdict") != "not_reachable"
+                and (f.get("triage") or {}).get("verdict") != "exploitable"]
 
     def summary(self) -> str:
         """One line for a commit status description (GitHub truncates at 140)."""
@@ -230,8 +312,13 @@ def gate(diff: RunDiff, *, block_on: str = "reachable") -> tuple[int, str]:
       "reachable"  block only on new findings an agent judged reachable. The default,
                    and the whole product thesis — a check that is quiet on a clean PR
                    is a check people leave enabled.
-      "any"        block on any new finding, triaged or not. Noisier and it will be
-                   turned off; offered because some teams are required to.
+      "any"        block on any new DETERMINISTIC finding, triaged or not. Noisier and
+                   it will be turned off; offered because some teams are required to.
+
+    Neither setting blocks on an agent finding — see `RunDiff.gating`. "any" means every
+    finding a merge decision can rest on, not every line of the report; an agent finding
+    is `new` on every pull request by construction, so blocking on it here would make
+    "any" mean "never merge anything".
 
     An untrustworthy diff is INCONCLUSIVE, never clean. That is the failure strix
     warns about in their CI docs — a scan that ran out of budget exiting zero and
@@ -240,7 +327,7 @@ def gate(diff: RunDiff, *, block_on: str = "reachable") -> tuple[int, str]:
     if diff.caveats:
         return EXIT_INCONCLUSIVE, "; ".join(diff.caveats)
 
-    blocking = diff.new if block_on == "any" else diff.new_reachable
+    blocking = diff.gating if block_on == "any" else diff.new_reachable
     if blocking:
         worst = blocking[0]
         location = str((worst.get("location") or {}).get("source_file") or "?")
@@ -252,12 +339,34 @@ def gate(diff: RunDiff, *, block_on: str = "reachable") -> tuple[int, str]:
             f"{location.replace('/work/source/', '')}"
         )
 
-    if diff.new:
-        # New findings exist but none are reachable. Say so rather than "clean" —
-        # the reader should know something was added and judged, not overlooked.
-        return EXIT_CLEAN, (
-            f"{len(diff.new)} new finding(s), none judged reachable by untrusted input"
+    # "Nobody judged it" must never render as "nothing to worry about". Only reached
+    # when nothing is exploitable, so this is the branch that used to go green on
+    # findings no agent had looked at — see RunDiff.new_unresolved for the measurement.
+    # INCONCLUSIVE rather than FOUND: docket did not find these unsafe, it failed to
+    # find out, and the reader has to be able to tell those apart.
+    if block_on != "any" and diff.new_unresolved:
+        unresolved = diff.new_unresolved
+        worst = unresolved[0]
+        location = str((worst.get("location") or {}).get("source_file") or "?")
+        return EXIT_INCONCLUSIVE, (
+            f"{len(unresolved)} of {len(diff.gating)} scanner finding(s) were never "
+            f"judged reachable or not — no verdict on "
+            f"{location.replace('/work/source/', '')}"
         )
+
+    # Passing, so the only job left is to not overstate it. An agent observation is
+    # mentioned by count and never called safe: nobody established that it is.
+    noted = (f", {len(diff.observations)} agent observation(s) to review"
+             if diff.observations else "")
+    if diff.gating:
+        # Scanner findings exist, every one was judged, none is reachable. Say so rather
+        # than "clean" — the reader should know something was added and judged.
+        return EXIT_CLEAN, (
+            f"{len(diff.gating)} new finding(s), all judged not reachable by untrusted "
+            f"input{noted}"
+        )
+    if noted:
+        return EXIT_CLEAN, f"No new scanner findings{noted}"
     return EXIT_CLEAN, diff.summary()
 
 
@@ -384,12 +493,15 @@ def demo() -> None:
 
     # Not reachable -> not a blocker. This is the product thesis: quiet on a clean PR.
     code, why = gate(diff_runs(report([]), report([unreachable])))
-    assert code == EXIT_CLEAN and "none judged reachable" in why, why
+    assert code == EXIT_CLEAN and "all judged not reachable" in why, why
 
     # ...but an untriaged finding is NOT safe. Absence of a verdict is not a verdict.
+    # This block asserted EXIT_CLEAN until vulnshop#23 showed what that means in
+    # practice: the comment below was already right, and the assertion under it
+    # contradicted the comment, so the fail-open was locked in by its own test.
     untriaged = diff_runs(report([]), report([finding("semgrep/sqli", "a.py")]))
     assert untriaged.new_reachable == [], "no verdict must never count as reachable"
-    assert gate(untriaged)[0] == EXIT_CLEAN
+    assert gate(untriaged)[0] == EXIT_INCONCLUSIVE, "no verdict must never be clean"
     assert gate(untriaged, block_on="any")[0] == EXIT_FOUND
 
     code, why = gate(diff_runs(report([]), report([])))
@@ -410,6 +522,76 @@ def demo() -> None:
     # No coverage recorded means no evidence anything was examined.
     blind = diff_runs(report([]), {"findings": [], "success": True})
     assert not blind.trustworthy and any("no coverage" in c for c in blind.caveats)
+
+    # Coverage that contradicts the findings — the vulnshop#20 regression. semgrep says
+    # it matched python rules; not one semgrep finding is in the report. That is a
+    # dropped scanner, and it must never read as clean.
+    fired = {"semgrep": {"files_scanned": 1, "rules_fired": ["python"], "error_count": 0}}
+    dropped = diff_runs(report([]), {"findings": [], "success": True, "coverage": fired})
+    assert not dropped.trustworthy, "semgrep matched but reported nothing — not clean"
+    assert any("not one of its findings" in c for c in dropped.caveats), dropped.caveats
+    assert gate(dropped)[0] == EXIT_INCONCLUSIVE, "a dropped scanner is never a pass"
+
+    # ...and the same coverage WITH a semgrep finding present is fine. Without this the
+    # check above could be satisfied by a rule that just distrusts all coverage.
+    kept = diff_runs(report([]), {"findings": [finding("semgrep/sqli", "app.py")],
+                                  "success": True, "coverage": fired})
+    assert kept.trustworthy, kept.caveats
+
+    # Recon-only is NOT penalised: no rules_fired means semgrep never claimed a match,
+    # which is a scan without SAST rather than a scan that lost its SAST.
+    quiet = {"semgrep": {"files_scanned": 1, "rules_fired": [], "error_count": 0}}
+    recon_only = diff_runs(report([]), {"findings": [], "success": True,
+                                        "coverage": quiet})
+    assert recon_only.trustworthy, recon_only.caveats
+
+    # ── an agent finding reports, it does not gate — the vulnshop#25 block ──────
+    # The base scan runs with recon=False, so an agent finding is `new` on EVERY pull
+    # request by construction. #25 changed one line and was blocked on a missing
+    # ownership check that was already in the branch it targeted.
+    agent_only = diff_runs(report([]), report([
+        finding("recon/idor", "app.py", by="recon", verdict="exploitable")]))
+    assert agent_only.observations and not agent_only.gating, agent_only.gating
+    assert agent_only.new_reachable == [], "an agent finding must never gate"
+    code, why = gate(agent_only)
+    assert code == EXIT_CLEAN, f"agent-only findings must not block, got {code}: {why}"
+    assert "observation" in why, why
+    # ...and it must not make the check inconclusive either, or every PR goes yellow.
+    assert agent_only.new_unresolved == [], agent_only.new_unresolved
+    # block_on="any" must not smuggle it back in through the other door.
+    assert gate(agent_only, block_on="any")[0] == EXIT_CLEAN, gate(agent_only, "any")
+
+    # A scanner finding in the same diff still blocks, and the observation rides along
+    # in the message rather than being silently dropped.
+    mixed_src = diff_runs(report([]), report([
+        finding("recon/idor", "app.py", by="recon", verdict="exploitable"),
+        finding("semgrep/sqli", "app.py", verdict="exploitable"),
+    ]))
+    assert gate(mixed_src)[0] == EXIT_FOUND, gate(mixed_src)
+    assert "semgrep" in str(gate(mixed_src)[1]) or "sqli" in str(gate(mixed_src)[1])
+
+    # Every new finding lands in exactly one of the two lists — no finding disappears.
+    for d in (agent_only, mixed_src):
+        assert len(d.gating) + len(d.observations) == len(d.new), d.new
+
+    # ── an unjudged finding is not a safe one — the vulnshop#23 fail-open ───────
+    # `uncertain` is NOT a clearance. core/triage.py records it when the budget runs
+    # out, so treating it as safe is the fail-open service/gate.py warns about.
+    unsure = diff_runs(report([]), report([finding("semgrep/sqli", "app.py",
+                                                   verdict="uncertain")]))
+    assert gate(unsure)[0] == EXIT_INCONCLUSIVE, "uncertain is not safe"
+
+    # A reachable finding still reports FOUND, not INCONCLUSIVE: an unjudged sibling
+    # must not downgrade a proven one into "we could not tell".
+    mixed = diff_runs(report([]), report([
+        finding("semgrep/sqli", "app.py", verdict="exploitable"),
+        finding("semgrep/xss", "views.py"),
+    ]))
+    assert gate(mixed)[0] == EXIT_FOUND, gate(mixed)
+
+    # block_on="any" already blocks on everything, judged or not — the unresolved
+    # branch must not steal those from EXIT_FOUND and report them as inconclusive.
+    assert gate(unsure, block_on="any")[0] == EXIT_FOUND, gate(unsure, block_on="any")
 
     # ── scoped to a pull request's changed files ────────────────────────────
     # The trap this closes: the head scan only covered changed files, so a base

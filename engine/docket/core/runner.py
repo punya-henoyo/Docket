@@ -212,6 +212,24 @@ def run_scan(
     # collection. A CI job supplies one, the PR pipeline the other.
     changed_files: str | None = None,
     scope_paths: list[str] | None = None,
+    # Which findings triage may spend the budget on. None means all of them, which is
+    # right for a whole-repository scan.
+    #
+    # A pull request needs the opposite default. `triage_max` caps how many findings get
+    # judged and each one costs a model run, so without this triage picks by severity
+    # across EVERYTHING the scanners found — and on a file with a backlog, the pre-existing
+    # findings outrank the ones the change introduced and consume the entire cap.
+    #
+    # Measured on kaizenmantra/vulnshop#23: triage judged two pre-existing SQL injections
+    # at app.py:36-37, the diff then correctly discarded both as outside the change, and
+    # the two findings actually in the diff at app.py:61-68 were never judged at all. The
+    # check reported "none judged reachable" over findings nobody had judged.
+    #
+    # A PREDICATE, not a list of keys. The caller cannot name the findings in advance —
+    # they do not exist until the scanners in this very call produce them. Passing a list
+    # meant the caller had to run the whole scan once to learn the keys and again to act
+    # on them, which is exactly the duplicated pass this replaced.
+    triage_filter: Callable[[dict], bool] | None = None,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -420,8 +438,21 @@ def run_scan(
                     if on_progress is not None:
                         on_progress()
 
+                candidates = [f.model_dump(mode="json") for f in store.findings()]
+                if triage_filter is not None:
+                    total = len(candidates)
+                    try:
+                        candidates = [f for f in candidates if triage_filter(f)]
+                    except Exception:  # noqa: BLE001
+                        # A broken filter must not silently mean "judge nothing", which
+                        # would read downstream as "we looked and found nothing wrong".
+                        logger.exception("triage_filter raised; judging all findings")
+                        candidates = [f.model_dump(mode="json") for f in store.findings()]
+                    logger.info("triage scope: %d of %d finding(s) are new here",
+                                len(candidates), total)
+
                 verdicts = triage_findings(
-                    [f.model_dump(mode="json") for f in store.findings()],
+                    candidates,
                     run_dir=directory, config=cfg, sandbox=sandbox,
                     max_findings=triage_max, model_override=model_override,
                     source_root=str(whitebox_path) if whitebox_path else None,

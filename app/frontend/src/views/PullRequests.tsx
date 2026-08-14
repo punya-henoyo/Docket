@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { PrResult, WatchState } from "../types";
+import type { PrProgress, PrResult, WatchState } from "../types";
 import { Empty, Panel } from "../components/ui";
 
 /** The continuous half of the product.
@@ -60,7 +60,11 @@ export function PullRequests({
     return () => clearInterval(id);
   }, []);
 
+  // Selection lives here, not in the row: the drawer is a sibling of the whole list,
+  // and two rows must never be open at once.
+  const [selected, setSelected] = useState<string | null>(null);
   const results = watch?.results ?? [];
+  const active = results.find((r) => `${r.repo}#${r.number}` === selected) ?? null;
   const watching = !!watch?.enabled;
   const blocked = results.filter((r) => r.exit_code === 2).length;
   const countdown = watch?.next_poll
@@ -154,27 +158,35 @@ export function PullRequests({
                  newest first
                </span>}>
           <div className="rows">
-            {results.map((r) => <Row key={`${r.repo}#${r.number}@${r.head_sha}`} result={r} />)}
+            {results.map((r) => (
+              <Row key={`${r.repo}#${r.number}@${r.head_sha}`} result={r}
+                   selected={selected === `${r.repo}#${r.number}`}
+                   onSelect={() => setSelected(
+                     selected === `${r.repo}#${r.number}` ? null : `${r.repo}#${r.number}`)} />
+            ))}
           </div>
         </Panel>
       )}
+      {active && <Drawer result={active} onClose={() => setSelected(null)} />}
     </>
   );
 }
 
-function Row({ result }: { result: PrResult }) {
-  const [open, setOpen] = useState(false);
+function Row({ result, selected, onSelect }: {
+  result: PrResult; selected: boolean; onSelect: () => void;
+}) {
+  // Every row opens, including one still scanning — watching it work is the point.
   const v = verdictOf(result);
-  const interesting = !result.scanning && (result.exit_code !== 0 || result.new > 0);
 
   return (
     <div style={{ display: "block", padding: 0 }}>
       <button
-        onClick={() => interesting && setOpen(!open)}
+        onClick={onSelect}
         style={{
           display: "flex", alignItems: "center", gap: 12, width: "100%",
-          padding: "12px 16px", background: "none", border: 0, textAlign: "left",
-          color: "inherit", cursor: interesting ? "pointer" : "default",
+          padding: "12px 16px", border: 0, textAlign: "left",
+          color: "inherit", cursor: "pointer",
+          background: selected ? "var(--panel-2, rgba(127,127,127,.10))" : "none",
         }}
       >
         <span title={v.label} style={{
@@ -228,46 +240,6 @@ function Row({ result }: { result: PrResult }) {
         </span>
       </button>
 
-      {open && (
-        <div style={{ padding: "0 16px 14px 50px", display: "flex",
-                      flexDirection: "column", gap: 8 }}>
-          <div className="note" style={{ fontSize: 12.5 }}>
-            {result.error || result.reason}
-          </div>
-          {!result.trustworthy && !result.error && (
-            <div className="note bad" style={{ fontSize: 12 }}>
-              This verdict is not a pass — docket could not finish judging the change.
-            </div>
-          )}
-          {result.findings.map((f, i) => (
-            <div key={i} style={{ display: "flex", gap: 10, alignItems: "baseline",
-                                  font: "12.5px var(--sans)" }}>
-              <span style={{ color: SEV_TONE[f.severity ?? "info"], flex: "none",
-                             minWidth: 54, fontWeight: 500 }}>
-                {f.severity}
-              </span>
-              <span style={{ minWidth: 0, flex: 1 }}>
-                {f.discovered_by === "recon"
-                  ? f.title
-                  : (f.rule_id ?? "").split("/").pop()?.split(".").pop()}
-                <span className="path" style={{ marginLeft: 8, fontSize: 11.5 }}>
-                  {f.where}
-                </span>
-              </span>
-              {f.verdict === "exploitable" && (
-                <span style={{ color: "var(--crit)", flex: "none",
-                               font: "500 11.5px var(--sans)" }}>reachable</span>
-              )}
-            </div>
-          ))}
-          {Object.keys(result.posted || {}).length > 0 && (
-            <div className="note" style={{ fontSize: 11.5 }}>
-              Posted to GitHub — {Object.entries(result.posted)
-                .map(([k, v]) => `${k}: ${v}`).join(" · ")}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -282,6 +254,267 @@ function Fact({ label, value, tone }: {
                                     color: tone }}>
         {value}
       </div>
+    </div>
+  );
+}
+
+
+const STEP_TONE: Record<string, string> = {
+  done: "var(--ok)", running: "var(--med)", error: "var(--crit)",
+  skipped: "var(--info)", pending: "var(--info)",
+};
+
+function secs(from: number | null, to: number | null): string {
+  if (!from) return "";
+  const end = to ?? Date.now() / 1000;
+  const d = Math.max(0, Math.round(end - from));
+  return d < 60 ? `${d}s` : `${Math.floor(d / 60)}m ${d % 60}s`;
+}
+
+/** What docket is doing, right now, in order.
+ *
+ *  A scan takes minutes, and for all of that time the row said "scanning…" and nothing
+ *  else — which looks exactly like a hung process. The steps are the same ones the
+ *  engine reports internally (on_stage / on_agent); this is the first screen that
+ *  shows them. When the scan ends the timeline is dropped and the verdict takes over,
+ *  because the verdict is the durable record and a stale timeline would imply work
+ *  that is no longer happening.
+ */
+function Timeline({ progress }: { progress: PrProgress }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      {progress.phase && (
+        <div className="note" style={{ fontSize: 11.5, marginBottom: 6 }}>
+          scanning the <span className="mono">{progress.phase}</span> commit
+          {progress.findings > 0 && <> · {progress.findings} finding(s) so far</>}
+        </div>
+      )}
+      {progress.steps.map((s) => (
+        <div key={s.name} style={{ display: "flex", gap: 10, alignItems: "baseline",
+                                   padding: "5px 0" }}>
+          <span style={{
+            width: 16, height: 16, borderRadius: "50%", flex: "none",
+            display: "grid", placeItems: "center", marginTop: 2,
+            font: "600 10px var(--sans)", color: STEP_TONE[s.state] ?? "var(--info)",
+            background: "color-mix(in srgb, currentColor 14%, transparent)",
+            border: "1px solid color-mix(in srgb, currentColor 34%, transparent)",
+            animation: s.state === "running" ? "pulse 1.4s ease-in-out infinite" : undefined,
+          }}>
+            {s.state === "done" ? "✓" : s.state === "error" ? "✕"
+              : s.state === "skipped" ? "–" : "•"}
+          </span>
+          <span style={{ minWidth: 0, flex: 1 }}>
+            <span style={{ fontSize: 13, color: s.state === "pending"
+                             ? "var(--muted, #888)" : "inherit" }}>
+              {s.label}
+            </span>
+            {s.detail && (
+              <span className="path" style={{ display: "block", fontSize: 11.5,
+                                              marginTop: 1 }}>
+                {s.detail}
+              </span>
+            )}
+          </span>
+          <span className="note mono" style={{ fontSize: 11, flex: "none" }}>
+            {s.state === "skipped" ? "skipped" : secs(s.started, s.ended)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Drawer({ result, onClose }: { result: PrResult; onClose: () => void }) {
+  // Escape closes it. A panel that can only be dismissed with the mouse is a panel
+  // people leave open.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const v = verdictOf(result);
+  return (
+    <aside
+      role="complementary"
+      aria-label={`Detail for pull request ${result.number}`}
+      style={{
+        position: "fixed", top: 0, right: 0, bottom: 0, width: "min(440px, 92vw)",
+        background: "var(--panel, #14171c)",
+        borderLeft: "1px solid var(--line, rgba(127,127,127,.25))",
+        boxShadow: "-18px 0 44px -30px rgba(0,0,0,.8)",
+        display: "flex", flexDirection: "column", zIndex: 40,
+      }}
+    >
+      <header style={{ display: "flex", alignItems: "flex-start", gap: 10,
+                       padding: "14px 16px",
+                       borderBottom: "1px solid var(--line, rgba(127,127,127,.25))" }}>
+        <span style={{ minWidth: 0, flex: 1 }}>
+          <span style={{ display: "block", fontSize: 13.5, overflow: "hidden",
+                         textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {result.title || `Pull request #${result.number}`}
+          </span>
+          <span className="note" style={{ fontSize: 11.5 }}>
+            {result.repo} <span className="mono">#{result.number}</span>
+            {result.base_ref && <> → {result.base_ref}</>}
+          </span>
+        </span>
+        <span style={{ flex: "none", font: "500 12px var(--sans)", color: v.tone }}>
+          {v.label}
+        </span>
+        <button onClick={onClose} aria-label="Close"
+                style={{ flex: "none", background: "none", border: 0, cursor: "pointer",
+                         color: "inherit", opacity: .6, font: "16px var(--sans)",
+                         lineHeight: 1, padding: 0 }}>×</button>
+      </header>
+
+      <div style={{ overflowY: "auto", padding: "14px 16px", display: "flex",
+                    flexDirection: "column", gap: 16 }}>
+        {result.exit_code === 2 && <FixButton result={result} />}
+        {result.progress ? (
+          <Timeline progress={result.progress} />
+        ) : (
+          <div className="note" style={{ fontSize: 12.5 }}>
+            {result.error || result.reason}
+          </div>
+        )}
+
+        {!result.progress && !result.trustworthy && !result.error && (
+          <div className="note bad" style={{ fontSize: 12 }}>
+            This verdict is not a pass — docket could not finish judging the change.
+          </div>
+        )}
+
+        {result.findings.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div className="eyebrow" style={{ fontSize: 11.5 }}>
+              Findings this change introduced
+            </div>
+            {result.findings.map((f, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, alignItems: "baseline",
+                                    font: "12.5px var(--sans)" }}>
+                <span style={{ color: SEV_TONE[f.severity ?? "info"], flex: "none",
+                               minWidth: 54, fontWeight: 500 }}>{f.severity}</span>
+                <span style={{ minWidth: 0, flex: 1 }}>
+                  {f.discovered_by === "recon"
+                    ? f.title
+                    : (f.rule_id ?? "").split("/").pop()?.split(".").pop()}
+                  <span className="path" style={{ display: "block", fontSize: 11.5 }}>
+                    {f.where}
+                    {f.discovered_by === "recon" && " · found by AI, not blocking"}
+                  </span>
+                  {/* The anchor above is the line the diff scoped on; this is where the
+                      problem really is. Mendor-lab#2 changed only services/db.py while
+                      the missing authorization lived in profiles.py. */}
+                  {f.root_cause && f.root_cause !== f.where && (
+                    <span className="path" style={{ display: "block", fontSize: 11.5,
+                                                    color: "var(--med)" }}>
+                      cause: {f.root_cause}
+                    </span>
+                  )}
+                  {f.origin === "pre-existing" && (
+                    <span className="note" style={{ display: "block", fontSize: 11 }}>
+                      the agent judged this pre-existing, not caused by this change
+                    </span>
+                  )}
+                </span>
+                {f.verdict === "exploitable" && (
+                  <span style={{ color: "var(--crit)", flex: "none",
+                                 font: "500 11.5px var(--sans)" }}>reachable</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {Object.keys(result.posted || {}).length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <div className="eyebrow" style={{ fontSize: 11.5 }}>Posted to GitHub</div>
+            {Object.entries(result.posted).map(([k, val]) => (
+              <div key={k} className="note" style={{ fontSize: 11.5 }}>
+                <span className="mono">{k}</span> — {val}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+/** Ask for a fix pull request on a blocked change.
+ *
+ *  Autofix can be left off — opening pull requests on someone's repository is not a
+ *  thing to start doing because a checkbox defaulted on — so a blocked verdict needs a
+ *  way to ask for one after the fact. It is also the recovery path when autofix ran and
+ *  refused: the refusal is visible, and trying again is one click rather than a re-scan.
+ *
+ *  The button reports "asked for", not "opened". Writing and PROVING a patch takes
+ *  minutes and can legitimately end in a refusal, so claiming success here would be a
+ *  lie the timeline would then contradict.
+ */
+function FixButton({ result }: { result: PrResult }) {
+  const [state, setState] = useState<"idle" | "asking" | "asked" | "error">("idle");
+  const [message, setMessage] = useState("");
+  const posted = result.posted?.autofix;
+  // A fix already landed, so there is nothing to ask for.
+  if (posted && posted.startsWith("opened")) {
+    return (
+      <div className="note ok" style={{ fontSize: 12.5 }}>
+        Fix pull request {posted.replace("opened ", "")} is open.
+      </div>
+    );
+  }
+  const running = state === "asking" || state === "asked"
+    || result.progress?.steps.some((s) => s.name === "fix" && s.state === "running");
+
+  async function ask() {
+    setState("asking");
+    try {
+      const r = await fetch("/api/pr/fix", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo: result.repo, number: result.number }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok) { setState("asked"); setMessage(""); }
+      else { setState("error"); setMessage(body.error ?? `HTTP ${r.status}`); }
+    } catch (e) {
+      setState("error");
+      setMessage(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <button
+        onClick={ask}
+        disabled={running || result.fixable === false}
+        title={result.fixable === false
+          ? "This verdict predates the current session, so the patch inputs are gone. Re-scan it first."
+          : "Write a patch, prove it with a scanner, and open a pull request into this branch"}
+        style={{
+          alignSelf: "flex-start", padding: "7px 13px", borderRadius: 5,
+          font: "500 12.5px var(--sans)", cursor:
+            running || result.fixable === false ? "not-allowed" : "pointer",
+          color: "var(--ok)", background: "color-mix(in srgb, var(--ok) 12%, transparent)",
+          border: "1px solid color-mix(in srgb, var(--ok) 34%, transparent)",
+          opacity: running || result.fixable === false ? 0.55 : 1,
+        }}
+      >
+        {running ? "Writing a fix…" : "Open a fix pull request"}
+      </button>
+      {state === "asked" && (
+        <span className="note" style={{ fontSize: 11.5 }}>
+          Asked. It will appear below as it works — a patch is only opened if a scanner
+          re-run proves the finding is gone.
+        </span>
+      )}
+      {state === "error" && (
+        <span className="note bad" style={{ fontSize: 11.5 }}>{message}</span>
+      )}
+      {posted && !posted.startsWith("opened") && state === "idle" && (
+        <span className="note" style={{ fontSize: 11.5 }}>Last attempt — {posted}</span>
+      )}
     </div>
   );
 }

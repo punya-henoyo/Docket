@@ -138,6 +138,29 @@ What matters most:
     - a parameter that reaches a sink without validation
     - a check applied inconsistently across handlers that should be uniform
   For each, say WHERE and WHY, citing lines.
+- **Each candidate takes four keys, and the last two decide whether it is useful.**
+    - `file`   — the line to ANCHOR it on. On a pull request this must be a line the
+                 change actually touched, or the finding is dropped as out of scope.
+    - `why`    — the reasoning, citing what you read.
+    - `cause`  — where the problem ACTUALLY lives, `path:line`, when that is not the
+                 anchor. It MAY be a file this change never touched — that is the point
+                 of the field. A missing ownership check surfaces in the query helper
+                 and is caused by the route that calls it; anchor on the helper you were
+                 given, and name the route here. Omit it only when the two are the same.
+    - `origin` — `introduced` if THIS change created the problem, `pre-existing` if you
+                 noticed it while reading and it was already true. You have the diff, so
+                 you can tell. Nothing else can: the baseline scan runs without you, so
+                 an unlabelled candidate is assumed introduced, and blaming an author
+                 for a flaw they walked past is how a reviewer stops reading these.
+- **Severity is about impact, not about how interesting the observation is.**
+    - `high`   — an attacker reaches data or actions they should not: broken access
+                 control, injection, authentication that can be bypassed.
+    - `medium` — a real weakness needing another condition, or an information leak.
+    - `low`    — hardening, defence in depth, an unsafe pattern nothing reaches today.
+    - `info`   — no security impact at all. A stale comment, a misleading name and
+                 documentation drift are `info`, ALWAYS. They are worth reporting and
+                 they are not worth a reviewer's alarm; rating one `high` next to a real
+                 authorization hole teaches people to ignore the list.
 - **Absence is a finding.** "No authorization checks anywhere in this codebase" is
   more useful than an empty list. Say it plainly.
 - **State what you could not determine.** Middleware in another repository, routes

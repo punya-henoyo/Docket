@@ -223,6 +223,12 @@ def evaluate(base_report: dict[str, Any] | None, head_report: dict[str, Any],
         "reason": reason,
         "summary": diff.summary(),
         "new": diff.new,
+        # The same set split by whether it can carry a merge decision. `new` stays whole
+        # so nothing downstream loses a finding; these two say which half it is in.
+        # See RunDiff.gating — the base scan runs recon=False, so an agent finding is
+        # `new` on every pull request and cannot mean "this change introduced it".
+        "gating": diff.gating,
+        "observations": diff.observations,
         "fixed": diff.fixed,
         "new_reachable": diff.new_reachable,
         "trustworthy": diff.trustworthy,
