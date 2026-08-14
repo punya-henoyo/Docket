@@ -52,6 +52,7 @@ check:
 	  docket.tools.thinking.tool docket.tools.respond.tool docket.tools.web_search.tool \
 	  docket.tools.load_skill.tool \
 	  docket.tools.scanners.nuclei docket.tools.scanners.trivy docket.tools.scanners.semgrep \
+	  docket.tools.scanners.sonar docket.runtime.sonar_service \
 	  docket.runtime.sdk_session \
 	  docket.interface.utils docket.interface.environment docket.interface.scan_setup \
 	  docket.interface.connect \

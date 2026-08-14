@@ -105,9 +105,49 @@ def _run_scanner_prescans(
         # scope: trivy reads dependency manifests, and a PR that changes none of them
         # still inherits every advisory from the ones it did not touch.
         drain("semgrep", lambda: run_semgrep(sandbox, run_dir_, paths=scope_paths))
+        # SonarQube last of the three and before recon, because it is by far the slowest:
+        # it uploads to a server that analyses asynchronously. Unlike the others it can
+        # be declined (DOCKET_SONAR=0) — a 2GB Java service is not something to start on
+        # a machine that did not ask for one.
+        #
+        # NO SERVER IS `skipped`, A BROKEN ANALYSIS IS `error`, AND THE DIFFERENCE MATTERS
+        # ---------------------------------------------------------------------------
+        # service/gate.py turns ANY stage == "error" into action_required/exit 1. Sonar is
+        # the only scanner whose precondition is a separate 2GB service, so if an
+        # unreachable server errored, every pull request on a machine without SonarQube
+        # running would be reported as "not fully scanned" while semgrep and trivy had
+        # both completed fine.
+        #
+        # An absent server is a precondition that was not met, which is exactly what
+        # nuclei's "needs a live URL" skip already means — not a failure. Once the server
+        # IS up, anything that goes wrong (0 files indexed, a failed Compute Engine task,
+        # a missing Node) is a genuine error and still trips the gate, which is the whole
+        # point of the gate.
+        from docket.runtime.sonar_service import (
+            SonarError,
+            enabled as sonar_enabled,
+            ensure as sonar_ensure,
+        )
+        from docket.tools.scanners.sonar import run_sonar
+
+        if not sonar_enabled():
+            stage("sonar", "skipped")
+        else:
+            try:
+                sonar_ensure()
+            except SonarError as exc:
+                logger.warning("sonar skipped: %s", exc)
+                stage("sonar", "skipped")
+            else:
+                stage("sonar", "running")
+                # cancel is threaded in, unlike every other scanner: those are a single
+                # blocking subprocess call that drain() can only interrupt between runs,
+                # whereas this one waits on a server-side task for minutes.
+                drain("sonar", lambda: run_sonar(sandbox, run_dir_, cancel=cancel))
     else:
         stage("trivy", "skipped")
         stage("semgrep", "skipped")
+        stage("sonar", "skipped")
 
 
 def _norm_path(raw: str) -> str:

@@ -214,7 +214,7 @@ export default function App() {
           status: "queued",
           stages: {
             fetch: "pending", trivy: "pending", semgrep: "pending",
-            nuclei: "pending", recon: "pending", triage: "pending",
+            sonar: "pending", nuclei: "pending", recon: "pending", triage: "pending",
           },
           recon,
           surface: null,

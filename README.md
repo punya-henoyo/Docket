@@ -195,6 +195,48 @@ nothing downstream can present one as the other.
 usually cheaper than running an engine: no install, and it is what the team already
 standardised on.
 
+### SonarQube
+
+SonarQube Community Build runs as a fourth deterministic scanner, after trivy and semgrep
+and before the AI phases, whenever `--source` is given. Its findings enter the same store
+as everything else: same radar ring, same report, same CWE grouping.
+
+It is the one scanner that needs a server. semgrep, trivy and nuclei are binaries that
+write JSON and exit; `sonar-scanner` uploads the source to a SonarQube server, which
+analyses asynchronously, and docket then pulls the issues over the Web API. So docket
+starts and manages one:
+
+- A container named `docket-sonarqube` on `127.0.0.1:9000`, with named volumes. It is
+  **long-lived on purpose** and outlives the scan — booting SonarQube takes two to three
+  minutes, which is tolerable once per machine and absurd once per scan. Later scans reuse
+  it and pay only the analysis. Remove it with `docker rm -f docket-sonarqube`.
+- It needs roughly **2GB of free memory**. If it cannot start, the stage reports `error`
+  and the rest of the scan finishes and still writes a report; a scanner that did not run
+  is never shown as a clean pass.
+- Only **security** findings are imported: issues with a SECURITY impact, plus Security
+  Hotspots. SonarQube's reliability bugs and maintainability smells run to the hundreds on
+  a real repository and would bury a security list. `DOCKET_SONAR_IMPACTS` widens it.
+- Hotspots are labelled as hotspots, not vulnerabilities. SonarQube's own model is that
+  they are code a human should review, and flattening that would overstate every one.
+
+**What Community Build cannot find, measured not assumed.** Taint analysis — tracking
+untrusted input to a dangerous sink — is a commercial feature. The rules for it are not
+merely inactive in Community Build, they are absent: `python:S3649` (SQL injection),
+`python:S2076` (command injection) and `python:S5131` (XSS) all return 404 from
+`api/rules/show`. On docket's own deliberately vulnerable fixture, SonarQube Community
+Build reported **zero** security issues while semgrep reported four, including the raw SQL
+query and the `os.system` call.
+
+What it does contribute is a different 61 active Python vulnerability rules plus hotspots,
+covering ground semgrep's default pack does not: certificate validation
+(`CWE-295`/`CWE-297`), weak hashes (`CWE-1240`), weak PRNGs (`CWE-338`), permissive binds
+and hard-coded secrets. Treat it as **complementary breadth, not an injection scanner**. If
+injection coverage from Sonar specifically is the requirement, that needs Developer Edition
+and this stage will point at it through `DOCKET_SONAR_URL` unchanged.
+
+`DOCKET_SONAR=0` skips the stage. `DOCKET_SONAR_URL` points at a SonarQube you already run,
+in which case docket manages nothing and simply fails the stage if that server is down.
+
 ## Proof, per vulnerability class
 
 | Class | What counts as proof |
@@ -415,6 +457,11 @@ server serving it. No account, no upload, nothing hosted by us.
 | `DOCKET_MAX_AGENTS` | Concurrent agent cap. Default `6` |
 | `DOCKET_SEARCH_PROVIDER` | Optional live search: `tavily`, `brave`, `serper`, `perplexity`, `deepseek` |
 | `DOCKET_SEARCH_API_KEY` | Key for the above |
+| `DOCKET_SONAR` | `0` to skip the SonarQube stage entirely. On by default whenever `--source` is given |
+| `DOCKET_SONAR_URL` | Point at a SonarQube you already run. Setting it stops docket managing a container of its own |
+| `DOCKET_SONAR_TOKEN` | Use an existing token instead of letting docket generate one |
+| `DOCKET_SONAR_PROJECT_KEY` | Override the derived project key, so repeat scans of one repo share a history |
+| `DOCKET_SONAR_IMPACTS` | Which impacts to import. Default `SECURITY`; `SECURITY,RELIABILITY` adds bugs |
 
 `.env` is loaded automatically. Provider-agnostic by design: docket routes through LiteLLM,
 so any supported model works without a code change. Per-run values (target, instruction, run

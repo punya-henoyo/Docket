@@ -1393,7 +1393,8 @@ def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
         # nuclei needs a live URL and a source-only scan has none, and triage is off
         # unless asked for because it costs LLM money per finding.
         "stages": {"fetch": "pending", "trivy": "pending", "semgrep": "pending",
-                   "nuclei": "pending", "recon": "pending", "triage": "pending"},
+                   "sonar": "pending", "nuclei": "pending", "recon": "pending",
+                   "triage": "pending"},
         "findings": [],
         "finding_count": 0,
         "error": None,
@@ -2127,7 +2128,8 @@ def demo() -> None:
     state = new_scan_state("abc", "o/r")
     assert state["status"] == "queued" and state["finding_count"] == 0
     assert state["ref"] is None  # None means "whatever GitHub calls the default"
-    assert set(state["stages"]) == {"fetch", "trivy", "semgrep", "nuclei", "recon", "triage"}
+    assert set(state["stages"]) == {"fetch", "trivy", "semgrep", "sonar", "nuclei",
+                                    "recon", "triage"}
     # Both AI phases cost real money per run, so both are opt-in and neither can be
     # switched on by a caller that simply forgot to pass a flag.
     assert state["triage_max"] == 0, "triage costs money, so it must be opt-in"

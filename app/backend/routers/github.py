@@ -173,6 +173,22 @@ def scan_state(scan_id: str) -> dict:
     return payload
 
 
+@router.get("/api/scans/active")
+def active_scans() -> dict:
+    """Scans still running on the server.
+
+    Ported from connect.py, where it was the only implementation — so under this server
+    the console's activeScans() call 404'd and a reload could not recover a live scan,
+    which is the exact failure that endpoint was added to fix. Fifth instance of the
+    twin-server divergence, after /auth/callback, /api/download, the AI-phase flags and
+    /api/scan/cancel.
+
+    Declared above /api/scan/{scan_id} for readability only: "scans" and "scan" are
+    distinct path segments, so neither shadows the other.
+    """
+    return {"scans": connect.active_scans()}
+
+
 @router.get("/api/run/{run_name}")
 def load_run(run_name: str) -> dict:
     """A finished run, rehydrated from disk into the ScanState shape.

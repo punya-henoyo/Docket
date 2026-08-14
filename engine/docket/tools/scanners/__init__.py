@@ -40,4 +40,24 @@ def read_coverage(run_dir: Path) -> dict[str, Any]:
     if nuclei_jsonl.is_file():
         coverage["nuclei"] = {"ran": True}
 
+    # Written by run_sonar only after the server's analysis task reported SUCCESS, so
+    # its presence means the upload completed and results were pulled — not merely that
+    # sonar-scanner was invoked.
+    sonar_json = artifacts / "sonar.json"
+    if sonar_json.is_file():
+        try:
+            doc = json.loads(sonar_json.read_text())
+            coverage["sonar"] = {
+                "project_key": doc.get("projectKey"),
+                # Zero here would mean the analysis looked at nothing; run_sonar refuses
+                # to get this far in that case, so a recorded count is a real one.
+                "files_analysed": doc.get("files_analysed"),
+                "issues": doc.get("issues", 0),
+                "hotspots": doc.get("hotspots", 0),
+                "rules_fired": doc.get("rules", []),
+                "impacts": doc.get("impacts"),
+            }
+        except (OSError, json.JSONDecodeError):
+            coverage["sonar"] = {}
+
     return coverage

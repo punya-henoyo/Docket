@@ -81,6 +81,52 @@ RUN case "${TARGETARCH}" in \
 # by running it in the built image, not guessed). 75.8.0 still ships it.
 RUN pip install semgrep==1.90.0 setuptools==75.8.0
 
+# sonar-scanner: the CLIENT half of SonarQube. Unlike every other scanner in this image
+# it analyses nothing here — it uploads /work/source to a SonarQube Community Build
+# server (started by docket/runtime/sonar_service.py) which analyses asynchronously, and
+# docket/tools/scanners/sonar.py then pulls the results over the Web API.
+#
+# The bundled-JRE build, deliberately: this is a python:slim base with no Java, and the
+# alternative is apt-installing a JDK that nothing else in the image wants. Costs ~200MB.
+# Pinned like nuclei/trivy above, for the same reason — results must not drift between
+# runs because a download moved.
+# Node.js, required by SonarQube's JavaScript/TypeScript/CSS analyzers — they shell out
+# to `node` and abort the ENTIRE analysis if it is missing, not just the JS part. On a
+# repo with one .js file in it that looked like:
+#   ERROR Error when running: 'node -v'. Is Node.js available during analysis?
+#   Caused by: java.io.IOException: Cannot run program "node"
+# and the scan reported sonar as failed having analysed nothing. A Python-only image is
+# not enough for a scanner that is handed whatever the customer's repo contains.
+#
+# Pinned like everything else here. SonarQube 26.x supports Node 20/22/24; this is the
+# current LTS. The .tar.gz rather than .tar.xz, so no xz-utils is needed on slim.
+ARG NODE_VERSION=v24.19.0
+RUN case "${TARGETARCH}" in \
+      amd64) NODE_ARCH=x64 ;; \
+      arm64) NODE_ARCH=arm64 ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -sL "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz" -o /tmp/node.tar.gz \
+    && tar -xzf /tmp/node.tar.gz -C /opt \
+    && rm /tmp/node.tar.gz \
+    && mv "/opt/node-${NODE_VERSION}-linux-${NODE_ARCH}" /opt/node \
+    && ln -s /opt/node/bin/node /usr/local/bin/node \
+    && ln -s /opt/node/bin/npm /usr/local/bin/npm \
+    && node --version
+
+ARG SONAR_SCANNER_VERSION=7.0.2.4839
+RUN case "${TARGETARCH}" in \
+      amd64) SONAR_ARCH=x64 ;; \
+      arm64) SONAR_ARCH=aarch64 ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -sL "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux-${SONAR_ARCH}.zip" -o /tmp/sonar.zip \
+    && unzip -q /tmp/sonar.zip -d /opt \
+    && rm /tmp/sonar.zip \
+    && mv "/opt/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-${SONAR_ARCH}" /opt/sonar-scanner \
+    && ln -s /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner \
+    && chmod +x /opt/sonar-scanner/bin/sonar-scanner
+
 # mitmproxy as the intercepting-proxy tool: open-source and scriptable, unlike the
 # commercial GUI-first proxies that ship their own SDK client. Note this target is plain
 # HTTP, so there is no TLS to intercept and no CA-cert bootstrap step at all - a real

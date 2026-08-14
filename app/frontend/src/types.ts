@@ -263,13 +263,16 @@ export interface RunSummary {
   failed?: boolean;
 }
 
-export const SCANNERS = ["fetch", "trivy", "semgrep", "nuclei", "recon", "triage"] as const;
+export const SCANNERS = [
+  "fetch", "trivy", "semgrep", "sonar", "nuclei", "recon", "triage",
+] as const;
 export type Scanner = (typeof SCANNERS)[number];
 
 export const SCANNER_LABEL: Record<Scanner, string> = {
   fetch: "fetch source",
   trivy: "trivy · dependencies",
   semgrep: "semgrep · source",
+  sonar: "sonar · source",
   nuclei: "nuclei · live target",
   recon: "recon · AI attack surface",
   triage: "triage · AI reachability",
