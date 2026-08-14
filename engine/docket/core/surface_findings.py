@@ -74,6 +74,13 @@ def candidates_to_findings(surface: dict[str, Any] | None) -> list[Finding]:
         if not title or not where:
             continue
 
+        # May point OUTSIDE the diff, deliberately — see Finding.root_cause. Only the
+        # anchor above is scoped; this is display-only, so citing the true cause can no
+        # longer get the whole finding dropped.
+        cause = str(candidate.get("cause", "")).strip().replace("/work/source/", "")
+        origin = str(candidate.get("origin", "")).strip().lower()
+        origin = origin if origin in ("introduced", "pre-existing") else None
+
         severity, rated = _severity(candidate)
         note = "" if rated else (
             " Severity was not set by the agent; this is docket's own reading of the "
@@ -91,13 +98,19 @@ def candidates_to_findings(surface: dict[str, Any] | None) -> list[Finding]:
             description=(
                 "Found by the AI recon agent reading source — NOT a scanner match and "
                 "not reproduced. No rule encodes this; it was identified by comparing "
-                f"handlers and noticing what is absent. {why}{note}"
+                f"handlers and noticing what is absent. {why}"
+                + (f" Root cause: {cause}." if cause else "")
+                + (" The agent judged this PRE-EXISTING, not introduced by this change."
+                   if origin == "pre-existing" else "")
+                + f"{note}"
             ).strip(),
             poc=PoC(
                 request=f"{where} — {title}",
                 response=why or "See the agent's reasoning; no request was sent.",
                 notes="Reasoning over source. Nothing was executed.",
             ),
+            root_cause=cause or None,
+            origin=origin,
             discovered_by="recon",
             # OPEN, not the model default VALIDATED: VALIDATED means a PoC was
             # reproduced, and nothing here was.
@@ -200,6 +213,34 @@ def demo() -> None:
     assert render_attack_plan({"entry_points": [{"kind": "none", "path": "-"}]}) == []
     assert render_attack_plan(None) == [] and render_attack_plan({}) == []
     assert candidates_to_findings(None) == []
+    # ── a cause outside the diff, and an origin the agent set ──────────────────
+    # Mendor-lab#2 changed app/services/db.py alone; the missing authorization was in
+    # app/profiles.py:47. Anchoring on the changed line keeps the finding in scope,
+    # while `cause` sends the reviewer to the right file.
+    split = candidates_to_findings({"candidates": [{
+        "title": "no owner check on invoice results", "file": "app/services/db.py:59",
+        "why": "the helper returns rows for any email",
+        "cause": "app/profiles.py:47", "origin": "pre-existing", "severity": "high",
+    }]})
+    assert len(split) == 1, split
+    assert split[0].location.source_file == "app/services/db.py:59"
+    assert split[0].root_cause == "app/profiles.py:47", split[0].root_cause
+    assert split[0].origin == "pre-existing", split[0].origin
+    assert "app/profiles.py:47" in split[0].description
+    assert "PRE-EXISTING" in split[0].description
+
+    # Omitted or nonsense values stay None rather than becoming a label nobody set.
+    plain = candidates_to_findings({"candidates": [{
+        "title": "t", "file": "a.py:1", "why": "w", "origin": "probably?"}]})
+    assert plain[0].root_cause is None and plain[0].origin is None, plain[0]
+
+    # The container prefix comes off the cause too, or it names a path that only
+    # existed inside the sandbox.
+    pref = candidates_to_findings({"candidates": [{
+        "title": "t", "file": "a.py:1", "why": "w",
+        "cause": "/work/source/app/routes.py:9"}]})
+    assert pref[0].root_cause == "app/routes.py:9", pref[0].root_cause
+
     print("core.surface_findings: ok")
 
 

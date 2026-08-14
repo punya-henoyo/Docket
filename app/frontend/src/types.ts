@@ -95,6 +95,43 @@ export interface PrResult {
   findings: {
     rule_id?: string; title?: string; severity?: string;
     discovered_by?: string; where?: string; verdict?: string;
+    /** Where the problem actually lives, when that is not where it was anchored. The
+     *  anchor has to stay inside the diff for scoping; this may point anywhere. */
+    root_cause?: string | null;
+    /** The agent's reading of whether THIS change caused it. Absent on scanner
+     *  findings, which are diffed against a baseline and need no opinion. */
+    origin?: string | null;
+  }[];
+  /** True when a fix can still be attempted: the verdict blocked, this process holds
+   *  the inputs a patch needs, and no fix PR has been opened yet. Goes false after a
+   *  restart, because the full head sha and each finding's PoC live in memory only. */
+  fixable?: boolean;
+  /** Live timeline, present ONLY while the scan is in flight. It is dropped the moment
+   *  the verdict lands, because the verdict is the durable record and a timeline left
+   *  behind would show a scan that is no longer running. */
+  progress?: PrProgress;
+}
+
+export interface PrStep {
+  name: string;
+  label: string;
+  state: "pending" | "running" | "done" | "error" | "skipped";
+  started: number | null;
+  ended: number | null;
+  /** What it is working on right now — a file, a finding, a refusal reason. */
+  detail: string;
+}
+
+export interface PrProgress {
+  /** Which side is being scanned: "head", "base", or "" before either starts. */
+  phase: string;
+  started: number;
+  /** Findings collected so far. Rises while the scanners run. */
+  findings: number;
+  steps: PrStep[];
+  agents: {
+    id: string; role: string; label: string; detail: string;
+    status: string; at: number; outcome?: string | null;
   }[];
 }
 

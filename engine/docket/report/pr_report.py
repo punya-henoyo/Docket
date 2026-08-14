@@ -39,6 +39,24 @@ MAX_DESCRIPTION = 140
 _SEVERITY_MARK = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵", "info": "⚪"}
 
 
+def _cause_note(finding: dict[str, Any]) -> str:
+    """The real location, and whether the change caused it.
+
+    `location` has to stay the anchor the diff scoped on, so a cause in an untouched
+    file cannot replace it — but sending a reviewer to the wrong file is worse than a
+    longer cell. Mendor-lab#2 changed only app/services/db.py while the missing
+    authorization lived in app/profiles.py:47.
+    """
+    cause = str(finding.get("root_cause") or "").strip()
+    origin = str(finding.get("origin") or "").strip()
+    parts = []
+    if cause and cause != str((finding.get("location") or {}).get("source_file") or ""):
+        parts.append(f"cause `{cause}`")
+    if origin == "pre-existing":
+        parts.append("**pre-existing**")
+    return ("<br><sub>" + " · ".join(parts) + "</sub>") if parts else ""
+
+
 def _cell(finding: dict[str, Any]) -> str:
     """Rule ids are code and get backticks; a recon title is prose and does not."""
     name = _rule(finding)
@@ -105,6 +123,13 @@ def render_comment(verdict: dict[str, Any], *, run_url: str | None = None) -> st
     fixed = verdict.get("fixed") or []
     caveats = verdict.get("caveats") or []
     reachable = verdict.get("new_reachable") or []
+    # Fall back to `new` when the split is absent, so a verdict built by an older caller
+    # (or a hand-written one in a test) still renders every finding rather than none.
+    gating = verdict.get("gating")
+    observations = verdict.get("observations")
+    if gating is None and observations is None:
+        gating, observations = new, []
+    gating, observations = list(gating or []), list(observations or [])
 
     lines = [COMMENT_MARKER, "## docket security check", ""]
 
@@ -117,27 +142,54 @@ def render_comment(verdict: dict[str, Any], *, run_url: str | None = None) -> st
             *(f"- {c}" for c in caveats),
             "",
         ]
-    elif not new:
+    elif not gating and not observations:
         done = f" {len(fixed)} finding(s) fixed by this change." if fixed else ""
         lines += [f"No new findings introduced by this change.{done}", ""]
     else:
-        headline = (f"**{len(reachable)} of {len(new)} new finding(s) are reachable "
-                    "by untrusted input.**" if reachable
-                    else f"{len(new)} new finding(s), none judged reachable.")
-        lines += [headline, "",
-                  "| | Finding | Where | Triage |",
-                  "|---|---|---|---|"]
-        for finding in new[:10]:
-            mark = _SEVERITY_MARK.get(str(finding.get("severity")), "⚪")
-            lines.append(
-                f"| {mark} {finding.get('severity','?')} | {_cell(finding)} "
-                f"| `{_location(finding)}` | {_verdict_note(finding)} |"
-            )
-        if len(new) > 10:
-            lines.append(f"| | …and {len(new) - 10} more | | |")
-        lines.append("")
+        def _table(rows: list[dict[str, Any]]) -> list[str]:
+            out = ["| | Finding | Where | Triage |", "|---|---|---|---|"]
+            for finding in rows[:10]:
+                mark = _SEVERITY_MARK.get(str(finding.get("severity")), "⚪")
+                out.append(
+                    f"| {mark} {finding.get('severity','?')} | {_cell(finding)} "
+                    f"| `{_location(finding)}`{_cause_note(finding)} "
+                f"| {_verdict_note(finding)} |"
+                )
+            if len(rows) > 10:
+                out.append(f"| | …and {len(rows) - 10} more | | |")
+            return [*out, ""]
+
+        if gating:
+            lines += [
+                (f"**{len(reachable)} of {len(gating)} new finding(s) are reachable "
+                 "by untrusted input.**" if reachable
+                 else f"{len(gating)} new finding(s), none judged reachable."),
+                "",
+                *_table(gating),
+            ]
+        elif not caveats:
+            lines += ["No new scanner findings introduced by this change.", ""]
         if fixed:
             lines += [f"{len(fixed)} finding(s) fixed by this change.", ""]
+
+        # Reported, never blocking, and labelled so nobody reads them as "you did this".
+        # The base scan runs recon=False (core/pr_service.py), so these have no baseline
+        # to be compared against and are `new` on every pull request by construction.
+        # kaizenmantra/vulnshop#25 was a one-line fix blocked on a missing ownership
+        # check that was already in the branch it targeted.
+        if observations:
+            lines += [
+                f"<details><summary>{len(observations)} agent observation(s) — "
+                "not blocking</summary>",
+                "",
+                "These come from reading the code, not from a scanner, so docket cannot "
+                "tell whether this change introduced them or they were already here. "
+                "They do not affect the check.",
+                "",
+                *_table(observations),
+                "</details>",
+                "",
+            ]
 
     scoped = verdict.get("scoped_to") or []
     if scoped:

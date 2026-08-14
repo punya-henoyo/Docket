@@ -122,6 +122,23 @@ class Finding(BaseModel):
     # Published by a scoring body, not computed here. None for semgrep matches,
     # which have no CVSS and must not be given an invented one.
     cvss: Cvss | None = None
+    # WHERE THE PROBLEM ACTUALLY LIVES, when that is not where it was anchored.
+    #
+    # `location` does two jobs — it anchors diff scoping AND it is what a reader sees —
+    # and those conflict the moment a cause and its symptom are in different files. On a
+    # pull request a finding is kept only if its cited line is inside the diff
+    # (core/pull_request._touches_change), so an agent that correctly cited the true
+    # cause in an unchanged file would have its finding DELETED rather than relocated.
+    #
+    # Measured on punya-henoyo/Mendor-lab#2, which changed app/services/db.py alone: the
+    # missing authorization is in app/profiles.py:47, the route. Recon reported it at
+    # db.py:59-60 because that was the only line it was allowed to cite, and the reviewer
+    # was sent to the wrong file. This field carries the truth without breaking scoping.
+    root_cause: str | None = None
+    # "introduced" | "pre-existing" — the agent's own reading of whether THIS change
+    # caused it. Agent findings have no baseline to be diffed against (the base scan runs
+    # recon=False), so without this every one of them reads as newly introduced.
+    origin: str | None = None
     # Set by merge_static() when several rules matched one line and were folded into
     # this finding. Empty on an unmerged finding.
     merged_rules: list[str] = Field(default_factory=list)

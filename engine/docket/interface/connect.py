@@ -52,6 +52,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from dotenv import load_dotenv
@@ -137,11 +139,151 @@ def active_scans() -> list[dict[str, Any]]:
 MAX_WATCH_RESULTS = 50
 
 
+# Live progress per pull request, keyed "repo#number". Separate from the results rows
+# because those are written twice — once at the start, once at the end — while this
+# changes every few seconds, and a scan that shows nothing for five minutes reads as
+# broken however correct the final verdict is.
+#
+# Memory only, and dropped when the scan ends and the row carries the verdict instead.
+# Nothing here is evidence; it is a view of work in flight.
+_PR_PROGRESS: dict[str, dict[str, Any]] = {}
+
+# What a fix needs, kept for BLOCKED pull requests so the console can offer a button
+# rather than only ever fixing automatically. Two things make this necessary:
+# the results row trims each finding down to what a table needs (no PoC, no location
+# object), and it stores head_sha[:7] — a fix has to be cut from the full commit or it
+# is written against code that may no longer be there.
+#
+# Only exit_code 2 rows are kept, so this cannot grow with every passing pull request,
+# and it is dropped as soon as a fix is opened.
+_PR_FIXABLE: dict[str, dict[str, Any]] = {}
+
+# One fix at a time. A fix agent starts a container, copies a tree and runs a scanner
+# over it; two at once on a laptop is how a demo runs out of memory. The watcher is
+# already serial for the same reason — this stops a second one arriving by button.
+_FIX_LOCK = threading.Lock()
+
+# Worst first, matching report.models.Severity. Local so autofix's ordering does not
+# depend on importing the whole diff module for one dict.
+_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+# The order steps are DISPLAYED in, regardless of the order they report. A timeline that
+# reshuffles itself as it runs is harder to read than one with a fixed shape.
+STEP_ORDER = ("fetch", "trivy", "semgrep", "nuclei", "recon", "triage", "fix")
+STEP_LABEL = {
+    "fetch": "Fetching the commit",
+    "trivy": "Dependency scan",
+    "semgrep": "Static analysis",
+    "nuclei": "Template scan",
+    "recon": "AI recon",
+    "triage": "AI triage",
+    "fix": "Writing a fix",
+}
+
+
+def _progress_key(repo: str, number: Any) -> str:
+    return f"{repo}#{number}"
+
+
+def progress_sink(repo: str, number: Any) -> dict[str, Any]:
+    """Create (or reset) the live timeline for one pull request."""
+    entry: dict[str, Any] = {"phase": "", "started": time.time(), "steps": {},
+                             "agents": [], "findings": 0}
+    with SESSION.lock:
+        _PR_PROGRESS[_progress_key(repo, number)] = entry
+    return entry
+
+
+def clear_progress(repo: str, number: Any) -> None:
+    with SESSION.lock:
+        _PR_PROGRESS.pop(_progress_key(repo, number), None)
+
+
+def note_step(repo: str, number: Any, name: str, state: str,
+              detail: str = "") -> None:
+    """One scanner or agent phase changed state. Never raises: progress is decoration,
+    and a display bug must not take down a scan that is otherwise working."""
+    try:
+        with SESSION.lock:
+            entry = _PR_PROGRESS.get(_progress_key(repo, number))
+            if entry is None:
+                return
+            step = entry["steps"].setdefault(
+                name, {"name": name, "label": STEP_LABEL.get(name, name),
+                       "state": "pending", "started": None, "ended": None, "detail": ""})
+            if state == "running" and step["started"] is None:
+                step["started"] = time.time()
+            if state in ("done", "error", "skipped"):
+                step["ended"] = time.time()
+            step["state"] = state
+            if detail:
+                step["detail"] = detail[:160]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def note_agent(repo: str, number: Any, agent: dict[str, Any]) -> None:
+    """An agent started or finished. Rolls up into its role's step so the timeline shows
+    "AI triage — judging app.py:67" rather than an opaque spinner."""
+    try:
+        role = str(agent.get("role") or "")
+        label = str(agent.get("label") or "")
+        status = str(agent.get("status") or "")
+        with SESSION.lock:
+            entry = _PR_PROGRESS.get(_progress_key(repo, number))
+            if entry is None:
+                return
+            rows = entry["agents"]
+            existing = next((a for a in rows if a["id"] == agent.get("id")), None)
+            if existing is None:
+                rows.append({"id": agent.get("id"), "role": role, "label": label,
+                             "detail": str(agent.get("detail") or ""),
+                             "status": status, "at": time.time(),
+                             "outcome": agent.get("outcome")})
+            else:
+                existing.update(status=status, at=time.time(),
+                                outcome=agent.get("outcome") or existing.get("outcome"))
+            step = entry["steps"].get(role)
+            if step is not None and status == "running" and label:
+                step["detail"] = label[:160]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def progress_for(repo: str, number: Any) -> dict[str, Any] | None:
+    """The timeline for one pull request, ordered for display. Called under the lock by
+    watch_state, so it does not take it again."""
+    entry = _PR_PROGRESS.get(_progress_key(repo, number))
+    if entry is None:
+        return None
+    steps = entry["steps"]
+    ordered = [steps[name] for name in STEP_ORDER if name in steps]
+    ordered += [s for name, s in steps.items() if name not in STEP_ORDER]
+    return {
+        "phase": entry.get("phase", ""),
+        "started": entry.get("started"),
+        "findings": entry.get("findings", 0),
+        "steps": [dict(s) for s in ordered],
+        "agents": [dict(a) for a in entry.get("agents", [])],
+    }
+
+
 def watch_state() -> dict[str, Any]:
     """A JSON-safe snapshot of the watcher for the console."""
     with SESSION.lock:
         state = dict(SESSION.watch)
-        state["results"] = list(state.get("results") or [])
+        rows = []
+        for row in (state.get("results") or []):
+            row = dict(row)
+            live = progress_for(row.get("repo", ""), row.get("number"))
+            if live is not None:
+                row["progress"] = live
+            # Whether "Open a fix PR" can do anything for this row. False once a fix is
+            # open, or on a verdict this process did not produce (a restart clears it).
+            row["fixable"] = _progress_key(row.get("repo", ""),
+                                           row.get("number")) in _PR_FIXABLE
+            rows.append(row)
+        state["results"] = rows
     return state
 
 
@@ -175,6 +317,11 @@ def record_watch_result(ref: Any, verdict: dict[str, Any], posted: dict[str, str
              "severity": f.get("severity"), "discovered_by": f.get("discovered_by"),
              "where": str((f.get("location") or {}).get("source_file") or "")
                       .replace("/work/source/", ""),
+             # Where the problem really is, when that is not where it was anchored,
+             # and whether the agent thinks this change caused it. Both are display
+             # only — scoping still uses `where`. See Finding.root_cause.
+             "root_cause": f.get("root_cause"),
+             "origin": f.get("origin"),
              "verdict": (f.get("triage") or {}).get("verdict")}
             for f in (verdict.get("new") or [])[:12]
         ],
@@ -196,12 +343,24 @@ _WATCH_STOP = threading.Event()
 
 
 def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
-                 budget_usd: float | None = None, only: list | None = None,
-                 recon: bool = False) -> dict[str, Any] | None:
+                 budget_usd: float | None = None,
+                 triage_filter: Callable[[dict], bool] | None = None,
+                 recon: bool = False, role: str = "head",
+                 progress: tuple[str, Any] | None = None) -> dict[str, Any] | None:
     """Fetch a commit and scan it, returning report.json. Used for both sides of a diff.
 
     A pull request scan is a normal scan with two differences: it is pinned to a
     commit rather than a branch, and semgrep is scoped to the changed files.
+
+    `role` ONLY names the run directory, and it has to. The directory was keyed on the
+    commit alone, and one commit is legitimately scanned twice with different settings:
+    as a HEAD (recon on, triage on) and later as some other pull request's BASE (recon
+    off, triage off). The second run overwrote the first.
+
+    Measured on kaizenmantra/vulnshop: baed9dd is #24's head AND #25's base, so scanning
+    #25 destroyed #24's report — its recon findings and every triage verdict were gone
+    from disk, and a later diff computed against it saw an unjudged, recon-less scan. A
+    baseline's contents must not depend on what happened to be scanned first.
     """
     from docket.core.paths import run_path
     from docket.core.runner import run_scan
@@ -213,19 +372,78 @@ def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
         raise RuntimeError("GitHub is not connected")
 
     workdir = Path(tempfile.mkdtemp(prefix="docket-pr-"))
-    run_name = f"pr-{repo.replace('/', '-')}-{sha[:7]}"
+    suffix = "" if role == "head" else f"-{role}"
+    run_name = f"pr-{repo.replace('/', '-')}-{sha[:7]}{suffix}"
     store = FindingStore()
+    # `progress` is (repo, number) of the PULL REQUEST, which is not this scan's repo/sha:
+    # the base side scans a different commit and must still report into the same timeline.
+    pr_repo, pr_number = progress if progress else (None, None)
+
+    def stage(name: str, state: str) -> None:
+        if pr_repo is not None:
+            note_step(pr_repo, pr_number, name, state)
+
+    def agent(record: dict[str, Any]) -> None:
+        if pr_repo is None:
+            return
+        # recon's label is its scan target, which here is the throwaway checkout
+        # (/var/folders/.../docket-pr-xxxx). That is an implementation detail and it is
+        # what the console would otherwise show a user for minutes. The changed files
+        # are what recon is actually reading, and what they asked about.
+        try:
+            label = str(record.get("label") or "")
+            if label.startswith(("/var/", "/tmp/", "/private/", str(workdir))):
+                shown = ", ".join(paths[:3])
+                shown += f" +{len(paths) - 3}" if len(paths) > 3 else ""
+                record = {**record, "label": shown or "the changed files"}
+        except Exception:  # noqa: BLE001 — a label is decoration, never a scan failure
+            pass
+        note_agent(pr_repo, pr_number, record)
+
+    def found(finding: Any) -> None:
+        store.add(finding)
+        if pr_repo is not None:
+            with SESSION.lock:
+                entry = _PR_PROGRESS.get(_progress_key(pr_repo, pr_number))
+                if entry is not None:
+                    entry["findings"] = len(store.findings())
+
     try:
+        if pr_repo is not None:
+            with SESSION.lock:
+                entry = _PR_PROGRESS.get(_progress_key(pr_repo, pr_number))
+                # A NEW PASS STARTS A NEW TIMELINE. The base side runs with triage_max=0
+                # and fix_max=0, so the runner honestly reports "triage skipped" and "fix
+                # skipped" FOR THAT PASS — and those states used to survive into the head
+                # pass, where both do run. The console then showed "AI triage — skipped"
+                # while triage was about to start, which is the opposite of the truth.
+                # Steps are per-pass; the timeline is per-pull-request; so it resets here.
+                if entry is not None and entry.get("phase") != role:
+                    entry["phase"] = role
+                    entry["steps"] = {}
+                    entry["agents"] = []
+        stage("fetch", "running")
         source = fetch_source(repo, token, workdir, sha)
+        stage("fetch", "done")
         result = run_scan(
             target_url=None, whitebox_path=str(source), run_name=run_name,
             use_sandbox=True, store=store, static_only=True,
             triage_max=triage_max, recon=recon, scope_paths=paths,
-            budget_usd=budget_usd, on_finding=store.add,
+            budget_usd=budget_usd, on_finding=found,
+            # The live timeline. Without these the console shows a spinner for five
+            # minutes, which is indistinguishable from a hung scan.
+            on_stage=stage, on_agent=agent,
+            # Which of THIS scan's findings the pull request introduced. A predicate,
+            # because the findings do not exist until this call produces them — see
+            # run_scan's `triage_filter`.
+            triage_filter=triage_filter,
         )
         out_dir = run_path(run_name)
         write_report(store, out_dir, run_name=run_name,
                      target=f"github:{repo}@{sha}",
+                     # Recorded so this report can later stand in as somebody's baseline
+                     # instead of re-scanning the same commit. See BaselineCache.
+                     scanned_paths=paths,
                      coverage=read_coverage(out_dir / "sandbox"),
                      summary=result.summary, cost_usd=result.cost_usd,
                      agents_spawned=result.agents_spawned, success=result.success)
@@ -355,6 +573,7 @@ def attempt_autofix(ref: Any, verdict: dict[str, Any], *,
 
     from docket.config.settings import Config
     from docket.core.paths import run_path
+    from docket.report.diff import DETERMINISTIC_SOURCES
     from docket.service.fix import VERIFIED, fix_findings
     from docket.service.validate import validate_patch
 
@@ -381,6 +600,21 @@ def attempt_autofix(ref: Any, verdict: dict[str, Any], *,
     # extracted tree root, so a finding still carrying the container's /work/source
     # prefix anchors nothing. Independent of WHICH findings are chosen.
     fixable = [_repo_relative(f) for f in (verdict.get("new") or []) if patchable(f)]
+    # VERIFIABLE FIRST, and only then by severity. `max_fixes=1` means this ordering
+    # decides which single finding gets a patch, and only a finding a deterministic
+    # scanner can reproduce can clear validate_patch's positive control — a `recon/`
+    # rule id appears in no scanner's output, so a patch for one is refused after the
+    # agent has already been paid for.
+    #
+    # Measured on punya-henoyo/Mendor-lab#1: recon reported the injection at the ROUTE
+    # (app/profiles.py:47) and semgrep reported the SAME bug at the sink
+    # (app/services/db.py:59). Both were `high`, recon sorted first, autofix spent its
+    # one attempt on the unverifiable one and reported `not_fixed` — with the verifiable
+    # twin sitting next to it untouched.
+    fixable.sort(key=lambda f: (
+        str(f.get("discovered_by", "")) not in DETERMINISTIC_SOURCES,
+        _SEVERITY_RANK.get(str(f.get("severity", "")), 9),
+    ))
     if not fixable:
         return {"opened": False,
                 "note": "no finding has a single line to replace — these are design "
@@ -502,18 +736,34 @@ def _watch_loop() -> None:
         # fail-open as a scanner whose crash reads as a clean result. Worse, watch_forever
         # has no handler around handle(), so the exception also killed the watcher thread
         # and every later pull request went unscanned in silence.
+        progress_sink(ref.repo, ref.number)
         try:
             outcome = scan_pull_request(
                 ref, token=SESSION.token or "", fetch_files=changed_files,
-                scan=_scan_for_pr, baselines=baselines, post=_post_for_pr,
+                scan=partial(_scan_for_pr, progress=(ref.repo, ref.number)),
+                baselines=baselines, post=_post_for_pr,
                 triage_max=int(SESSION.watch.get("triage_max") or 5),
             )
             posted = dict(outcome.posted)
+            # Retained BEFORE autofix runs, so the button works whether autofix is off,
+            # or ran and refused. A blocked pull request should always be one click from
+            # an attempt.
+            if outcome.ok and outcome.verdict.get("exit_code") == 2:
+                with SESSION.lock:
+                    _PR_FIXABLE[_progress_key(ref.repo, ref.number)] = {
+                        "ref": ref, "verdict": outcome.verdict}
             # Only on a blocking verdict. Opening a fix PR for a check that passed is
             # noise, and the whole point of blocking is that something needs doing.
             if (outcome.ok and outcome.verdict.get("exit_code") == 2
                     and SESSION.watch.get("autofix")):
+                note_step(ref.repo, ref.number, "fix", "running")
                 fix = attempt_autofix(ref, outcome.verdict)
+                note_step(ref.repo, ref.number, "fix",
+                          "done" if fix.get("opened") else "skipped",
+                          detail=str(fix.get("note") or "")[:160])
+                if fix.get("opened"):
+                    with SESSION.lock:
+                        _PR_FIXABLE.pop(_progress_key(ref.repo, ref.number), None)
                 posted["autofix"] = (f"opened #{fix['number']}" if fix.get("opened")
                                      else f"not opened — {fix.get('note', '')}"[:120])
         except Exception as exc:  # noqa: BLE001 — one bad PR must not sink the watcher
@@ -528,6 +778,10 @@ def _watch_loop() -> None:
             # `seen`, so the next poll retries this pull request instead of skipping it
             # forever, and the loop lives on to scan the others.
             return PullRequestOutcome(ref, {}, error=detail)
+        finally:
+            # The row now carries the verdict, which is the durable record. Keeping the
+            # timeline would leave the console showing a scan still in flight.
+            clear_progress(ref.repo, ref.number)
         record_watch_result(ref, outcome.verdict, posted, outcome.error)
         return outcome
 
@@ -1455,6 +1709,9 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             if post_path == "/api/watch":
                 self._set_watch()
                 return
+            if post_path == "/api/pr/fix":
+                self._open_fix()
+                return
             if post_path != "/api/scan":
                 self._send(404, b"not found", "text/plain")
                 return
@@ -1564,6 +1821,71 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 # thing to start doing because a checkbox defaulted on.
                 SESSION.watch["autofix"] = bool(body.get("autofix"))
             self._json(200, start_watching(repos, interval))
+
+        def _open_fix(self) -> None:
+            """Ask for a fix pull request on an already-blocked pull request.
+
+            202, not 200: writing and PROVING a patch takes minutes — a fix agent, a
+            scanner re-run over a patched copy, seven gates — so this returns as soon as
+            the work is accepted, not when it finishes. Progress arrives on the same
+            timeline the scan used, and the verdict row's `posted.autofix` carries the
+            outcome. Reporting a pull request that does not exist yet is how a console
+            ends up lying about the repository.
+            """
+            if SESSION.token is None:
+                self._json(401, {"error": "not connected to GitHub"})
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._json(400, {"error": "body must be JSON"})
+                return
+            repo, number = str(body.get("repo", "")).strip(), body.get("number")
+            key = _progress_key(repo, number)
+            with SESSION.lock:
+                held = _PR_FIXABLE.get(key)
+            if held is None:
+                # Not "no", but "not from here". The inputs a fix needs — the full head
+                # sha and each finding's PoC — live in this process only, so a verdict
+                # from before a restart cannot be acted on without re-scanning.
+                self._json(409, {"error": "no blocking verdict is held for this pull "
+                                          "request in this session; re-scan it first"})
+                return
+            if not _FIX_LOCK.acquire(blocking=False):
+                self._json(429, {"error": "a fix is already being written"})
+                return
+
+            def work() -> None:
+                ref, verdict = held["ref"], held["verdict"]
+                try:
+                    progress_sink(ref.repo, ref.number)
+                    note_step(ref.repo, ref.number, "fix", "running")
+                    fix = attempt_autofix(ref, verdict)
+                    note_step(ref.repo, ref.number, "fix",
+                              "done" if fix.get("opened") else "skipped",
+                              detail=str(fix.get("note") or "")[:160])
+                    note = (f"opened #{fix['number']}" if fix.get("opened")
+                            else f"not opened — {fix.get('note', '')}"[:120])
+                    if fix.get("opened"):
+                        with SESSION.lock:
+                            _PR_FIXABLE.pop(key, None)
+                except Exception as exc:  # noqa: BLE001 — a failed fix must not kill the thread
+                    logger.exception("manual fix for %s failed", key)
+                    note = f"failed — {type(exc).__name__}: {exc}"[:120]
+                    note_step(ref.repo, ref.number, "fix", "error", detail=note)
+                finally:
+                    _FIX_LOCK.release()
+                # Onto the row the console already polls, so the outcome lands wherever
+                # the operator happens to be looking.
+                with SESSION.lock:
+                    for row in SESSION.watch.get("results") or []:
+                        if _progress_key(row.get("repo", ""), row.get("number")) == key:
+                            row["posted"] = {**(row.get("posted") or {}), "autofix": note}
+                clear_progress(ref.repo, ref.number)
+
+            threading.Thread(target=work, name="docket-manual-fix", daemon=True).start()
+            self._json(202, {"started": True, "repo": repo, "number": number})
 
         def _cancel_scan(self) -> None:
             """Ask the running scan to stop at its next checkpoint.
@@ -2222,6 +2544,177 @@ def demo() -> None:
             else:
                 os.environ.pop(key, None)
         SESSION.token = SESSION.login = SESSION.oauth_state = None
+
+    # ── autofix spends its one attempt on a finding it can PROVE ───────────────
+    # Mendor-lab#1: recon reported the injection at the route (app/profiles.py:47) and
+    # semgrep reported the same bug at the sink (app/services/db.py:59). Both `high`.
+    # Recon sorted first, so the one attempt went to the finding whose positive control
+    # can never pass, and came back not_fixed with the verifiable twin untouched.
+    from docket.report.diff import DETERMINISTIC_SOURCES as _DET
+
+    _cands = [
+        {"discovered_by": "recon", "severity": "critical", "rule_id": "recon/x"},
+        {"discovered_by": "semgrep", "severity": "high", "rule_id": "semgrep/y"},
+        {"discovered_by": "semgrep", "severity": "critical", "rule_id": "semgrep/z"},
+    ]
+    _cands.sort(key=lambda f: (str(f.get("discovered_by", "")) not in _DET,
+                               _SEVERITY_RANK.get(str(f.get("severity", "")), 9)))
+    assert [c["rule_id"] for c in _cands] == ["semgrep/z", "semgrep/y", "recon/x"], _cands
+    # A critical from an agent still sorts BELOW a high from a scanner. That is not a
+    # judgement about which matters more — it is that only one of them can be verified,
+    # and an unverifiable patch is never shipped however severe the finding.
+
+    # ── the live timeline the console draws while a scan runs ──────────────────
+    # Without it a pull request shows a spinner for five minutes, which looks exactly
+    # like a hung scan. Everything here is decoration, so every writer swallows its own
+    # errors — a display bug must never take down a scan that is otherwise working.
+    progress_sink("o/r", 9)
+    note_step("o/r", 9, "semgrep", "running")
+    note_step("o/r", 9, "semgrep", "done")
+    note_step("o/r", 9, "recon", "running")
+    note_agent("o/r", 9, {"id": "recon", "role": "recon", "status": "running",
+                          "label": "app.py", "detail": "reading the diff"})
+    live = progress_for("o/r", 9)
+    assert live is not None
+    names = [s["name"] for s in live["steps"]]
+    # Fixed display order, not arrival order: a timeline that reshuffles as it runs is
+    # harder to read than one with a stable shape.
+    assert names == ["semgrep", "recon"], names
+    done = next(s for s in live["steps"] if s["name"] == "semgrep")
+    assert done["state"] == "done" and done["started"] and done["ended"], done
+    running = next(s for s in live["steps"] if s["name"] == "recon")
+    assert running["state"] == "running" and running["ended"] is None, running
+    # The agent's label rolls up into its step, so the row reads "AI recon — app.py"
+    # rather than an opaque spinner.
+    assert running["detail"] == "app.py", running
+    assert live["agents"][0]["id"] == "recon", live["agents"]
+
+    # An agent finishing UPDATES its row rather than appending a second one.
+    note_agent("o/r", 9, {"id": "recon", "role": "recon", "status": "done",
+                          "outcome": "mapped"})
+    assert len(progress_for("o/r", 9)["agents"]) == 1
+    assert progress_for("o/r", 9)["agents"][0]["status"] == "done"
+
+    # A NEW PASS CLEARS THE OLD ONE'S STEPS. The base side runs with triage and fix off,
+    # so it truthfully reports both as "skipped"; carrying that into the head pass showed
+    # "AI triage — skipped" on screen while triage was seconds from starting.
+    with SESSION.lock:
+        held = _PR_PROGRESS[_progress_key("o/r", 9)]
+        held["phase"] = "base"
+        held["steps"]["triage"] = {"name": "triage", "label": "AI triage",
+                                   "state": "skipped", "started": None,
+                                   "ended": None, "detail": ""}
+    stale = progress_for("o/r", 9)
+    assert any(s["name"] == "triage" and s["state"] == "skipped"
+               for s in stale["steps"]), stale["steps"]
+    # ...and the head pass must not inherit it. This mirrors what _scan_for_pr does when
+    # `role` changes; asserting the shape here keeps the two from drifting.
+    with SESSION.lock:
+        held = _PR_PROGRESS[_progress_key("o/r", 9)]
+        if held.get("phase") != "head":
+            held.update(phase="head", steps={}, agents=[])
+    fresh = progress_for("o/r", 9)
+    assert fresh["steps"] == [], "a new pass must start with an empty timeline"
+    assert fresh["phase"] == "head", fresh["phase"]
+
+    # Unknown pull request, and a cleared one, are None rather than an exception.
+    assert progress_for("o/r", 404) is None
+    note_step("o/r", 404, "semgrep", "running")   # must not raise or create a row
+    assert progress_for("o/r", 404) is None
+    clear_progress("o/r", 9)
+    assert progress_for("o/r", 9) is None
+
+    # ── _scan_for_pr must FORWARD triage_filter, not just accept it ─────────────
+    # Its predecessor `only` was accepted and dropped for as long as it existed, so
+    # triage on a pull request ranged over every finding by severity and spent its cap on
+    # pre-existing ones the diff then discarded (vulnshop#23). A dropped keyword is
+    # invisible — nothing errors, the scan runs, the wrong findings get judged — so the
+    # only thing that catches it is asserting it arrives.
+    import inspect
+
+    assert "triage_filter" in inspect.signature(
+        __import__("docket.core.runner", fromlist=["run_scan"]).run_scan
+    ).parameters, "run_scan lost triage_filter; _scan_for_pr's has nowhere to send it"
+
+    import docket.core.runner as _runner
+
+    seen: dict[str, object] = {}
+    real_run_scan, real_fetch = _runner.run_scan, globals()["fetch_source"]
+    marker = lambda f: True  # noqa: E731 — identity is what is being asserted
+    try:
+        from types import SimpleNamespace
+
+        _runner.run_scan = lambda **kw: (  # type: ignore[assignment]
+            seen.update(kw) or SimpleNamespace(summary="", cost_usd=0.0,
+                                               agents_spawned=0, success=True))
+        # Stubbed too, or this never reaches run_scan and the assertion below passes
+        # by never running — which is how a forwarding test quietly tests nothing.
+        globals()["fetch_source"] = lambda repo, token, workdir, sha: Path(workdir)
+        SESSION.token = "t"
+        _scan_for_pr(repo="o/r", sha="a" * 40, paths=["app.py"], triage_max=3,
+                     triage_filter=marker)
+    finally:
+        _runner.run_scan = real_run_scan  # type: ignore[assignment]
+        globals()["fetch_source"] = real_fetch
+        SESSION.token = None
+
+    assert seen, "run_scan was never reached — this check proves nothing"
+    assert seen.get("triage_filter") is marker, seen.get("triage_filter")
+    assert seen.get("scope_paths") == ["app.py"], seen.get("scope_paths")
+    # The head pass must carry the triage budget itself now. Passing 0 here is what used
+    # to force the second scan, and it would silently return to three passes.
+    assert seen.get("triage_max") == 3, seen.get("triage_max")
+
+    # ── one commit, two roles, two run directories ─────────────────────────────
+    # baed9dd was #24's head and #25's base. Sharing a directory meant scanning #25
+    # overwrote #24's report, verdicts and all.
+    head_name, base_name = {}, {}
+    real_run_scan2, real_fetch2 = _runner.run_scan, globals()["fetch_source"]
+    try:
+        globals()["fetch_source"] = lambda repo, token, workdir, sha: Path(workdir)
+        SESSION.token = "t"
+        for sink, role in ((head_name, "head"), (base_name, "base")):
+            _runner.run_scan = (lambda s: lambda **kw: (  # noqa: B023
+                s.update(kw) or SimpleNamespace(summary="", cost_usd=0.0,
+                                                agents_spawned=0, success=True)))(sink)
+            _scan_for_pr(repo="o/r", sha="b" * 40, paths=["app.py"], triage_max=0,
+                         role=role)
+    finally:
+        _runner.run_scan = real_run_scan2  # type: ignore[assignment]
+        globals()["fetch_source"] = real_fetch2
+        SESSION.token = None
+
+    assert head_name["run_name"] != base_name["run_name"], (
+        f"one commit scanned as head and as base must not share a run directory: "
+        f"{head_name['run_name']}")
+    assert head_name["run_name"] == "pr-o-r-bbbbbbb", head_name["run_name"]
+
+    # ── and what `triage_only` is keyed on must SURVIVE a second scan ───────────
+    # It was keyed on Finding.id for one run of vulnshop#24. `id` is uuid4().hex per
+    # object, so the re-scan's fresh store shared no id with the list, the filter
+    # emptied it, triage judged nothing, and the report read "triage did not run" —
+    # which the gate then correctly refused to call clean. The key has to be derived
+    # from the finding's CONTENT to cross a scan boundary.
+    from docket.report.diff import finding_key
+    from docket.report.models import Finding
+
+    def _same_finding() -> dict:
+        return {
+            "rule_id": "semgrep/sqli", "title": "t", "severity": "high",
+            "location": {"source_file": "app.py:67", "path": "/order/status",
+                         "method": "GET"},
+            "description": "d", "discovered_by": "semgrep",
+            "poc": {"request": "cur.execute(f\"...{order_id}...\")",
+                    "response": "HTTP/1.1 500 sqlite3.OperationalError",
+                    "reproduction": "r"},
+        }
+
+    one, two = Finding(**_same_finding()), Finding(**_same_finding())
+    assert one.id != two.id, "ids are per-object; if these ever tie, the point is moot"
+    assert finding_key(one.model_dump(mode="json")) == \
+           finding_key(two.model_dump(mode="json")), \
+           "finding_key must be stable across scans, or triage_only filters to nothing"
+
     print("interface.connect: ok")
 
 

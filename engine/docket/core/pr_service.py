@@ -25,6 +25,52 @@ from docket.core.pr_watcher import PullRequestRef
 logger = logging.getLogger(__name__)
 
 
+def _report_on_disk(repo: str, sha: str,
+                    needed_paths: list[str] | None = None) -> dict[str, Any] | None:
+    """A previously written report.json for exactly this commit, or None.
+
+    Never raises: a baseline that cannot be read is a baseline that gets re-scanned,
+    which is slow but correct. Failing the pull request over a stale artifact would not be.
+    """
+    import json
+
+    from docket.core.paths import runs_root
+
+    try:
+        root = runs_root()
+        prefix = f"pr-{repo.replace('/', '-')}-{sha[:7]}"
+        # Newest first: the same commit may have been scanned as a head AND as a base.
+        candidates = sorted((p for p in root.glob(f"{prefix}*") if p.is_dir()),
+                            key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+
+    wanted = {str(p) for p in (needed_paths or [])}
+    for directory in candidates:
+        try:
+            report = json.loads((directory / "report.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        # The 7-character prefix in the directory name is not proof of identity. The
+        # target carries the FULL sha, and a baseline attributed to the wrong commit is
+        # worse than no baseline: it reports someone else's findings as this change's.
+        if not str(report.get("target", "")).endswith(f"@{sha}"):
+            continue
+        # An incomplete scan is not a baseline. Its missing findings would read as
+        # "fixed" on one side and its absent coverage as "new" on the other.
+        if report.get("success") is not True:
+            continue
+        covered = report.get("scanned_paths")
+        # None = whole tree, covers anything. Otherwise it must be a superset.
+        if covered is not None and not wanted.issubset({str(p) for p in covered}):
+            continue
+        logger.info("reusing the scan of %s@%s from %s", repo, sha[:7], directory.name)
+        return report
+    return None
+
+
 @dataclass
 class BaselineCache:
     """report.json for a (repo, base_sha), so a base is scanned once not per PR.
@@ -41,8 +87,35 @@ class BaselineCache:
     def key(repo: str, sha: str) -> str:
         return f"{repo}@{sha}"
 
-    def get(self, repo: str, sha: str) -> dict[str, Any] | None:
-        return self._by_key.get(self.key(repo, sha))
+    def get(self, repo: str, sha: str,
+            needed_paths: list[str] | None = None) -> dict[str, Any] | None:
+        """The cached baseline for this commit, from memory or from disk.
+
+        The disk half is the point. This cache used to be memory-only, so every console
+        restart threw away every baseline and the next pull request paid a full scan of a
+        commit already sitting in docket_runs. Worse, a commit is routinely scanned twice
+        for unrelated reasons — dd9fc5d was #26's HEAD and #27's BASE — and the second
+        scan learned nothing the first had not already written down.
+
+        A head report is reusable as a baseline: a baseline needs deterministic scanner
+        findings, and a head report has those plus recon and triage on top.
+
+        THE ONE THING THAT MAKES REUSE UNSAFE, AND THE CHECK FOR IT
+        ----------------------------------------------------------
+        Scope. A report written while scoped to app.py contains no utils.py findings, so
+        standing it in for a pull request that touches utils.py would make every
+        pre-existing finding there read as introduced by that change. A cached report is
+        therefore only accepted when it covered AT LEAST the paths this caller needs
+        (`scanned_paths is None` means the whole tree, which covers everything).
+        """
+        hit = self._by_key.get(self.key(repo, sha))
+        if hit is not None:
+            return hit
+        found = _report_on_disk(repo, sha, needed_paths)
+        if found is not None:
+            # Promote to memory so a repeat within one process does not re-read the file.
+            self.put(repo, sha, found)
+        return found
 
     def put(self, repo: str, sha: str, report: dict[str, Any]) -> None:
         # Oldest out first. A long-lived watcher across many repos would otherwise
@@ -83,7 +156,8 @@ def scan_pull_request(
     network or Docker — the interesting logic is the ordering and the short-circuits,
     and those are exactly what a live-only test would fail to cover.
     """
-    from docket.core.pull_request import evaluate, plan_scan
+    from docket.core.pull_request import _touches_change, evaluate, plan_scan
+    from docket.report.diff import finding_key
 
     try:
         files = fetch_files(ref.repo, token, ref.base_sha, ref.head_sha)
@@ -104,13 +178,21 @@ def scan_pull_request(
         return PullRequestOutcome(ref, verdict, posted)
 
     try:
-        head_report = scan(repo=ref.repo, sha=ref.head_sha, paths=plan.paths,
-                           triage_max=0, budget_usd=budget_usd, recon=recon)
-        if head_report is None:
-            raise RuntimeError("the head scan produced no report")
-
-        # Base is cached by commit. Most pull requests against a branch share one.
-        base_report = baselines.get(ref.repo, ref.base_sha)
+        # THE BASE COMES FIRST, AND THAT IS THE WHOLE POINT OF THIS ORDER.
+        #
+        # It used to run second, which forced a THIRD pass: scan head with triage off,
+        # diff it, then scan head ALL OVER AGAIN — new container, semgrep, trivy and
+        # recon — purely to attach triage verdicts. Measured on vulnshop#26: 204s + 128s
+        # + 843s, where the third pass was 72% of a twenty-minute check.
+        #
+        # With the baseline in hand before the head runs, `triage_filter` below tells the
+        # single head pass which of its own findings are new, so triage happens inside it.
+        # One container, one fetch, one recon.
+        base_report = baselines.get(ref.repo, ref.base_sha, plan.paths)
+        # needed_paths, so a cached report is only reused when it actually covered the
+        # files this pull request touches. Without it a baseline scoped to another PR's
+        # files would report every pre-existing finding here as newly introduced.
+        base_report = baselines.get(ref.repo, ref.base_sha, plan.paths)
         if base_report is None:
             # Triage is off for the baseline deliberately: nothing in it is reported,
             # it exists only to be subtracted, and judging it would double the bill.
@@ -123,21 +205,37 @@ def scan_pull_request(
             # Scoping candidates to the CHANGED FILES replaces it, and is a stronger
             # signal: "this is in a file you changed" is a fact, where "recon did not
             # mention it last time" is an agent's phrasing.
+            # role="base": this commit may also be some pull request's HEAD, and the two
+            # scans use different settings. Sharing one run directory meant the later
+            # one silently destroyed the earlier one's report. See _scan_for_pr.
             base_report = scan(repo=ref.repo, sha=ref.base_sha, paths=plan.paths,
-                               triage_max=0, budget_usd=budget_usd, recon=False)
+                               triage_max=0, budget_usd=budget_usd, recon=False,
+                               role="base")
             if base_report is not None:
                 baselines.put(ref.repo, ref.base_sha, base_report)
 
-        verdict = evaluate(base_report, head_report, plan)
+        # Triage still judges ONLY what this change introduced — the rule has not
+        # changed, only where it is applied. A finding is worth paying to judge when it
+        # is absent from the baseline AND sits on a line this pull request touched;
+        # anything else the diff would discard afterwards, so judging it is money spent
+        # on a verdict nobody reads. Both conditions come from the same helpers `evaluate`
+        # uses, so the filter and the diff cannot drift apart.
+        baseline_keys = {finding_key(f) for f in ((base_report or {}).get("findings") or [])}
 
-        # Triage LAST, and only what the diff calls new. Running it before the diff
-        # would judge the whole backlog on every push.
-        if triage_max and verdict["new"]:
-            head_report = scan(repo=ref.repo, sha=ref.head_sha, paths=plan.paths,
-                               triage_max=min(triage_max, len(verdict["new"])),
-                               budget_usd=budget_usd, recon=recon,
-                               only=[f.get("id") for f in verdict["new"]]) or head_report
-            verdict = evaluate(base_report, head_report, plan)
+        def is_new_here(finding: dict[str, Any]) -> bool:
+            if finding_key(finding) in baseline_keys:
+                return False
+            if plan.scoped and plan.lines:
+                return _touches_change(finding, plan.lines)
+            return True
+
+        head_report = scan(repo=ref.repo, sha=ref.head_sha, paths=plan.paths,
+                           triage_max=triage_max, budget_usd=budget_usd, recon=recon,
+                           triage_filter=is_new_here)
+        if head_report is None:
+            raise RuntimeError("the head scan produced no report")
+
+        verdict = evaluate(base_report, head_report, plan)
     except Exception as exc:  # noqa: BLE001
         return PullRequestOutcome(ref, {}, error=f"the scan failed: {exc}")
 
@@ -360,6 +458,116 @@ def demo() -> None:
                   handle=handle_ok, seen=SeenStore(None), sleep=lambda _s: None,
                   should_stop=stop_after_two)
     assert "good/repo" in reached
+
+    # ── ONE head pass per pull request ─────────────────────────────────────────
+    # The head used to be scanned twice: once with triage off to learn what was new,
+    # then the whole pipeline again — container, semgrep, trivy, recon — to attach
+    # verdicts. On vulnshop#26 that second head pass was 843s of a 1175s check.
+    calls: list[dict[str, Any]] = []
+
+    def counting_scan(**kw):
+        calls.append(kw)
+        sha = kw["sha"]
+        return {"findings": [{"rule_id": "semgrep/sqli", "severity": "high",
+                              "discovered_by": "semgrep",
+                              "location": {"method": "STATIC", "path": "app.py",
+                                           "parameter": None, "source_file": "app.py:7"},
+                              "poc": {"request": "x"}}] if sha == "h" * 40 else [],
+                "success": True, "coverage": {"semgrep": {"files_scanned": 1}}}
+
+    ref = PullRequestRef(repo="o/r", number=1, head_sha="h" * 40, base_sha="b" * 40,
+                         title="t", base_ref="main")
+    out = scan_pull_request(
+        ref, token="t",
+        fetch_files=lambda *a, **k: [{"filename": "app.py", "status": "modified",
+                                      "patch": "@@ -1,2 +1,3 @@\n+bad\n"}],
+        scan=counting_scan, baselines=BaselineCache(), triage_max=5, post=None)
+    heads = [c for c in calls if c["sha"] == "h" * 40]
+    assert len(heads) == 1, f"the head must be scanned ONCE, got {len(heads)}"
+    assert heads[0]["triage_max"] == 5, heads[0]["triage_max"]
+    assert callable(heads[0].get("triage_filter")), "triage needs the new-finding filter"
+    assert out.error is None, out.error
+
+    # The filter is what keeps triage off the backlog. A finding already in the baseline
+    # is not new here, whatever its severity.
+    keep = heads[0]["triage_filter"]
+    fresh = {"rule_id": "semgrep/sqli", "severity": "high", "discovered_by": "semgrep",
+             "location": {"method": "STATIC", "path": "app.py", "parameter": None,
+                          "source_file": "app.py:2"},
+             "poc": {"request": "x"}}
+    assert keep(fresh), "a finding on a changed line, absent from base, is new"
+    old = dict(fresh, location=dict(fresh["location"], source_file="app.py:900"))
+    assert not keep(old), "a finding outside the changed lines is not this change's"
+
+    # ── reuse a scan already on disk instead of paying for it again ────────────
+    import json as _json
+    import tempfile
+
+    from docket.core import paths as _paths
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        original = _paths.runs_root
+        _paths.runs_root = lambda **_k: root  # type: ignore[assignment]
+        try:
+            sha = "c" * 40
+
+            def write(dirname: str, *, target_sha: str, ok: bool,
+                      paths: list[str] | None) -> None:
+                d = root / dirname
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "report.json").write_text(_json.dumps({
+                    "target": f"github:o/r@{target_sha}", "success": ok,
+                    "scanned_paths": paths, "findings": [],
+                }))
+
+            cache = BaselineCache()
+            assert cache.get("o/r", sha, ["app.py"]) is None, "nothing on disk yet"
+
+            # A head scan of this very commit, scoped to app.py, is a valid baseline for
+            # a pull request that touches app.py. This is the #26-head / #27-base case.
+            write("pr-o-r-ccccccc", target_sha=sha, ok=True, paths=["app.py"])
+            assert cache.get("o/r", sha, ["app.py"]) is not None, "must reuse the scan"
+            # ...and it is promoted to memory, so the file is read once.
+            assert cache._by_key.get(BaselineCache.key("o/r", sha)) is not None
+
+            # THE TRAP: narrower scope must NOT be reused. A report that only looked at
+            # app.py has no utils.py findings, so standing it in for a pull request that
+            # touches utils.py would report every pre-existing finding there as new.
+            assert BaselineCache().get("o/r", sha, ["utils.py"]) is None, \
+                "a baseline that never scanned utils.py cannot serve as one for it"
+
+            # An unscoped report covers everything.
+            write("pr-o-r-ccccccc-base", target_sha=sha, ok=True, paths=None)
+            assert BaselineCache().get("o/r", sha, ["utils.py"]) is not None
+
+            # A short-sha directory collision must not be trusted: the full sha in
+            # `target` is the identity, and the wrong commit's findings would be
+            # attributed to this change.
+            other = "c" * 39 + "d"
+            for d in root.glob("pr-o-r-*"):
+                (d / "report.json").write_text(_json.dumps({
+                    "target": f"github:o/r@{other}", "success": True,
+                    "scanned_paths": None, "findings": [],
+                }))
+            assert BaselineCache().get("o/r", sha, ["app.py"]) is None, \
+                "a 7-char prefix match is not proof of identity"
+
+            # An incomplete scan is not a baseline.
+            for d in root.glob("pr-o-r-*"):
+                (d / "report.json").write_text(_json.dumps({
+                    "target": f"github:o/r@{sha}", "success": False,
+                    "scanned_paths": None, "findings": [],
+                }))
+            assert BaselineCache().get("o/r", sha, ["app.py"]) is None, \
+                "a scan that did not complete cannot be subtracted from anything"
+
+            # Unreadable JSON is skipped, never raised: a bad artifact costs a re-scan.
+            for d in root.glob("pr-o-r-*"):
+                (d / "report.json").write_text("{ not json")
+            assert BaselineCache().get("o/r", sha, ["app.py"]) is None
+        finally:
+            _paths.runs_root = original  # type: ignore[assignment]
 
     print("core.pr_service: ok")
 

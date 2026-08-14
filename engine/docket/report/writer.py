@@ -207,6 +207,7 @@ def build_report(
     triage_requested: int = 0,
     suppressed_outside_diff: int = 0,
     patches: list | None = None,
+    scanned_paths: list[str] | None = None,
 ) -> dict:
     """`leads` are static-analysis candidates (docket.static.correlate.Lead). They are
     reported in a SEPARATE list from `findings` and never merged into it.
@@ -334,6 +335,15 @@ def build_report(
         # How much of the tree was deliberately not reported. Diff-scoped scanning is
         # honest only if this number is stated: silence reads as "the repository is clean".
         "suppressed_outside_diff": suppressed_outside_diff,
+        # WHICH paths this scan actually looked at. None means the whole tree.
+        #
+        # Written so a later run can decide whether this report is REUSABLE as its
+        # baseline. Without it, reuse is a guess: a report produced while scoped to
+        # app.py has no findings in utils.py, and reusing it as the baseline for a pull
+        # request that touches utils.py makes every pre-existing finding there read as
+        # newly introduced. A cached scan may only stand in for one whose paths it
+        # covers — see core/pr_service.BaselineCache.
+        "scanned_paths": sorted({str(p) for p in scanned_paths}) if scanned_paths else None,
         # What --fix attempted, REFUSALS INCLUDED. `status` on each one comes from a scanner
         # re-run over the patched copy (service/validate.py), never from the agent, and only
         # `verified_fixed` is ever offered as a fix (service/delivery.py:141). Recording the
