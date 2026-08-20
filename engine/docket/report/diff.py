@@ -324,9 +324,14 @@ def gate(diff: RunDiff, *, block_on: str = "reachable") -> tuple[int, str]:
     warns about in their CI docs — a scan that ran out of budget exiting zero and
     being read as "no vulnerabilities" when it means "we stopped looking".
     """
-    if diff.caveats:
-        return EXIT_INCONCLUSIVE, "; ".join(diff.caveats)
-
+    # A CONFIRMED finding blocks BEFORE caveats are considered. Triage judged it
+    # reachable by reading the source, which is independent of whatever else in the scan
+    # failed — an incomplete scan cannot un-prove a reproduction. Checking caveats first
+    # (as this used to) let one agent's crash downgrade a proven, exploitable finding to
+    # "inconclusive". Measured on punya-henoyo/Mendor-lab#7: semgrep found a SQL
+    # injection at app/profiles.py:48, triage confirmed it exploitable, and because recon
+    # failed to record a surface the whole verdict went inconclusive (exit 1) instead of
+    # blocked (exit 2) — softening a real block into "we could not tell".
     blocking = diff.gating if block_on == "any" else diff.new_reachable
     if blocking:
         worst = blocking[0]
@@ -334,10 +339,17 @@ def gate(diff: RunDiff, *, block_on: str = "reachable") -> tuple[int, str]:
         # A recon candidate's rule_id is a slug of its own title; the title reads.
         name = (worst.get("title") if worst.get("discovered_by") == "recon"
                 else str(worst.get("rule_id", "?")).rsplit(".", 1)[-1]) or "?"
-        return EXIT_FOUND, (
-            f"{len(blocking)} new finding(s) block this merge. Worst: {name} at "
-            f"{location.replace('/work/source/', '')}"
-        )
+        reason = (f"{len(blocking)} new finding(s) block this merge. Worst: {name} at "
+                  f"{location.replace('/work/source/', '')}")
+        if diff.caveats:
+            # Still blocked, but say the scan was also incomplete so the reader knows the
+            # count may be a floor, not the whole picture.
+            reason += " (the scan was also incomplete — this may not be all of it)"
+        return EXIT_FOUND, reason
+
+    # No confirmed block. NOW an incomplete scan is decisive: we cannot call it clean.
+    if diff.caveats:
+        return EXIT_INCONCLUSIVE, "; ".join(diff.caveats)
 
     # "Nobody judged it" must never render as "nothing to worry about". Only reached
     # when nothing is exploitable, so this is the branch that used to go green on
@@ -544,6 +556,21 @@ def demo() -> None:
     recon_only = diff_runs(report([]), {"findings": [], "success": True,
                                         "coverage": quiet})
     assert recon_only.trustworthy, recon_only.caveats
+
+    # ── a CONFIRMED block beats an incomplete scan — the Mendor-lab#7 fail-open ─
+    # semgrep found it, triage confirmed exploitable, but recon failed so the scan
+    # carried a caveat. The proven finding must still BLOCK, not soften to inconclusive.
+    confirmed = diff_runs(report([]), report([finding("semgrep/sqli", "app.py",
+                                                      verdict="exploitable")], success=False))
+    assert confirmed.caveats, "an incomplete scan carries a caveat"
+    assert confirmed.new_reachable, "the confirmed finding is still reachable"
+    code, why = gate(confirmed)
+    assert code == EXIT_FOUND, f"a confirmed block must beat a caveat, got {code}: {why}"
+    assert "block this merge" in why and "incomplete" in why, why
+    # ...but with NO confirmed block, the same caveat is decisive: inconclusive.
+    caveat_only = diff_runs(report([]), report([finding("semgrep/sqli", "app.py")],
+                                               success=False))
+    assert gate(caveat_only)[0] == EXIT_INCONCLUSIVE, "an incomplete scan with nothing proven is not clean"
 
     # ── an agent finding reports, it does not gate — the vulnshop#25 block ──────
     # The base scan runs with recon=False, so an agent finding is `new` on EVERY pull
