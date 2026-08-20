@@ -72,9 +72,16 @@ PHASE 2 — FIX. The root cause, not the payload.
   comment density. Do not reformat — a patch that reflows a file is rejected outright,
   because it buries the one line that matters in noise. Do not rename, do not refactor,
   do not add abstractions.
-- STAY INSIDE THE FINDING'S OWN FILE. Scope comes from the finding, not from you, and any
-  edit outside it is refused. If the fix genuinely needs another file, stop and report
-  `needs_wider_scope`, NAMING that file.
+- CROSS FILES ONLY WHEN THE FIX GENUINELY SPANS THEM. Most fixes are one file: the finding's
+  own. But when the vulnerable value is ASSEMBLED in one file and EXECUTED in another — a raw
+  SQL string built in a route and run by a shared helper — a safe fix has to touch both: the
+  sink stops trusting its input, and every caller is updated to the new contract.
+  Before you edit such a sink, `search_source` for EVERY caller of it and read them. Then make
+  ONE coherent change: fix the sink AND update each caller in the same pass, so no caller is
+  left calling the old signature. A signature change that misses a caller BREAKS THE BUILD and
+  a scanner will not catch it — the caller-consistency gate will, and your patch will be
+  rejected. If you cannot find and fix all callers, report `no_safe_fix` rather than a partial
+  cross-file edit. Never touch a file the fix does not require.
 - Never edit CI config, `.github/`, a lockfile, or a secrets file.
 - NEVER weaken or silence the check instead of fixing it. `# nosemgrep`, `# noqa`, an
   exclusion, a config downgrade: none of those is a fix. They make the scanner quiet and
@@ -199,7 +206,7 @@ def demo() -> None:
         "shell=False",               # the defence table is really present
         "safe_join",
         "Do not reformat",
-        "STAY INSIDE THE FINDING'S OWN FILE",
+        "update each caller in the same pass",  # coordinated multi-file fixes
         "nosemgrep",                 # silencing a check is not a fix
         "ROTATION IS REQUIRED",      # a leaked credential is not fixed by a patch
         "fix/workflow",              # it is told where the full spec lives

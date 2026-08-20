@@ -116,14 +116,16 @@ INCONCLUSIVE = "validation_inconclusive"
 
 # The workflow's order. This is the order the report shows, and `gates` is built in it.
 GATES = ("positive_control", "target_absent", "nothing_else_vanished", "no_new_findings",
-         "parse_errors_not_increased", "files_scanned_not_dropped", "tests_pass")
+         "parse_errors_not_increased", "files_scanned_not_dropped", "callers_consistent",
+         "tests_pass")
 
 # Attribution order, which is NOT the display order: `failed_gate` must name the most
 # DIAGNOSTIC failure, not the first one in the list. A broken file trips several gates at
 # once, and "you broke the file" explains "other findings vanished" — the reverse is not
 # true, so the coverage gates are named first. `positive_control` is absent because it
 # returns before anything else is computed, and `tests_pass` because it is never False.
-_DIAGNOSTIC_ORDER = ("parse_errors_not_increased", "files_scanned_not_dropped",
+_DIAGNOSTIC_ORDER = ("callers_consistent", "parse_errors_not_increased",
+                     "files_scanned_not_dropped",
                      "target_absent", "nothing_else_vanished", "no_new_findings")
 
 # The pipeline's own semgrep invocation with --sarif swapped for --json. Derived rather
@@ -239,6 +241,97 @@ def scan_tree(root: str | Path, *, timeout_sec: int = 600) -> ScanOutcome:
         return ScanOutcome(error=(f"semgrep produced no JSON (exit {done.returncode}): "
                                   f"{tail[0][:200]}"))
     return parse_scan_json(done.stdout, root)
+
+
+
+def _fn_defs(tree):  # ast.Module -> {name: FunctionDef}
+    """Module-level function defs, by name. Methods are excluded on purpose: a call site
+    for a method drops `self`, and resolving the receiver's class is more than a name
+    match can do without false positives."""
+    import ast as _ast
+    return {n.name: n for n in tree.body
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+
+
+def _arity(fn):  # FunctionDef -> (min_pos, max_pos|None, required_kwonly)
+    """(min required positional-or-keyword, max positional or None for *args,
+    required keyword-only names). Defaults reduce the minimum."""
+    a = fn.args
+    pos = list(a.posonlyargs) + list(a.args)
+    min_req = len(pos) - len(a.defaults)
+    max_pos = None if a.vararg is not None else len(pos)
+    kwreq = tuple(k.arg for k, d in zip(a.kwonlyargs, a.kw_defaults) if d is None)
+    return min_req, max_pos, kwreq
+
+
+def callers_consistent(base_root, patched_root) -> bool:
+    """Every caller still matches the signature of a function the patch changed.
+
+    A multi-file fix that gives a shared helper a new parameter but forgets one of its
+    callers BREAKS THE BUILD at runtime — and no scanner and no parse check sees it,
+    because the file is valid Python and semgrep does not model arity. This is the gate
+    that makes coordinated multi-file fixes SAFE rather than merely possible: it re-reads
+    every module-level function whose parameter list the patch altered, finds every call
+    to it by name across the patched tree, and rejects the patch if any call can no longer
+    satisfy the new signature.
+
+    True when nothing applies (no signature changed) — so it never touches a one-file fix.
+    Conservative on uncertainty: a call using * or ** unpacking is skipped, not failed.
+    Name-based, module-level only; it can miss a caller in another namespace, but it does
+    not invent one. Measured on the Mendor-lab two-file SQLi: run_select(sql) left calling
+    a signature that grew a params argument is exactly what this catches.
+    """
+    import ast
+    from pathlib import Path
+
+    base_root, patched_root = Path(base_root), Path(patched_root)
+    changed_sigs: dict[str, tuple] = {}
+    for pf in patched_root.rglob("*.py"):
+        rel = pf.relative_to(patched_root)
+        bf = base_root / rel
+        if not bf.is_file():
+            continue
+        try:
+            pt = ast.parse(pf.read_text())
+            bt = ast.parse(bf.read_text())
+        except (SyntaxError, OSError, UnicodeDecodeError):
+            continue
+        pdefs, bdefs = _fn_defs(pt), _fn_defs(bt)
+        for name, pfn in pdefs.items():
+            if name in bdefs and _arity(pfn) != _arity(bdefs[name]):
+                # A name defined with two different signatures anywhere is ambiguous to a
+                # name match; refuse to reason about it rather than risk a false reject.
+                changed_sigs[name] = None if name in changed_sigs else _arity(pfn)
+    changed_sigs = {n: a for n, a in changed_sigs.items() if a is not None}
+    if not changed_sigs:
+        return True
+
+    for pf in patched_root.rglob("*.py"):
+        try:
+            tree = ast.parse(pf.read_text())
+        except (SyntaxError, OSError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else None
+            if name is None or name not in changed_sigs:
+                continue
+            if any(isinstance(a, ast.Starred) for a in node.args) or \
+               any(k.arg is None for k in node.keywords):
+                continue  # unpacking — cannot determine arity, do not fail on it
+            min_req, max_pos, kwreq = changed_sigs[name]
+            n_pos = len(node.args)
+            kw = {k.arg for k in node.keywords}
+            supplied = n_pos + len(kw)
+            if supplied < min_req:
+                return False
+            if max_pos is not None and n_pos > max_pos:
+                return False
+            if any(r not in kw for r in kwreq):
+                return False
+    return True
 
 
 def validate_patch(*, base_root: str | Path, patched_root: str | Path,
@@ -393,7 +486,10 @@ def validate_patch(*, base_root: str | Path, patched_root: str | Path,
         gates["parse_errors_not_increased"] = after.parse_errors <= before.parse_errors
     if before.files_scanned is not None and after.files_scanned is not None:
         gates["files_scanned_not_dropped"] = after.files_scanned >= before.files_scanned
-    # Gate 7 stays None. See GATE 7 in the module docstring.
+    # No caller left on a changed signature — the gate that makes a coordinated multi-file
+    # fix safe. True for a one-file fix (no signature changed), so it never interferes.
+    gates["callers_consistent"] = callers_consistent(base_root, patched_root)
+    # Gate 7 (tests_pass) stays None. See GATE 7 in the module docstring.
 
     # Diagnostic order first; the GATES fallback is the belt-and-braces that stops a gate
     # added later, and forgotten in _DIAGNOSTIC_ORDER, from falling through to VERIFIED.
@@ -569,6 +665,29 @@ def demo() -> None:
 
     # Every gate that can be False must have a place in the attribution order, or a
     # failure added later falls through to VERIFIED.
+    # ── callers_consistent: the gate that makes multi-file fixes safe ───────────
+    import tempfile as _tmp
+    def _tree(files):
+        d = Path(_tmp.mkdtemp())
+        for n, c in files.items():
+            (d / n).parent.mkdir(parents=True, exist_ok=True)
+            (d / n).write_text(c)
+        return d
+    _base = _tree({"db.py": "def run(sql):\n    return x(sql)\n",
+                   "t.py": "from db import run\ndef f(a):\n    return run('q'+a)\n"})
+    # signature grew a required arg, caller not updated -> the build would break
+    _bad = _tree({"db.py": "def run(sql, params):\n    return x(sql, params)\n",
+                  "t.py": "from db import run\ndef f(a):\n    return run('q')\n"})
+    assert callers_consistent(_base, _bad) is False, "a missing caller update must fail"
+    # caller updated to the new contract -> consistent
+    _good = _tree({"db.py": "def run(sql, params):\n    return x(sql, params)\n",
+                   "t.py": "from db import run\ndef f(a):\n    return run('q', {'a': a})\n"})
+    assert callers_consistent(_base, _good) is True, "an updated caller is consistent"
+    # a one-file fix changes no signature -> the gate never interferes
+    _one = _tree({"db.py": "def run(sql):\n    return x(sql)\n",
+                  "t.py": "from db import run\ndef f(a):\n    return run('safe')\n"})
+    assert callers_consistent(_base, _one) is True, "a one-file fix is untouched by this gate"
+
     assert set(_DIAGNOSTIC_ORDER) | {"positive_control", "tests_pass"} == set(GATES)
 
     # The scan config must stay the pipeline's, with json instead of sarif.

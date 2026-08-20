@@ -81,7 +81,7 @@ def test_a_genuine_fix_is_verified() -> None:
     # Seven gates, in the workflow's order, every time.
     assert list(result.gates) == [
         "positive_control", "target_absent", "nothing_else_vanished", "no_new_findings",
-        "parse_errors_not_increased", "files_scanned_not_dropped", "tests_pass"]
+        "parse_errors_not_increased", "files_scanned_not_dropped", "callers_consistent", "tests_pass"]
 
 
 def test_the_syntax_error_trap_is_not_verified_fixed() -> None:
