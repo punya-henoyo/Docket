@@ -11,10 +11,52 @@ from __future__ import annotations
 import os
 
 import asyncio
+import logging
 from typing import Any, Literal
 
 from agents import Agent, FunctionToolResult, RunContextWrapper, Tool, ToolsToFinalOutputResult, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
+
+logger = logging.getLogger(__name__)
+
+
+def _bound_model_timeout() -> None:
+    """Cap how long a SINGLE model call may hang, and retry a dead one.
+
+    litellm ships `request_timeout = 6000.0` (100 minutes) and `num_retries = None`.
+    So when a request's socket goes stale — the server accepted it and then never sent
+    a byte, which a laptop on flaky wifi hits routinely — the client blocks on recv()
+    for an hour and a half with no log line and no way out. A scan then sits on "AI
+    recon" with 0 model turns and $0 spent, indistinguishable from a slow model.
+
+    Measured on kaizenmantra/vulnshop: one ESTABLISHED socket to the Azure endpoint,
+    hung 10+ minutes, while a fresh call to the SAME endpoint returned in 3.2s. The
+    model was healthy; the client had no ceiling.
+
+    A model TURN here is one HTTP call. Even a slow reasoning turn finished in 30-50s in
+    testing, so 120s is comfortably above a real call and far below the old 100-minute
+    hang. Two retries cover a transient drop without turning a genuine outage into a
+    six-minute wait. Both are overridable, and this runs once — litellm reads these
+    module globals on every acompletion.
+    """
+    import litellm
+
+    try:
+        litellm.request_timeout = float(os.environ.get("DOCKET_MODEL_TIMEOUT", "120"))
+        litellm.num_retries = int(os.environ.get("DOCKET_MODEL_RETRIES", "2"))
+    except (TypeError, ValueError):
+        litellm.request_timeout = 120.0
+        litellm.num_retries = 2
+
+
+def _timed_model(config: Config) -> LitellmModel:
+    """The real model, with its per-call timeout bounded first. `_bound_model_timeout`
+    lowers litellm's 100-minute global default to something a stuck socket cannot hide
+    behind — see its docstring for the vulnshop hang this closes."""
+    _bound_model_timeout()
+    return LitellmModel(
+        model=config.llm, api_key=config.llm_api_key, base_url=config.llm_base_url,
+    )
 from agents.models.interface import Model
 from agents.sandbox import SandboxAgent
 from agents.sandbox.capabilities import Filesystem, Shell
@@ -487,9 +529,7 @@ def build_agent(
         "name": name,
         "instructions": instructions,
         "tools": [*base_tools, *(extra_tools or []), finish_tool],
-        "model": model or LitellmModel(
-            model=config.llm, api_key=config.llm_api_key, base_url=config.llm_base_url,
-        ),
+        "model": model or _timed_model(config),
         "tool_use_behavior": _finish_tool_use_behavior,
         # NO output_type, deliberately. Declaring one makes the SDK send
         # response_format=json_schema, and DeepSeek V4 Pro (Azure AI Foundry) then
