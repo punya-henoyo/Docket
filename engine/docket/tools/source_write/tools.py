@@ -130,6 +130,52 @@ def _line_of(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
+def _locate_flexible(text: str, anchor: str) -> tuple[str, int] | None:
+    """Whole-line match with per-line whitespace NORMALISED — the fallback when every
+    exact form failed. It exists because the dominant real failure is not a wrong anchor,
+    it is DRIFTED INDENTATION: a model quotes the right lines but off by a space or a tab,
+    and exact byte matching then reports `anchor_not_found` on a fix that was otherwise
+    correct. Measured all night — the intermittent `not_fixed` where the agent's tree came
+    back unchanged is this.
+
+    The safety that makes exact matching trustworthy is kept: the match must still be
+    UNIQUE. Two windows matching after normalisation raises `anchor_ambiguous`, exactly as
+    an exact double-match does — editing the first of several is how a patch lands in the
+    wrong place, normalised or not. And the span replaced is the file's REAL bytes on
+    whole-line boundaries, so nothing mid-line is ever cut.
+    """
+    want = [ln.strip() for ln in anchor.strip("\n").splitlines()]
+    while want and want[0] == "":
+        want.pop(0)
+    while want and want[-1] == "":
+        want.pop()
+    if not want:
+        return None
+
+    lines: list[tuple[str, int, int]] = []  # (text, start_offset, content_end_offset)
+    off = 0
+    for raw in text.splitlines(keepends=True):
+        content = raw.rstrip("\r\n")
+        lines.append((content, off, off + len(content)))
+        off += len(raw)
+
+    n = len(want)
+    hits: list[tuple[str, int]] = []
+    for i in range(0, len(lines) - n + 1):
+        window = lines[i:i + n]
+        if [w[0].strip() for w in window] == want:
+            start, end = window[0][1], window[-1][2]
+            hits.append((text[start:end], start))
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        raise EditRefused("anchor_ambiguous", (
+            f"refused: your anchor matches {len(hits)} places (compared ignoring "
+            "indentation). Editing the first of several lands the patch in the wrong "
+            "place. Widen the anchor with surrounding lines until it is unique."))
+    return None
+
+
 def _locate(text: str, anchor: str) -> tuple[str, int, list[str], bool]:
     """(the anchor as it appears in the file, its offset, notes, prefixes_were_stripped).
 
@@ -165,10 +211,17 @@ def _locate(text: str, anchor: str) -> tuple[str, int, list[str], bool]:
             f"{lines}). Nothing was edited — editing the first of several is how a patch "
             "lands in the wrong function. Re-read one of those regions and widen the "
             "anchor with surrounding lines until it is unique."))
+    # Every exact form missed. Before giving up, try the whitespace-normalised match:
+    # the anchor is usually right and the indentation is what drifted.
+    flexible = _locate_flexible(text, anchor)
+    if flexible is not None:
+        matched, offset = flexible
+        return matched, offset, ["matched after normalising indentation"], False
+
     raise EditRefused("anchor_not_found", (
-        "refused: your anchor matches nothing in this file. Re-read the region and copy "
-        "the anchor from what you read, without the NN: line-number prefixes, and widen "
-        "it to several whole lines. Nothing was edited."))
+        "refused: your anchor matches nothing in this file, even ignoring indentation. "
+        "Re-read the region and copy the anchor from what you read, without the NN: "
+        "line-number prefixes, and widen it to several whole lines. Nothing was edited."))
 
 
 def _refuse_suppression(anchor: str, replacement: str) -> None:
@@ -391,6 +444,27 @@ def demo() -> None:
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(base, ignore_errors=True)
+    # ── indentation-drift fallback: the anchored-edit reliability fix ───────────
+    import tempfile as _tmp
+    def _mk(c):
+        d = Path(_tmp.mkdtemp()); (d / "a.py").write_text(c); return d
+    _F = "def run(sql):\n    return execute(sql)\n\n\ndef h(x):\n    q = build(x)\n    return run(q)\n"
+    # a MULTI-LINE anchor whose indentation drifted (dedented, and with a tab) does not
+    # substring-match, and used to be anchor_not_found — the real all-night failure. It
+    # now lands, on the file's real bytes.
+    _r = propose_edit(_mk(_F), "a.py",
+                      anchor="q = build(x)\n\treturn run(q)",   # no indent + a tab
+                      replacement="    q = safe(x)\n    return run(q)")
+    assert _r["ok"] and "normalising indentation" in _r["note"], _r
+    # exact anchor unaffected
+    assert propose_edit(_mk(_F), "a.py", anchor="    q = build(x)", replacement="    q = safe(x)")["ok"]
+    # a genuinely absent anchor is still refused, not force-matched
+    assert propose_edit(_mk(_F), "a.py", anchor="no such line", replacement="x")["code"] == "anchor_not_found"
+    # uniqueness is preserved: two windows matching after normalisation is still ambiguous
+    _amb = propose_edit(_mk("def a():\n    x = 1\n\ndef b():\n    x = 1\n"),
+                        "a.py", anchor="  x = 1", replacement="  x = 2")
+    assert _amb["code"] == "anchor_ambiguous", _amb
+
     print("tools.source_write: ok")
 
 
