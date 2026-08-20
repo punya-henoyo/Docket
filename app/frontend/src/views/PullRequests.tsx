@@ -454,9 +454,28 @@ function Drawer({ result, onClose }: { result: PrResult; onClose: () => void }) 
  *  lie the timeline would then contradict.
  */
 function FixButton({ result }: { result: PrResult }) {
-  const [state, setState] = useState<"idle" | "asking" | "asked" | "error">("idle");
-  const [message, setMessage] = useState("");
+  // `asking` is a LOCAL bridge that covers the gap between the click and the first poll
+  // that shows the backend working. It is deliberately not a terminal state: the earlier
+  // version set "asked" and never cleared it, so the button read "Writing a fix…" forever
+  // even after the attempt finished. The truth of whether a fix is running lives on the
+  // backend's live timeline, so hand off to that and let the bridge expire.
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState("");
   const posted = result.posted?.autofix;
+  const liveFixRunning = result.progress?.steps?.some(
+    (s) => s.name === "fix" && s.state === "running") ?? false;
+
+  useEffect(() => {
+    if (!asking) return;
+    // The backend picked it up — its live "fix running" step now drives the spinner, so
+    // drop the local bridge.
+    if (liveFixRunning) { setAsking(false); return; }
+    // Fallback: the attempt errored early or finished before a poll caught it. Don't
+    // spin forever waiting for a "running" that already came and went.
+    const t = setTimeout(() => setAsking(false), 12000);
+    return () => clearTimeout(t);
+  }, [asking, liveFixRunning]);
+
   // A fix already landed, so there is nothing to ask for.
   if (posted && posted.startsWith("opened")) {
     return (
@@ -465,22 +484,22 @@ function FixButton({ result }: { result: PrResult }) {
       </div>
     );
   }
-  const running = state === "asking" || state === "asked"
-    || result.progress?.steps.some((s) => s.name === "fix" && s.state === "running");
+  const running = liveFixRunning || asking;
 
   async function ask() {
-    setState("asking");
+    setError(""); setAsking(true);
     try {
       const r = await fetch("/api/pr/fix", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repo: result.repo, number: result.number }),
       });
       const body = await r.json().catch(() => ({}));
-      if (r.ok) { setState("asked"); setMessage(""); }
-      else { setState("error"); setMessage(body.error ?? `HTTP ${r.status}`); }
+      // 202 = accepted; anything else (409 no verdict held, 429 one already running) is a
+      // real answer, not a spinner. Clear the bridge so the button is usable again.
+      if (!r.ok) { setAsking(false); setError(body.error ?? `HTTP ${r.status}`); }
     } catch (e) {
-      setState("error");
-      setMessage(e instanceof Error ? e.message : String(e));
+      setAsking(false);
+      setError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -503,16 +522,16 @@ function FixButton({ result }: { result: PrResult }) {
       >
         {running ? "Writing a fix…" : "Open a fix pull request"}
       </button>
-      {state === "asked" && (
+      {running && (
         <span className="note" style={{ fontSize: 11.5 }}>
-          Asked. It will appear below as it works — a patch is only opened if a scanner
-          re-run proves the finding is gone.
+          Writing and proving a patch — a PR opens only if a scanner re-run confirms the
+          finding is gone. This takes a minute or two.
         </span>
       )}
-      {state === "error" && (
-        <span className="note bad" style={{ fontSize: 11.5 }}>{message}</span>
+      {error && (
+        <span className="note bad" style={{ fontSize: 11.5 }}>{error}</span>
       )}
-      {posted && !posted.startsWith("opened") && state === "idle" && (
+      {!running && posted && !posted.startsWith("opened") && (
         <span className="note" style={{ fontSize: 11.5 }}>Last attempt — {posted}</span>
       )}
     </div>
