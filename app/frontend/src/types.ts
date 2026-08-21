@@ -106,6 +106,13 @@ export interface PrResult {
    *  the inputs a patch needs, and no fix PR has been opened yet. Goes false after a
    *  restart, because the full head sha and each finding's PoC live in memory only. */
   fixable?: boolean;
+  /** The fix docket opened for this PR, with its unified diff per file — the same
+   *  "files changed" a reviewer would open on GitHub, rendered inline in the drawer. */
+  fix?: {
+    number?: number;
+    url?: string;
+    files: { path: string; lines: string[] }[];
+  };
   /** Live timeline, present ONLY while the scan is in flight. It is dropped the moment
    *  the verdict lands, because the verdict is the durable record and a timeline left
    *  behind would show a scan that is no longer running. */
@@ -254,6 +261,9 @@ export interface RunSummary {
   generated_at?: string | null;
   finding_count: number;
   severity_counts: Partial<Record<Severity, number>>;
+  /** Findings triaged reachable-by-untrusted-input (triage_counts.CONFIRMED). Absent on
+   *  runs where triage never ran — treat as unknown, not zero. */
+  reachable_count?: number;
   cost_usd: number;
   /* app/backend adds these so the run list can show in-flight and failed runs, not
      just finished ones. A scan that died before its first event has only a log. */

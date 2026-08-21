@@ -298,11 +298,20 @@ export default function App() {
   return (
     <div className="shell">
       <nav className="rail">
-        <div className="org">
-          <span className="dot" />
-          <span>{session?.login ?? "docket"}</span>
-          {session?.connected && <span className="tag">GITHUB</span>}
+        <div className="brand">
+          <div className="brand-mark">
+            Henoyo<span className="brand-dot">.</span>
+          </div>
+          <div className="brand-product">docket</div>
         </div>
+
+        {session?.login && (
+          <div className="org">
+            <span className="dot" />
+            <span>{session.login}</span>
+            {session.connected && <span className="tag">GITHUB</span>}
+          </div>
+        )}
 
         {VIEWS.map((v) => (
           <button
@@ -374,8 +383,10 @@ export default function App() {
           <Overview
             scan={scan}
             runs={runs}
+            watch={watch}
             onGoFindings={() => go("findings")}
             onGoRepos={() => go("repos")}
+            onGoPulls={() => go("pulls")}
             onSelectFinding={openFinding}
             onOpenRun={openRun}
           />

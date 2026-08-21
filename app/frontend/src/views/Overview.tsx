@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { Finding, RunSummary, ScanState, Severity } from "../types";
+import type { Finding, RunSummary, ScanState, Severity, WatchState } from "../types";
 import { SEVERITIES } from "../types";
 import { cweLabel } from "../cwe";
 import { AreaChart, SeverityDonut, StackedRuns } from "../components/charts";
@@ -29,15 +29,19 @@ const shortDate = (iso: string | null | undefined) =>
 export function Overview({
   scan,
   runs,
+  watch,
   onGoFindings,
   onGoRepos,
+  onGoPulls,
   onSelectFinding,
   onOpenRun,
 }: {
   scan: ScanState | null;
   runs: RunSummary[];
+  watch: WatchState | null;
   onGoFindings: () => void;
   onGoRepos: () => void;
+  onGoPulls: () => void;
   onSelectFinding: (f: Finding) => void;
   onOpenRun: (runName: string) => void;
 }) {
@@ -48,30 +52,47 @@ export function Overview({
   const unknown = triaged.filter((f) => f.triage!.verdict === "uncertain");
   const untriaged = findings.length - triaged.length;
 
-  const counts = useMemo(() => {
-    const acc: Partial<Record<Severity, number>> = {};
-    for (const f of findings) acc[f.severity] = (acc[f.severity] ?? 0) + 1;
-    return acc;
-  }, [findings]);
-
-  // One row per repository, worst first. Runs are per-repo, so the latest run for each
-  // repo IS that repo's current state; summing every historical run would count a
-  // finding once per scan and inflate a frequently-scanned repo.
-  const assets = useMemo(() => {
-    const latest = new Map<string, RunSummary>();
+  // The portfolio. The latest scan of each repo IS that repo's current state, so the
+  // headline sums across those — not across all history, which would count one finding
+  // once per re-scan and inflate a frequently-scanned repo. This is what makes the main
+  // dashboard the WHOLE estate rather than whichever single scan happens to be open.
+  const latestByRepo = useMemo(() => {
+    const m = new Map<string, RunSummary>();
     for (const r of runs) {
       const key = (r.target ?? r.run_name).replace(/^github:/, "").split("@")[0];
-      if (!latest.has(key)) latest.set(key, r); // runs arrive newest-first
+      if (!m.has(key)) m.set(key, r); // runs arrive newest-first
     }
-    return [...latest.entries()]
+    return m;
+  }, [runs]);
+
+  const portfolio = useMemo(() => {
+    const counts: Partial<Record<Severity, number>> = {};
+    let total = 0;
+    let reachable = 0;
+    let triagedRepos = 0; // repos whose latest run actually ran triage, so a portfolio
+    for (const r of latestByRepo.values()) { // "0 reachable" reads as judged-none, not unknown
+      total += r.finding_count;
+      for (const s of SEVERITIES)
+        counts[s] = (counts[s] ?? 0) + (r.severity_counts?.[s] ?? 0);
+      if (r.reachable_count != null) {
+        reachable += r.reachable_count;
+        triagedRepos += 1;
+      }
+    }
+    return { counts, total, reachable, triagedRepos, repos: latestByRepo.size };
+  }, [latestByRepo]);
+
+  // One row per repository, worst first — the same rollup, sliced for the panel.
+  const assets = useMemo(() =>
+    [...latestByRepo.entries()]
       .map(([repo, r]) => ({ repo, counts: r.severity_counts ?? {}, total: r.finding_count,
                              run: r.run_name }))
       .sort((a, b) =>
         (b.counts.critical ?? 0) - (a.counts.critical ?? 0) ||
         (b.counts.high ?? 0) - (a.counts.high ?? 0) ||
         b.total - a.total)
-      .slice(0, 6);
-  }, [runs]);
+      .slice(0, 6),
+    [latestByRepo]);
 
   // Worst reachable first — that IS the work queue. Falls back to raw severity when
   // nothing has been triaged, with the panel title saying which it is showing.
@@ -83,7 +104,20 @@ export function Overview({
   const history = [...runs].reverse(); // oldest first, the direction a trend reads
   const spend = runs.reduce((sum, r) => sum + (r.cost_usd ?? 0), 0);
 
-  if (!scan) {
+  // Auto-fix PRs docket opened, newest first. A fix only exists here once it VERIFIED
+  // and shipped — an unproven patch is never opened, so this count is fixes that held,
+  // not fixes attempted. Sourced from the live PR watch, not the loaded scan.
+  const fixPrs = useMemo(
+    () => (watch?.results ?? [])
+      .filter((r) => r.fix?.number)
+      .sort((a, b) => b.at - a.at),
+    [watch],
+  );
+  const filesFixed = (r: (typeof fixPrs)[number]) => r.fix?.files?.length ?? 0;
+
+  const repoLabel = (scan?.repo || "").replace(/^github:/, "");
+
+  if (runs.length === 0 && !scan) {
     return (
       <>
         <div className="page-head"><h1>Security dashboard</h1></div>
@@ -102,22 +136,30 @@ export function Overview({
       <div className="page-head">
         <h1>Security dashboard</h1>
         <div className="head-actions">
-          <span className="chip">{(scan.repo || "").replace(/^github:/, "")}</span>
-          {scan.ref && <span className="chip mono">{scan.ref}</span>}
+          <span className="chip">
+            {portfolio.repos} {portfolio.repos === 1 ? "repository" : "repositories"}
+          </span>
           <button className="btn primary" onClick={onGoRepos}>New scan</button>
         </div>
       </div>
 
       <div className="kpis">
-        <Kpi label="Reachable" value={triaged.length ? reachable.length : "—"}
+        <Kpi label="Reachable"
+             value={portfolio.triagedRepos ? portfolio.reachable : "—"}
              tone="var(--crit)"
-             sub={triaged.length ? `of ${findings.length}` : "not triaged"} />
-        <Kpi label="Findings" value={findings.length}
-             sub={counts.critical ? `${counts.critical} critical` : undefined}
-             subTone="var(--crit)" />
-        <Kpi label="High severity" value={(counts.critical ?? 0) + (counts.high ?? 0)}
-             tone="var(--high)" />
-        <Kpi label="Scans" value={runs.length} />
+             sub={portfolio.triagedRepos ? `of ${portfolio.total} findings` : "not triaged"} />
+        <Kpi label="Open findings" value={portfolio.total}
+             sub={portfolio.counts.critical
+               ? `${portfolio.counts.critical} critical`
+               : "across all repos"}
+             subTone={portfolio.counts.critical ? "var(--crit)" : undefined} />
+        <Kpi label="Critical + High"
+             value={(portfolio.counts.critical ?? 0) + (portfolio.counts.high ?? 0)}
+             tone="var(--high)" sub="need attention" />
+        <Kpi label="Auto-fix PRs" value={fixPrs.length}
+             tone="var(--ok)"
+             sub={fixPrs.length ? "opened & verified" : watch?.autofix ? "none yet" : "off"} />
+        <Kpi label="Scans" value={runs.length} sub="all time" />
         <Kpi label="AI spend" value={`$${spend.toFixed(2)}`} sub="all runs" />
       </div>
 
@@ -125,7 +167,12 @@ export function Overview({
         {/* ── the work queue ──────────────────────────────────────────── */}
         <Panel
           title={reachable.length ? "Fix these first" : "Top issues"}
-          action={<button className="btn ghost" onClick={onGoFindings}>View all →</button>}
+          action={
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {repoLabel && <span className="chip" title="latest scan">{repoLabel}</span>}
+              <button className="btn ghost" onClick={onGoFindings}>View all →</button>
+            </span>
+          }
         >
           {top.length === 0 ? (
             <Empty>Nothing reported.</Empty>
@@ -192,16 +239,20 @@ export function Overview({
           )}
         </Panel>
 
-        <Panel title="Severity breakdown">
+        <Panel title="Severity breakdown"
+               action={<span className="note" style={{ fontSize: 12 }}>all repos</span>}>
           <div style={{ padding: "10px 0 4px" }}>
-            <SeverityDonut counts={counts} />
+            <SeverityDonut counts={portfolio.counts} />
           </div>
         </Panel>
       </div>
 
       <div className="trio">
         {/* ── the funnel: volume in, decisions out ─────────────────────── */}
-        <Panel title="Triage outcome">
+        <Panel title="Triage outcome"
+               action={repoLabel
+                 ? <span className="chip" title="latest scan">{repoLabel}</span>
+                 : undefined}>
           {triaged.length === 0 ? (
             <Empty>
               <div style={{ maxWidth: "34ch" }}>
@@ -291,17 +342,63 @@ export function Overview({
 
       {/* Coverage sits on the executive page on purpose: "0 findings" and "nothing was
           analysed" are the same number, and only one is good news. */}
-      <div className="cols">
-        <Panel title="What was examined" action={<span className="chip">this run</span>}>
+      <div className="trio">
+        {/* ── the flagship: fixes docket shipped, not just problems it found ── */}
+        <Panel
+          title="Auto-fix PRs"
+          action={fixPrs.length
+            ? <button className="btn ghost" onClick={onGoPulls}>Pull requests →</button>
+            : undefined}
+        >
+          {fixPrs.length === 0 ? (
+            <Empty>
+              <div style={{ maxWidth: "30ch" }}>
+                {watch?.autofix
+                  ? "No fix PR opened yet. A blocked PR gets one once a patch verifies."
+                  : "Autofix is off. Turn it on so a blocked PR also gets a verified fix PR."}
+              </div>
+              {!watch?.autofix && (
+                <button className="btn primary" onClick={onGoPulls}>Set up autofix</button>
+              )}
+            </Empty>
+          ) : (
+            <div className="rows">
+              {fixPrs.slice(0, 5).map((r) => (
+                <a key={`${r.repo}#${r.number}`} href={r.fix!.url}
+                   target="_blank" rel="noreferrer"
+                   title={`Fix for ${r.repo} #${r.number} — opens on GitHub`}>
+                  <span style={{ minWidth: 0, flex: 1 }}>
+                    <span style={{ display: "block", fontSize: 13.5, overflow: "hidden",
+                                   textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {r.title || `#${r.number}`}
+                    </span>
+                    <span className="path" style={{ display: "block", fontSize: 11.5 }}>
+                      #{r.number} → fix #{r.fix!.number} · {filesFixed(r)} file
+                      {filesFixed(r) === 1 ? "" : "s"}
+                    </span>
+                  </span>
+                  <span className="tag" style={{ background: "rgba(18,183,106,0.12)",
+                               color: "var(--ok)", font: "600 10px var(--sans)",
+                               borderRadius: 5, padding: "2px 7px", flex: "none" }}>
+                    OPENED
+                  </span>
+                </a>
+              ))}
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="What was examined"
+               action={<span className="chip" title="latest scan">{repoLabel || "this run"}</span>}>
           {coverage?.files_scanned != null ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: "14px 34px" }}>
               <Fact label="Files analysed" value={coverage.files_scanned.toLocaleString()} />
               <Fact label="Languages matched"
                     value={coverage.rules_fired?.join(", ") || "none"} />
               <Fact label="Dependency manifests"
-                    value={scan.coverage?.trivy?.manifest_count ?? 0} />
+                    value={scan?.coverage?.trivy?.manifest_count ?? 0} />
               <Fact label="Entry points mapped"
-                    value={scan.surface?.entry_points?.length ?? "—"} />
+                    value={scan?.surface?.entry_points?.length ?? "—"} />
               <Fact label="Could not be analysed" value={coverage.error_count ?? 0}
                     tone={coverage.error_count ? "var(--high)" : undefined} />
             </div>
@@ -325,8 +422,8 @@ export function Overview({
             <div className="rows">
               {runs.slice(0, 5).map((r) => (
                 <button key={r.run_name} onClick={() => onOpenRun(r.run_name)}
-                        aria-selected={scan.id === r.run_name}
-                        style={scan.id === r.run_name ? { background: "var(--wash)" } : undefined}>
+                        aria-selected={scan?.id === r.run_name}
+                        style={scan?.id === r.run_name ? { background: "var(--wash)" } : undefined}>
                   <span style={{ flex: 1, minWidth: 0, overflow: "hidden",
                                  textOverflow: "ellipsis", whiteSpace: "nowrap",
                                  fontSize: 13.5 }}>

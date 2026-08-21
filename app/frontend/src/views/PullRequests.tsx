@@ -427,6 +427,10 @@ function Drawer({ result, onClose }: { result: PrResult; onClose: () => void }) 
           </div>
         )}
 
+        {result.fix && result.fix.files?.length > 0 && (
+          <FixDiff fix={result.fix} />
+        )}
+
         {Object.keys(result.posted || {}).length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <div className="eyebrow" style={{ fontSize: 11.5 }}>Posted to GitHub</div>
@@ -439,6 +443,49 @@ function Drawer({ result, onClose }: { result: PrResult; onClose: () => void }) 
         )}
       </div>
     </aside>
+  );
+}
+
+/** The fix docket opened, shown as its "files changed" diff — the same view a reviewer
+ *  would open on GitHub, inline in the drawer so you never leave the board to see the
+ *  patch. Coloured by the unified-diff prefix: green added, red removed, muted context. */
+function FixDiff({ fix }: { fix: NonNullable<PrResult["fix"]> }) {
+  const lineStyle = (ln: string): React.CSSProperties => {
+    const c = ln[0];
+    if (c === "+") return { background: "color-mix(in srgb, var(--ok) 14%, transparent)", color: "var(--ok)" };
+    if (c === "-") return { background: "color-mix(in srgb, var(--crit) 14%, transparent)", color: "var(--crit)" };
+    if (c === "@") return { color: "var(--info)", opacity: 0.8 };
+    return { color: "var(--muted, #8a94a3)" };
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div className="eyebrow" style={{ fontSize: 11.5 }}>
+        Fix opened{fix.number ? ` — #${fix.number}` : ""}
+        {fix.url && (
+          <> · <a href={fix.url} target="_blank" rel="noreferrer"
+                  style={{ color: "var(--ok)" }}>view on GitHub ↗</a></>
+        )}
+      </div>
+      {fix.files.map((f) => (
+        <div key={f.path} style={{ border: "1px solid var(--line, rgba(127,127,127,.25))",
+                                   borderRadius: 6, overflow: "hidden" }}>
+          <div className="mono" style={{ fontSize: 12, padding: "6px 10px",
+                background: "var(--panel-2, rgba(127,127,127,.08))",
+                borderBottom: "1px solid var(--line, rgba(127,127,127,.25))" }}>
+            {f.path}
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <pre style={{ margin: 0, font: "11.5px/1.6 var(--mono)", padding: "6px 0" }}>
+              {f.lines.map((ln, i) => (
+                <div key={i} style={{ ...lineStyle(ln), padding: "0 10px", whiteSpace: "pre" }}>
+                  {ln || " "}
+                </div>
+              ))}
+            </pre>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
