@@ -326,7 +326,7 @@ export default function App() {
 
         {session?.login && (
           <div className="org">
-            <span className="dot" />
+            <Avatar login={session.login} />
             <span>{session.login}</span>
             {session.connected && <span className="tag">GITHUB</span>}
           </div>
@@ -462,5 +462,25 @@ export default function App() {
         )}
       </main>
     </div>
+  );
+}
+
+/** The connected account's GitHub avatar. GitHub serves any account's picture at
+ *  github.com/<login>.png with no auth, so this needs no backend call. Falls back to the
+ *  login's initial in a disc if the image fails (rate-limited, offline, deleted account). */
+function Avatar({ login }: { login: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed || !login) {
+    return <span className="avatar avatar-fallback">{login[0]?.toUpperCase() ?? "?"}</span>;
+  }
+  return (
+    <img
+      className="avatar"
+      alt=""
+      width={26}
+      height={26}
+      src={`https://github.com/${encodeURIComponent(login)}.png?size=48`}
+      onError={() => setFailed(true)}
+    />
   );
 }

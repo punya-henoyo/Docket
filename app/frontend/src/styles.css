@@ -705,3 +705,14 @@ table.flagged td.mono { font-family: var(--mono); }
 }
 .scope-select select:hover { border-color: var(--ink-3); }
 .scope-select select:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+
+/* Connected account's GitHub avatar in the rail. Same footprint as the old .dot; the
+   fallback disc uses the login's initial when the image can't load. */
+.org .avatar {
+  width: 26px; height: 26px; border-radius: 50%; flex: none;
+  object-fit: cover; background: var(--line-2);
+}
+.org .avatar-fallback {
+  display: grid; place-items: center;
+  font: 700 12px var(--sans); color: var(--ink-2);
+}
