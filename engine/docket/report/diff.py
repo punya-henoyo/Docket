@@ -141,35 +141,43 @@ class RunDiff:
 
     @property
     def gating(self) -> list[dict[str, Any]]:
-        """New findings a merge may be blocked on: the deterministic ones.
+        """New findings a merge may be blocked on: deterministic findings, PLUS agent
+        findings proven to sit on a line this change actually touched.
 
-        WHY AN AGENT'S FINDING CANNOT GATE A MERGE
-        ------------------------------------------
-        Not a judgement about quality — a structural fact about this diff. The BASE scan
-        runs with `recon=False` (core/pr_service.py, deliberately: running the agent on
-        both sides doubled the wall clock). So the baseline contains NO agent findings,
-        ever. Every agent finding in the head is therefore unmatched, therefore `new`,
-        on every pull request docket will ever scan. "New" for them does not mean
-        "this change introduced it" — it means "there was nothing to compare against".
+        WHY AN AGENT FINDING CAN NOW GATE — AND WHY IT ONCE COULD NOT
+        ------------------------------------------------------------
+        The BASE scan runs with `recon=False` (core/pr_service.py, deliberately: running
+        the agent on both sides doubled the wall clock). So the baseline contains NO
+        agent findings, and every agent finding in the head is `new` by construction.
+        "New" alone therefore never meant "this change introduced it" — it meant "there
+        was nothing to compare against". That is why this used to block on deterministic
+        findings only. Measured on kaizenmantra/vulnshop#25: a one-line fix PR blocked on
+        an IDOR that was already in the branch it targeted.
 
-        Measured on kaizenmantra/vulnshop#25, a fix pull request that changed one line
-        and was blocked on "IDOR on /order/status — no ownership check". That flaw was
-        already in the branch it targeted; the fix had nothing to do with it. The same
-        finding on #24 genuinely WAS new, and nothing in the data distinguishes the two
-        cases, which is exactly why it cannot carry a merge decision.
+        What closes the gap is the git diff. `core/pull_request.evaluate` now stamps
+        `introduced` on each finding from the actual changed-line hunks
+        (`_provably_introduced`): an agent finding that cites a line inside a changed hunk
+        provably came from this change, and vulnshop#25's IDOR — on a line the fix never
+        touched — would not be stamped and would not gate. So an agent finding is here
+        ONLY when the diff proves it new; a line-less candidate, or an unscoped fallback
+        scan with no diff to check, is never stamped and stays in `observations`.
 
-        Agent findings still reach the pull request comment — see `observations`. They
-        inform a reviewer; they do not stop one.
+        This is the product's whole point: the vulnerabilities only the agent can find
+        (IDOR, privilege escalation, cross-tenant authz) block a merge when the change
+        introduced them, instead of sitting in a fold nobody expands.
         """
         return [f for f in self.new
-                if str(f.get("discovered_by", "")) in DETERMINISTIC_SOURCES]
+                if str(f.get("discovered_by", "")) in DETERMINISTIC_SOURCES
+                or f.get("introduced")]
 
     @property
     def observations(self) -> list[dict[str, Any]]:
-        """New findings from an agent: reported, never blocking. The complement of
-        `gating`, so every new finding appears in exactly one of the two."""
+        """New findings that cannot carry a merge decision: agent findings NOT proven to
+        sit on a changed line (no line cited, or an unscoped fallback with no diff). The
+        complement of `gating`, so every new finding appears in exactly one of the two."""
         return [f for f in self.new
-                if str(f.get("discovered_by", "")) not in DETERMINISTIC_SOURCES]
+                if str(f.get("discovered_by", "")) not in DETERMINISTIC_SOURCES
+                and not f.get("introduced")]
 
     @property
     def new_reachable(self) -> list[dict[str, Any]]:
@@ -315,10 +323,10 @@ def gate(diff: RunDiff, *, block_on: str = "reachable") -> tuple[int, str]:
       "any"        block on any new DETERMINISTIC finding, triaged or not. Noisier and
                    it will be turned off; offered because some teams are required to.
 
-    Neither setting blocks on an agent finding — see `RunDiff.gating`. "any" means every
-    finding a merge decision can rest on, not every line of the report; an agent finding
-    is `new` on every pull request by construction, so blocking on it here would make
-    "any" mean "never merge anything".
+    Both settings can block on an agent finding, but ONLY one the git diff proved this
+    change introduced (`RunDiff.gating`, via the `introduced` stamp). An agent finding
+    that is merely `new` — line-less, or an unscoped fallback with no diff — still cannot
+    gate, which is what keeps "any" from meaning "never merge anything".
 
     An untrustworthy diff is INCONCLUSIVE, never clean. That is the failure strix
     warns about in their CI docs — a scan that ran out of budget exiting zero and

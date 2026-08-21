@@ -153,17 +153,24 @@ def test_only_verified_fixed_ships() -> None:
 
 # --- the driver's own refusals --------------------------------------------------------
 
-def test_an_edit_outside_the_findings_file_is_refused() -> None:
-    """Scope comes from the finding, not from the model."""
-    patches = run(collect=lambda *_: changes("other.py"))
-    assert len(patches) == 1, patches
-    assert patches[0].files == [], patches[0]
-    assert patches[0].outcome == "needs_wider_scope", patches[0]
-    assert patches[0].status == NOT_FIXED, patches[0]
-    assert "other.py" in patches[0].summary, patches[0].summary
-    # Even with a validator that would have said verified_fixed, nothing ships.
-    out, fake = delivered([patches[0]])
-    assert out["fix_prs"] == [] and fake.commits == [], out
+def test_a_coordinated_multi_file_fix_is_allowed() -> None:
+    """A vulnerable value assembled in one file and executed by a helper in another needs
+    both. Within the cap, that is allowed; only a sprawl past it is refused."""
+    def two(*_a):
+        return changes("app.py") + [{"path": "other.py", "content": "run(sql, params)\n",
+                                     "added_lines": ["run(sql, params)"],
+                                     "removed_lines": ["run(sql)"]}]
+    patches = run(collect=two)
+    assert len(patches) == 1 and patches[0].status == VERIFIED, patches
+    assert {f["path"] for f in patches[0].files} == {"app.py", "other.py"}, patches[0]
+
+    def sprawl(*_a):
+        return changes("app.py") + [{"path": f"f{i}.py", "content": "x\n",
+                                    "added_lines": ["x"], "removed_lines": ["y"]}
+                                   for i in range(6)]
+    refused = run(collect=sprawl)
+    assert refused[0].files == [] and refused[0].outcome == "needs_wider_scope", refused[0]
+    assert refused[0].status == NOT_FIXED, refused[0]
 
     # A change to the finding's own file, spelled with a leading "./", is still in scope.
     same = run(collect=lambda *_: changes("./app.py"))
@@ -364,7 +371,7 @@ if __name__ == "__main__":
     test_a_claimed_fix_that_does_not_validate_is_never_shipped()
     test_validation_inconclusive_gets_no_branch_either()
     test_only_verified_fixed_ships()
-    test_an_edit_outside_the_findings_file_is_refused()
+    test_a_coordinated_multi_file_fix_is_allowed()
     test_an_added_line_that_looks_like_a_secret_refuses_the_patch()
     test_a_refusal_is_not_reported_as_an_error()
     test_a_claimed_patch_with_an_unchanged_tree_is_a_contradiction()

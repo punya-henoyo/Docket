@@ -163,9 +163,19 @@ _PR_FIXABLE: dict[str, dict[str, Any]] = {}
 # already serial for the same reason — this stops a second one arriving by button.
 _FIX_LOCK = threading.Lock()
 
+# The unified diff of the fix a blocked PR received, keyed "repo#number", so the console
+# can render the patch inline — the same "files changed" a reviewer would open on GitHub,
+# without leaving the board. Memory only; a display of work this process did.
+_PR_FIX: dict[str, dict[str, Any]] = {}
+
 # Worst first, matching report.models.Severity. Local so autofix's ordering does not
 # depend on importing the whole diff module for one dict.
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+# The most findings one auto-fix pass will patch and ship in a single PR. A pull
+# request that introduced more than this gets the worst handful fixed now and the
+# rest on its next push — the cap bounds the agent spend, not the eventual coverage.
+MAX_AUTOFIX_PER_PR = 5
 
 # The order steps are DISPLAYED in, regardless of the order they report. A timeline that
 # reshuffles itself as it runs is harder to read than one with a fixed shape.
@@ -278,6 +288,9 @@ def watch_state() -> dict[str, Any]:
             live = progress_for(row.get("repo", ""), row.get("number"))
             if live is not None:
                 row["progress"] = live
+            fix = _PR_FIX.get(_progress_key(row.get("repo", ""), row.get("number")))
+            if fix is not None:
+                row["fix"] = fix
             # Whether "Open a fix PR" can do anything for this row. False once a fix is
             # open, or on a verdict this process did not produce (a restart clears it).
             row["fixable"] = _progress_key(row.get("repo", ""),
@@ -534,6 +547,29 @@ def autofix_scope_keys(findings: list[dict[str, Any]]) -> list[tuple[str, str, i
     return keys
 
 
+def _unified_diffs(source: Path, files: list[dict]) -> list[dict]:
+    """[{path, lines}] — a real unified diff per changed file, base vs patched. `lines`
+    are the diff lines with their +/- / space / @@ prefixes, which the console colours.
+    Derived from the file's bytes on both sides, never from a model's account of them."""
+    import difflib
+
+    out: list[dict] = []
+    for entry in files:
+        rel = str(entry.get("path") or "")
+        new = str(entry.get("content") or "")
+        try:
+            old = (source / rel).read_text()
+        except (OSError, UnicodeDecodeError):
+            old = ""
+        lines = list(difflib.unified_diff(
+            old.splitlines(), new.splitlines(), lineterm="", n=3))
+        # Drop the ---/+++ header rows: the path is shown separately, so they are noise.
+        lines = [ln for ln in lines if not ln.startswith(("--- ", "+++ "))]
+        out.append({"path": rel, "lines": lines[:400]})  # cap a runaway file
+    return out
+
+
+
 def attempt_autofix(ref: Any, verdict: dict[str, Any], *,
                     dry_run: bool = False) -> dict[str, Any]:
     """Try to fix what a pull request introduced, and open a PR only if it is PROVEN.
@@ -632,47 +668,89 @@ def attempt_autofix(ref: Any, verdict: dict[str, Any], *,
         # which is exactly the set the patch is allowed to clear. `validate` is already an
         # injectable seam in fix_findings, so this needs no change there.
         validate = partial(validate_patch, in_scope_keys=autofix_scope_keys(fixable))
-        # max_fixes=1: one finding per pull request per pass. The watcher runs again on
-        # the next push, and a reviewer reads one small diff sooner than three.
+        # FIX EVERY INDEPENDENT FINDING, not just the worst. Three unrelated bugs in
+        # three files (Mendor-lab#11: SQLi, command injection, path traversal) each get a
+        # verified fix, and they ship together in ONE pull request — a reviewer reads one
+        # branch, not three. Capped so a pull request that introduced a dozen findings
+        # does not turn into a dozen agent runs; the rest are caught on the next push.
         patches = fix_findings({"findings": fixable}, source_root=source,
-                               run_dir=run_dir, config=Config.from_env(), max_fixes=1,
+                               run_dir=run_dir, config=Config.from_env(),
+                               max_fixes=min(len(fixable), MAX_AUTOFIX_PER_PR),
                                validate=validate)
         if not patches:
             return {"opened": False,
                     "note": "no finding carried a file:line anchor to patch"}
 
-        patch = patches[0]
+        verified = [pt for pt in patches if pt.status == VERIFIED]
+        if not verified:
+            # Nothing verified. Report the worst attempt, labelled NOT verified — a pull
+            # request is the wrong vehicle for a patch no scanner re-run confirmed.
+            worst = patches[0]
+            return {"opened": False, "status": worst.status, "key": worst.key,
+                    "outcome": worst.outcome, "validation": worst.validation,
+                    "dry_run": dry_run, "files": [c["path"] for c in worst.files],
+                    "note": f"{worst.status} (NOT verified): {worst.summary}"}
+
+        # Combine the verified patches into one — but only where their file sets are
+        # DISJOINT. Each finding was fixed on its own copy of the tree, so each patch
+        # carries the full content of the file it changed; two patches that rewrote the
+        # SAME file would each hold a version missing the other's edit, and unioning them
+        # would silently drop one. Independent findings live in different files, so they
+        # combine cleanly; a same-file collision is left for the next push rather than
+        # merged wrong.
+        seen_paths: set[str] = set()
+        combined_files: list[dict] = []
+        included = []
+        for pt in verified:
+            paths = {str(c["path"]) for c in pt.files}
+            if paths & seen_paths:
+                continue
+            seen_paths |= paths
+            combined_files.extend(pt.files)
+            included.append(pt)
+
+        n = len(included)
+        combined_key = "+".join(sorted(pt.key for pt in included))
+        if n == 1:
+            title = included[0].title
+            summary = included[0].summary
+        else:
+            title = f"fix: {n} findings across {len(seen_paths)} file(s)"
+            # Each patch summary already states how it was verified (scanner re-run vs
+            # independent agent) — service/fix._summary reads it from the validation.
+            summary = ("This pull request fixes several INDEPENDENT findings the change "
+                       "introduced, each verified on its own:\n\n"
+                       + "\n\n".join(f"### {i + 1}. {pt.title}\n{pt.summary}"
+                                       for i, pt in enumerate(included)))
+        combined = {"files": combined_files, "title": title, "summary": summary,
+                    "key": combined_key}
+
+        diffs = _unified_diffs(source, combined_files)
         result: dict[str, Any] = {
-            "opened": False, "status": patch.status, "key": patch.key,
-            "outcome": patch.outcome, "validation": patch.validation,
-            "note": patch.summary, "dry_run": dry_run,
-            "files": [c["path"] for c in patch.files],
+            "opened": False, "status": VERIFIED, "key": combined_key,
+            "fixed_count": n, "files": sorted(seen_paths), "dry_run": dry_run,
+            "diffs": diffs,
+            "note": f"{n} finding(s) fixed across {len(seen_paths)} file(s)",
         }
-        if patch.status != VERIFIED:
-            # unverified_plausible is DISPLAY ONLY and is labelled as such here, at the
-            # one place a caller reads: a pull request is the wrong vehicle for a patch
-            # nobody re-tested, because a diff in a review queue reads as "this is the
-            # fix" whatever the description says.
-            result["note"] = f"{patch.status} (NOT verified): {patch.summary}"
-            return result
         if dry_run:
-            result["note"] = f"verified_fixed, not opened (dry run): {patch.summary}"
+            result["note"] = f"verified_fixed x{n}, not opened (dry run)"
             return result
 
         from docket.interface.scm import GitHubApp
         from docket.service.delivery import _fix_pr
 
         # OAuth mode: everything _fix_pr needs — reads, a branch, a commit, a pull
-        # request — is writable by a user-to-server token with the `repo` scope. Only
-        # check runs are not, and _fix_pr creates none.
+        # request — is writable by a user-to-server token with the `repo` scope.
         opened = _fix_pr(GitHubApp(oauth_token=token), ref.repo, int(ref.number),
-                         ref.head_sha, patch, patch.key)
+                         ref.head_sha, combined, combined_key)
         return result | {"opened": True, "url": opened.get("url"),
                          "number": opened.get("number"),
                          "adopted": opened.get("adopted"),
                          "branch": opened.get("branch"),
-                         "note": ("adopted the existing fix PR" if opened.get("adopted")
-                                  else patch.summary)}
+                         "note": (f"adopted the existing fix PR ({n} finding(s))"
+                                  if opened.get("adopted")
+                                  else f"{n} finding(s) fixed across "
+                                       f"{len(seen_paths)} file(s)")}
     except Exception as exc:  # noqa: BLE001 — a failed fix must not sink the verdict
         return {"opened": False, "note": f"{type(exc).__name__}: {exc}"}
     finally:
@@ -764,6 +842,9 @@ def _watch_loop() -> None:
                 if fix.get("opened"):
                     with SESSION.lock:
                         _PR_FIXABLE.pop(_progress_key(ref.repo, ref.number), None)
+                        _PR_FIX[_progress_key(ref.repo, ref.number)] = {
+                            "number": fix.get("number"), "url": fix.get("url"),
+                            "files": fix.get("diffs") or []}
                 posted["autofix"] = (f"opened #{fix['number']}" if fix.get("opened")
                                      else f"not opened — {fix.get('note', '')}"[:120])
         except Exception as exc:  # noqa: BLE001 — one bad PR must not sink the watcher
@@ -1446,6 +1527,12 @@ def list_runs() -> list[dict[str, Any]]:
             "generated_at": data.get("generated_at"),
             "finding_count": data.get("finding_count", 0),
             "severity_counts": data.get("severity_counts", {}),
+            # Findings an agent read the source and judged reachable by untrusted input.
+            # Keyed CONFIRMED in triage_counts (both the wired and derived paths use that
+            # vocabulary). Lets the dashboard sum "reachable across all repos" without
+            # loading every run's findings. `.get` twice so an untriaged run reads 0, not
+            # a missing key.
+            "reachable_count": (data.get("triage_counts") or {}).get("CONFIRMED", 0),
             # usage.totals is where the writer records spend. The top-level cost_usd
             # key exists but is always 0.0, so reading it made every historical run
             # look free and the cost trend a flat line at zero.
@@ -1870,6 +1957,9 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                     if fix.get("opened"):
                         with SESSION.lock:
                             _PR_FIXABLE.pop(key, None)
+                            _PR_FIX[key] = {"number": fix.get("number"),
+                                            "url": fix.get("url"),
+                                            "files": fix.get("diffs") or []}
                 except Exception as exc:  # noqa: BLE001 — a failed fix must not kill the thread
                     logger.exception("manual fix for %s failed", key)
                     note = f"failed — {type(exc).__name__}: {exc}"[:120]

@@ -82,6 +82,15 @@ PHASE 2 — FIX. The root cause, not the payload.
   a scanner will not catch it — the caller-consistency gate will, and your patch will be
   rejected. If you cannot find and fix all callers, report `no_safe_fix` rather than a partial
   cross-file edit. Never touch a file the fix does not require.
+- PREFER HARDENING A SHARED SINK OVER BYPASSING IT. When the tainted value is executed by a
+  helper whose job is to run raw SQL or a shell — a generic runner that other code also calls —
+  the fix is to make THAT helper take bound parameters (or a safe argv) and update its callers,
+  NOT to route around it with a local query in the caller. Bypassing removes this one finding
+  but leaves the runner injectable for the next caller, so it is not a real fix of the sink.
+  Do this only when the runner has FEW callers you can fix together within scope; if it has
+  many, take the local fix and name the still-dangerous runner in your evidence as a residual
+  risk a human must address. Adding a new database or shell import to a module that deliberately
+  had none, just to inline around the shared runner, is the bypass this rule forbids.
 - Never edit CI config, `.github/`, a lockfile, or a secrets file.
 - NEVER weaken or silence the check instead of fixing it. `# nosemgrep`, `# noqa`, an
   exclusion, a config downgrade: none of those is a fix. They make the scanner quiet and

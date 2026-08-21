@@ -59,6 +59,15 @@ DEFAULT_MAX_FIXES = 3
 # and turns are a poor proxy for it. Above triage's 12 because this role reads, edits, and
 # re-reads what it edited, which is a handful of turns more than reading alone.
 FIX_TURNS = 18
+# The verifier only reads and reasons about the finding against the patched tree — no
+# editing — so it needs fewer turns than the fix agent that produced the patch.
+VERIFY_TURNS = 10
+
+# The most files one coordinated fix may touch: the finding's own file plus the few it
+# must change WITH it. A raw SQL string built in a route and run by a shared helper needs
+# both; a fix that rewrites a dozen files is a refactor, not a targeted patch, and gets
+# refused. The finding's scope is the anchor for telling the two apart.
+MAX_FIX_FILES = 4
 
 # The verification vocabulary. Set by validate_patch, never by the agent.
 VERIFIED = "verified_fixed"
@@ -102,6 +111,8 @@ def fix_findings(
     on_agent: Callable[[dict], None] | None = None,
     propose: Callable[[Path, dict], dict] | None = None,
     validate: Callable[..., Any] | None = None,
+    validate_agent: Callable[..., Any] | None = None,
+    verify: Callable[[Path, dict], bool] | None = None,
     collect: Callable[[Path, Path], list[dict]] | None = None,
 ) -> list[Patch]:
     """One Patch per finding attempted, worst-first. Never raises except ScanCancelled.
@@ -153,10 +164,14 @@ def fix_findings(
                 path=path, line=line,
             )
             output = step(patched, finding)
+            verifier = verify or _verify_step(
+                run_dir=run_dir, config=config, agent_id=agent_id,
+                coordinator=coordinator, model_override=model_override)
             patch = _assess(
                 output if isinstance(output, dict) else {},
                 key=key, rule=rule, path=path, line=line, base=base, patched=patched,
-                collect=collect, validate=validate,
+                finding=finding, collect=collect, validate=validate,
+                validate_agent=validate_agent, verify=verifier,
             )
         except ScanCancelled:
             # Must escape the broad handler below. Caught there it would read as "the fix
@@ -316,9 +331,11 @@ def _agent_step(*, run_dir: Path, config: Config, agent_id: str,
 # --- turning the agent's claim into a Patch ------------------------------------------
 
 def _assess(output: dict, *, key: str, rule: str, path: str, line: int,
-            base: Path, patched: Path,
+            base: Path, patched: Path, finding: dict | None = None,
             collect: Callable[[Path, Path], list[dict]] | None,
-            validate: Callable[..., Any] | None) -> Patch:
+            validate: Callable[..., Any] | None,
+            validate_agent: Callable[..., Any] | None = None,
+            verify: Callable[[Path, dict], bool] | None = None) -> Patch:
     outcome = str(output.get("outcome") or "").strip() or "no_safe_fix"
     root_cause = str(output.get("root_cause") or "").strip()
     invariant = str(output.get("invariant") or "").strip()
@@ -343,14 +360,21 @@ def _assess(output: dict, *, key: str, rule: str, path: str, line: int,
                              "nothing to ship.",
                         root_cause=root_cause, invariant=invariant, evidence=evidence)
 
-    # SCOPE COMES FROM THE FINDING, NOT FROM THE MODEL.
-    stray = sorted({str(c.get("path")) for c in changes
-                    if _norm(c.get("path")) != _norm(path)})
-    if stray:
+    # A COORDINATED FIX MAY SPAN A FEW FILES, NOT THE WHOLE REPO.
+    # The finding names one file, but the vulnerable value is often assembled in a route
+    # and executed by a shared helper — no single file is fixable alone (measured on
+    # punya-henoyo/Mendor-lab#9). So a stray file is allowed, subject to the small cap
+    # below AND to every validation gate that follows: callers_consistent refuses a
+    # signature change that a caller no longer satisfies, no_new_findings refuses a stray
+    # edit that adds a problem, and nothing_else_vanished refuses one that quietly removes
+    # an unrelated finding. What the cap alone stops is a sprawl the finding cannot anchor.
+    if len(changes) > MAX_FIX_FILES:
         return _refused(key=key, rule=rule, path=path, line=line,
                         outcome="needs_wider_scope",
-                        note=("edits landed outside the finding's own file, which is the "
-                              f"only file in scope: {', '.join(stray)}"),
+                        note=(f"the patch changed {len(changes)} files "
+                              f"({', '.join(str(c.get('path')) for c in changes[:5])}"
+                              f"{'…' if len(changes) > 5 else ''}); a fix that spans more "
+                              f"than {MAX_FIX_FILES} is a refactor, not a targeted patch"),
                         root_cause=root_cause, invariant=invariant, evidence=evidence)
     denied = sorted({str(c.get("path")) for c in changes if _denied(str(c.get("path")))})
     if denied:
@@ -371,12 +395,27 @@ def _assess(output: dict, *, key: str, rule: str, path: str, line: int,
 
     # THE AGENT'S CLAIM NEVER BECOMES THE STATUS. It said `patched`, which is a claim about
     # what it changed; whether that is verified_fixed, unverified_plausible, not_fixed or
-    # validation_inconclusive is decided here, by a scanner re-run over the copy.
-    validation = _validation(
-        (validate or _validate_patch)(
-            base_root=base, patched_root=patched, target_key=(rule, path, int(line)),
+    # validation_inconclusive is decided here, by RE-RUNNING A PROOF over the copy — never
+    # by the agent that wrote the patch.
+    #
+    # Which proof depends on who can see the bug. A scanner finding is re-run through
+    # semgrep (`validate_patch`): the rule flips or the fix did not hold. An AGENT finding
+    # fires no rule, so semgrep's positive control can never pass — its proof is an
+    # INDEPENDENT agent re-reading the patched code and finding the exploit path closed
+    # (`verify`), with semgrep kept on as a regression guard (`validate_agent_patch`).
+    if finding is not None and _agent_sourced(finding, rule):
+        exploit_closed = bool(verify(patched, finding)) if verify else False
+        validation = _validation(
+            (validate_agent or _validate_agent_patch)(
+                base_root=base, patched_root=patched, exploit_closed=exploit_closed,
+            )
         )
-    )
+    else:
+        validation = _validation(
+            (validate or _validate_patch)(
+                base_root=base, patched_root=patched, target_key=(rule, path, int(line)),
+            )
+        )
     status = validation["status"]
     files = [{"path": c["path"], "content": c.get("content")} for c in changes]
     return Patch(
@@ -419,10 +458,17 @@ def _title(status: str, outcome: str, key: str, root_cause: str) -> str:
 def _summary(*, rule: str, path: str, line: int, outcome: str, status: str,
              root_cause: str, invariant: str, evidence: str, validation: dict,
              notes: list[str]) -> str:
+    # How the fix was PROVEN, read from the validation itself — never assumed. A scanner
+    # finding is verified by its rule going quiet on re-scan; an agent finding (recon/*),
+    # which fires no rule, by an independent agent re-reading the patched code and finding
+    # the exploit path closed. Saying "scanner re-run" for the latter would overclaim.
+    how = ("an independent agent that re-read the patched code"
+           if str((validation.get("evidence") or {}).get("verified_by") or "") == "agent"
+           else "a scanner re-run")
     lines = [
         f"Finding: {rule} at {path}:{line}",
         f"Agent outcome: {outcome} — a claim about what it changed, not a verdict.",
-        f"Validation: {status} (decided by a scanner re-run, not by the agent).",
+        f"Validation: {status} (decided by {how}, not by the agent that wrote the patch).",
     ]
     if status == UNVERIFIED:
         lines.append(
@@ -507,6 +553,55 @@ def _validate_patch(**kwargs: Any) -> Any:
     return validate_patch(**kwargs)
 
 
+def _validate_agent_patch(**kwargs: Any) -> Any:
+    from docket.service.validate import validate_agent_patch
+
+    return validate_agent_patch(**kwargs)
+
+
+def _agent_sourced(finding: dict, rule: str) -> bool:
+    """A finding no scanner can reproduce, so `validate_patch`'s semgrep re-run cannot
+    verify its fix — it must go through the agent verifier instead. Read from
+    `discovered_by` when present, falling back to the `recon/` rule-id prefix."""
+    from docket.report.diff import DETERMINISTIC_SOURCES
+
+    by = str(finding.get("discovered_by") or "").strip()
+    if by:
+        return by not in DETERMINISTIC_SOURCES
+    return rule.startswith("recon/")
+
+
+def _verify_step(*, run_dir: Path, config: Config, agent_id: str,
+                 coordinator: AgentCoordinator,
+                 model_override: Callable | None) -> Callable[[Path, dict], bool]:
+    """The default agent verifier: re-triage the finding against the PATCHED tree.
+
+    The exploit path is closed only when an independent agent, reading the patched code,
+    now judges the finding NOT reachable. `uncertain` is not a clearance — same rule as
+    triage — so anything but a clean `not_reachable` returns False and nothing ships. It
+    runs exactly as the fix agent does: source-only, rooted at the copy, no sandbox, so
+    it works on the `--static-only --no-sandbox` shape a PR check uses.
+    """
+    from docket.agents.prompts.triage import build_triage_task
+    from docket.core.triage import _verdict_from
+
+    def verify(patched: Path, finding: dict) -> bool:
+        context = ScanContext(
+            target_url="", run_dir=run_dir, agent_id=f"{agent_id}-verify",
+            role="triage", coordinator=coordinator, config=config,
+            model_override=model_override, sandbox=None, source_root=str(patched),
+        )
+        agent = build_agent(
+            "triage", config,
+            model=model_override("triage") if model_override else None)
+        output = asyncio.run(run_agent_loop(
+            agent, context, build_triage_task(finding), max_turns=VERIFY_TURNS))
+        verdict = _verdict_from(output if isinstance(output, dict) else {})
+        return bool(verdict) and verdict.get("verdict") == "not_reachable"
+
+    return verify
+
+
 def _validation(result: Any) -> dict:
     """A Validation, a dict, or anything carrying the four attributes — duck-typed for the
     same reason delivery.py:_gate is: the producer is a different phase and this should not
@@ -583,13 +678,31 @@ def demo() -> None:
         assert "UNVERIFIED" in plausible[0].title, plausible[0].title
         assert "UNVERIFIED" in plausible[0].summary, plausible[0].summary
 
-        # An edit outside the finding's own file: no patch, and the scope refusal is the
-        # driver's, not the model's.
-        strayed = fix_findings(report(), source_root=base, run_dir=runs, config=cfg,
-                              propose=patched_claim, collect=lambda *_: changes("other.py"),
+        # A COORDINATED multi-file fix within the cap is now ALLOWED — the finding's own
+        # file plus a helper it must change with it. Validation (mocked VERIFIED here)
+        # still decides; the scope check no longer vetoes a second file.
+        def two_files(*_a):
+            return changes("app.py") + [{"path": "app/services/db.py",
+                                         "content": "run(sql, params)\n",
+                                         "added_lines": ["run(sql, params)"],
+                                         "removed_lines": ["run(sql)"]}]
+        multi = fix_findings(report(), source_root=base, run_dir=runs, config=cfg,
+                             propose=patched_claim, collect=two_files,
+                             validate=verdict(VERIFIED))
+        assert multi[0].status == VERIFIED, multi
+        assert {f["path"] for f in multi[0].files} == {"app.py", "app/services/db.py"}, multi
+
+        # ...but a SPRAWL past the cap is still refused: a fix that rewrites the repo is a
+        # refactor, not a targeted patch.
+        def many_files(*_a):
+            return changes("app.py") + [{"path": f"f{i}.py", "content": "x\n",
+                                        "added_lines": ["x"], "removed_lines": ["y"]}
+                                       for i in range(MAX_FIX_FILES)]
+        sprawl = fix_findings(report(), source_root=base, run_dir=runs, config=cfg,
+                              propose=patched_claim, collect=many_files,
                               validate=verdict(VERIFIED))
-        assert strayed[0].files == [] and strayed[0].outcome == "needs_wider_scope", strayed
-        assert strayed[0].status == NOT_FIXED
+        assert sprawl[0].files == [] and sprawl[0].outcome == "needs_wider_scope", sprawl
+        assert sprawl[0].status == NOT_FIXED
 
         # An added line that looks like a live credential: refused, and the value is not
         # reproduced anywhere in the record.
@@ -628,6 +741,48 @@ def demo() -> None:
     assert _validation(None)["status"] == INCONCLUSIVE
     assert _validation({"status": "looks good"})["status"] == INCONCLUSIVE
     assert _validation({"status": VERIFIED})["status"] == VERIFIED
+
+    # --- an AGENT finding is verified by the verifier, not by a scanner re-run ---------
+    assert _agent_sourced({"discovered_by": "recon"}, "recon/idor") is True
+    assert _agent_sourced({"discovered_by": "semgrep"}, "semgrep/sqli") is False
+    assert _agent_sourced({}, "recon/idor") is True, "fall back to the rule-id prefix"
+
+    def recon_report() -> dict:
+        return {"findings": [{
+            "rule_id": "recon/cross-tenant-idor", "severity": "high",
+            "discovered_by": "recon",
+            "location": {"method": "GET", "path": "/invites", "source_file": "app.py:3"},
+            "triage": {"verdict": "exploitable", "reasoning": "r", "evidence": "e"},
+            "poc": {"request": "GET /invites/42 as org B", "response": "200 leaked"},
+        }], "flagged_not_proven": []}
+
+    # The agent path routes through `verify` (does the patched code still expose it?) and
+    # `validate_agent`, NOT the semgrep `validate` seam whose positive control a recon
+    # rule can never clear. Verifier says closed -> ships as verified_fixed.
+    def agent_validate(**kw) -> dict:
+        return {"status": VERIFIED if kw["exploit_closed"] else NOT_FIXED,
+                "gates": {"positive_control": True, "target_absent": kw["exploit_closed"]},
+                "failed_gate": None if kw["exploit_closed"] else "target_absent",
+                "evidence": {"verified_by": "agent"}}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) / "src"; base.mkdir(); (base / "app.py").write_text("q = f'{u}'\n")
+        runs = Path(tmp) / "run"
+        shipped = fix_findings(
+            recon_report(), source_root=base, run_dir=runs, config=cfg,
+            propose=patched_claim, collect=lambda *_: changes(),
+            verify=lambda _p, _f: True, validate_agent=agent_validate,
+            validate=verdict(NOT_FIXED))          # must NOT be consulted for a recon finding
+        assert len(shipped) == 1 and shipped[0].status == VERIFIED, shipped
+        assert shipped[0].validation["evidence"]["verified_by"] == "agent", shipped[0].validation
+
+        # Verifier says the exploit is STILL open -> not_fixed, nothing ships.
+        blocked = fix_findings(
+            recon_report(), source_root=base, run_dir=runs, config=cfg,
+            propose=patched_claim, collect=lambda *_: changes(),
+            verify=lambda _p, _f: False, validate_agent=agent_validate)
+        assert len(blocked) == 1 and blocked[0].status == NOT_FIXED, blocked
+
     print("service.fix: ok")
 
 

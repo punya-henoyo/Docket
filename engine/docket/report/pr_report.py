@@ -182,9 +182,11 @@ def render_comment(verdict: dict[str, Any], *, run_url: str | None = None) -> st
                 f"<details><summary>{len(observations)} agent observation(s) — "
                 "not blocking</summary>",
                 "",
-                "These come from reading the code, not from a scanner, so docket cannot "
-                "tell whether this change introduced them or they were already here. "
-                "They do not affect the check.",
+                "Agent findings docket could not tie to a specific line this change "
+                "touched — no line was cited, or this was a whole-repository fallback "
+                "scan. Reported so a reviewer sees them; they do not affect the check. "
+                "Agent findings that DO sit on a changed line are in the table above and "
+                "block like any other.",
                 "",
                 *_table(observations),
                 "</details>",

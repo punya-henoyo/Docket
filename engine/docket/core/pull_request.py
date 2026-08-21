@@ -175,6 +175,29 @@ def _touches_change(finding: dict[str, Any], lines: dict[str, set[int]]) -> bool
     return False
 
 
+def _provably_introduced(finding: dict[str, Any], lines: dict[str, set[int]]) -> bool:
+    """Did this change PROVE it introduced this finding — a cited line inside a changed hunk?
+
+    Stricter than `_touches_change`, which keeps a finding when it cannot be shown
+    pre-existing (no line cited, file not in the change). Those are worth reporting but
+    cannot carry a merge decision. This returns True only when a cited line overlaps a
+    touched line, which is exactly the evidence `RunDiff.gating` needs to let an agent
+    finding block a merge without re-opening the vulnshop#25 false-positive.
+    """
+    location = finding.get("location") or {}
+    source = str(location.get("source_file") or "")
+    path = str(location.get("path") or "").replace("/work/source/", "").lstrip("/")
+    touched = lines.get(path)
+    if not touched or ":" not in source:
+        return False
+    span = re.findall(r"(\d+)(?:\s*-\s*(\d+))?", source.rsplit(":", 1)[-1])
+    for start, end in span:
+        low, high = int(start), int(end or start)
+        if any(low <= n <= high for n in touched):
+            return True
+    return False
+
+
 def findings_to_triage(diff: RunDiff, limit: int) -> list[dict[str, Any]]:
     """The findings worth spending money on: the new ones, worst first, capped.
 
@@ -204,8 +227,13 @@ def evaluate(base_report: dict[str, Any] | None, head_report: dict[str, Any],
     # opened. A finding that cites no line is kept: it cannot be shown to be
     # pre-existing, and dropping it would hide something on a technicality.
     if plan.scoped and plan.lines:
+        # Keep only findings on a changed line, and stamp `introduced` on each so the
+        # gate can tell a finding this change PROVED it added (cited line inside a hunk)
+        # from one merely kept because it could not be shown pre-existing (no line). Only
+        # the former lets an agent finding block a merge — see RunDiff.gating.
         diff = RunDiff(
-            new=[f for f in diff.new if _touches_change(f, plan.lines)],
+            new=[{**f, "introduced": _provably_introduced(f, plan.lines)}
+                 for f in diff.new if _touches_change(f, plan.lines)],
             fixed=diff.fixed,
             unchanged=diff.unchanged,
             caveats=diff.caveats,
@@ -300,6 +328,26 @@ def demo() -> None:
     scoped20 = evaluate(report([]), head20, plan_scan(files20))
     assert len(scoped20["new"]) == 1, [f["title"] for f in scoped20["new"]]
     assert scoped20["new"][0]["title"] == "the injection this PR added"
+
+    # An agent finding ON a changed line now BLOCKS — the fix for Mendor-lab#14, where a
+    # recon-confirmed IDOR and a privilege escalation sat in a non-blocking fold. A
+    # confirmed agent finding the change introduced must carry the merge decision.
+    idor = {**rec("cross-tenant IDOR the PR added", 66),
+            "triage": {"verdict": "exploitable"}}
+    v = evaluate(report([]), report([idor]), plan_scan(files20))
+    assert v["new"][0].get("introduced") is True, "cited line in a hunk ⇒ introduced"
+    assert v["gating"] and v["new_reachable"], "an introduced agent finding must gate"
+    assert v["exit_code"] == 2, f"must block (exit 2), got {v['exit_code']}"
+
+    # ...but a line-less agent finding still cannot be shown introduced, so it stays an
+    # observation and never gates — the vulnshop#25 false-positive stays closed.
+    noline = {**rec("an authz smell with no line", 1),
+              "triage": {"verdict": "exploitable"},
+              "location": {"method": "STATIC", "path": "app.py", "parameter": None,
+                           "source_file": "app.py"}}
+    v2 = evaluate(report([]), report([noline]), plan_scan(files20))
+    assert v2["observations"] and not v2["gating"], "no line ⇒ observation only"
+    assert v2["exit_code"] == 0, f"line-less agent finding must not block, got {v2['exit_code']}"
 
     # A candidate spanning a RANGE counts if it overlaps the change at all — recon's
     # best findings are about whole handlers, not single lines.

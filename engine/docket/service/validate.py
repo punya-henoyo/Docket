@@ -503,6 +503,79 @@ def validate_patch(*, base_root: str | Path, patched_root: str | Path,
     return Validation(VERIFIED, gates, None, evidence)
 
 
+def validate_agent_patch(*, base_root: str | Path, patched_root: str | Path,
+                         exploit_closed: bool, timeout_sec: int = 600,
+                         scan: Callable[..., ScanOutcome] = scan_tree) -> Validation:
+    """Verify a fix for an AGENT finding (recon/*), which no scanner can see.
+
+    `validate_patch` proves a fix by a semgrep rule flipping from firing to silent. A
+    logic bug — IDOR, privilege escalation, cross-tenant authz — fires no rule, so that
+    path bails at `positive_control` and nothing ever ships. The ORACLE here is instead
+    `exploit_closed`: the same agent judgement that FOUND the bug, re-run against the
+    patched tree (core/triage via service/fix._verify_step), asked whether the patch shut
+    the path. semgrep still runs, but ONLY as a regression guard — the fix must not add a
+    new scanner finding or break the parse.
+
+    Two honest tiers, and the evidence says which: a scanner-verified fix is proven by a
+    rule going quiet; an agent-verified fix by an independent agent re-reading the code
+    and finding the path closed. `verified_by` records it so a fix PR never overclaims.
+
+    positive_control  triage already confirmed the finding exploitable on the base tree —
+                      that IS the pre-fix control, so it is True by construction here.
+    target_absent     the agent verdict: True only when the exploit path is now closed.
+    Pairs, not keys, for the regression gates: a fix that inserts lines shifts unrelated
+    findings down, which at key granularity reads as a vanish plus an appearance. At
+    (rule, file) granularity the count is unchanged, so a real new/lost finding is caught
+    and a line-shift is not.
+    """
+    before = scan(base_root, timeout_sec=timeout_sec)
+    after = scan(patched_root, timeout_sec=timeout_sec)
+    evidence: dict = {
+        "verified_by": "agent",
+        "tests": ("not run — executing a pull request's own test command on this host is "
+                  "arbitrary code execution from an untrusted source. Gate 7 is recorded "
+                  "as not established; the repository's CI runs it on the fix branch."),
+    }
+    if before.error or after.error:
+        evidence["scanner_error"] = {"pristine": before.error, "patched": after.error}
+        return Validation(INCONCLUSIVE, dict.fromkeys(GATES), None, evidence)
+
+    before_pairs = Counter(_pair(key) for key in before.keys)
+    after_pairs = Counter(_pair(key) for key in after.keys)
+    gained = {p: after_pairs[p] - before_pairs[p]
+              for p in after_pairs if after_pairs[p] > before_pairs[p]}
+    lost = {p: before_pairs[p] - after_pairs[p]
+            for p in before_pairs if after_pairs[p] < before_pairs[p]}
+
+    gates: dict[str, bool | None] = dict.fromkeys(GATES)
+    gates["positive_control"] = True            # triage confirmed it on base — see above
+    gates["target_absent"] = bool(exploit_closed)
+    gates["nothing_else_vanished"] = not lost
+    gates["no_new_findings"] = not gained
+    gates["parse_errors_not_increased"] = (
+        before.parse_errors is None or after.parse_errors is None
+        or after.parse_errors <= before.parse_errors)
+    gates["files_scanned_not_dropped"] = (
+        before.files_scanned is None or after.files_scanned is None
+        or after.files_scanned >= before.files_scanned)
+    gates["callers_consistent"] = callers_consistent(base_root, patched_root)
+    # tests_pass stays None for the same reason validate_patch leaves it None.
+
+    evidence |= {
+        "exploit_closed": bool(exploit_closed),
+        "findings_before": len(before.keys), "findings_after": len(after.keys),
+        "appeared": [[*p, c] for p, c in sorted(gained.items())[:MAX_LISTED]],
+        "vanished": [[*p, c] for p, c in sorted(lost.items())[:MAX_LISTED]],
+    }
+
+    failed = next((g for g in _DIAGNOSTIC_ORDER if gates.get(g) is False), None)
+    if failed is None and gates["target_absent"] is False:
+        failed = "target_absent"
+    status = VERIFIED if failed is None and all(
+        gates[g] for g in GATES if gates[g] is not None) else NOT_FIXED
+    return Validation(status, gates, failed, evidence)
+
+
 def demo() -> None:
     target: Key = ("python.lang.security.sqli", "app/db.py", 5)
     other: Key = ("python.lang.security.cmdi", "app/shell.py", 12)
@@ -697,6 +770,29 @@ def demo() -> None:
 
     # Only this module may produce the string delivery.py branches on.
     assert VERIFIED == "verified_fixed"
+
+    # --- validate_agent_patch: the oracle for recon findings a scanner cannot see ------
+    clean = ScanOutcome(keys=frozenset({target}), files_scanned=10, parse_errors=0)
+    # Same scanner findings before and after (the logic fix touched no rule), and the
+    # agent says the exploit path is closed -> verified.
+    agent_ok = validate_agent_patch(base_root="b", patched_root="p", exploit_closed=True,
+                                    scan=scanner(clean, clean))
+    assert agent_ok.status == VERIFIED, agent_ok
+    assert agent_ok.evidence["verified_by"] == "agent", agent_ok.evidence
+    assert agent_ok.gates["positive_control"] is True and agent_ok.gates["tests_pass"] is None
+
+    # The agent says the exploit still works -> not_fixed, whatever semgrep shows.
+    agent_open = validate_agent_patch(base_root="b", patched_root="p", exploit_closed=False,
+                                      scan=scanner(clean, clean))
+    assert agent_open.status == NOT_FIXED and agent_open.failed_gate == "target_absent", agent_open
+
+    # A patch that closes the target but ADDS a new scanner finding is refused as a
+    # regression, even though the agent verified the original path.
+    plus_bug = ScanOutcome(keys=frozenset({target, other}), files_scanned=10, parse_errors=0)
+    regressed = validate_agent_patch(base_root="b", patched_root="p", exploit_closed=True,
+                                     scan=scanner(clean, plus_bug))
+    assert regressed.status == NOT_FIXED and regressed.gates["no_new_findings"] is False, regressed
+
     print("service.validate: ok")
 
 
