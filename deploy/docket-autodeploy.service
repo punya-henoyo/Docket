@@ -1,0 +1,11 @@
+[Unit]
+Description=docket console — redeploy when origin/main moves
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/sarthak/Docket/deploy/docket-autodeploy.sh
+# Root is needed for `systemctl restart docket` and `docker build`; the script drops to
+# the repo owner for every git operation, so the working tree never becomes root-owned.
+User=root

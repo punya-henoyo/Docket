@@ -1,0 +1,14 @@
+[Unit]
+Description=Poll origin/main every 2 minutes and redeploy docket on change
+
+[Timer]
+# 2 min is the deploy latency ceiling. A quiet run is one `git fetch` and nothing else,
+# so this is cheap enough to leave running; shorten it if someone is waiting on a deploy
+# during a demo.
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=docket-autodeploy.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,27 @@
+[Unit]
+Description=docket console (docket connect) on 127.0.0.1:8765
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=sarthak@gptfyai.onmicrosoft.com
+WorkingDirectory=/home/sarthak/Docket
+# WorkingDirectory matters: oauth_config() in interface/connect.py calls load_dotenv()
+# on every request and reads .env relative to the cwd. Start this anywhere else and
+# GitHub silently reads as unconfigured — /api/session answers configured:false and the
+# Connect button does nothing, with no error to explain why.
+ExecStart=/home/sarthak/Docket/.venv/bin/docket connect
+
+# The whole reason this unit exists. Before it, docket ran as a bare login-session
+# process (PID 404811, `docket connect` under a shell): it did not survive a reboot,
+# nothing restarted it, and nothing recorded that it had stopped.
+Restart=always
+RestartSec=5
+
+StandardOutput=append:/var/log/docket-console.log
+StandardError=append:/var/log/docket-console.log
+
+[Install]
+WantedBy=multi-user.target
