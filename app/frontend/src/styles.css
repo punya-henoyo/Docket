@@ -688,3 +688,20 @@ table.flagged td.mono { font-family: var(--mono); }
 }
 .donut-legend > span { display: flex; align-items: center; gap: 8px; }
 .donut-legend .n { margin-left: auto; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* Dashboard scope selector — a native <select> styled as a dark pill dropdown so the
+   whole-org / single-repo choice sits inline with the page title. */
+.scope-select { position: relative; display: inline-flex; }
+.scope-select::after {
+  content: "\25BE"; position: absolute; right: 11px; top: 50%; transform: translateY(-50%);
+  color: var(--ink-3); font-size: 10px; pointer-events: none;
+}
+.scope-select select {
+  appearance: none; -webkit-appearance: none;
+  background: var(--card); color: var(--ink);
+  border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  font: 600 13px var(--sans); padding: 6px 30px 6px 12px; cursor: pointer;
+  max-width: 280px; text-overflow: ellipsis;
+}
+.scope-select select:hover { border-color: var(--ink-3); }
+.scope-select select:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
