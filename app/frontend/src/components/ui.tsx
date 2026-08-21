@@ -1,5 +1,47 @@
+import { useEffect } from "react";
 import type { ReactNode } from "react";
 import type { Cvss, Finding, Severity } from "../types";
+
+/** A right-side sheet for detail that would otherwise push a list down the page. Closes on
+ *  Escape or a click on the scrim; locks the page scroll behind it so only the sheet moves.
+ *  Reusable: pass a title, optional subtitle actions, and any body. */
+export function Drawer({ title, subtitle, onClose, children }: {
+  title: ReactNode;
+  subtitle?: ReactNode;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return (
+    <div className="drawer-scrim" onClick={onClose}>
+      <aside className="drawer" role="dialog" aria-modal="true"
+             onClick={(e) => e.stopPropagation()}>
+        <header className="drawer-head">
+          <span style={{ minWidth: 0, flex: 1 }}>
+            <span className="drawer-title clip">{title}</span>
+            {subtitle && (
+              <span className="note" style={{ fontSize: 11.5, display: "block", marginTop: 2 }}>
+                {subtitle}
+              </span>
+            )}
+          </span>
+          <button className="drawer-close" onClick={onClose} aria-label="Close">×</button>
+        </header>
+        <div className="drawer-body">{children}</div>
+      </aside>
+    </div>
+  );
+}
 
 export function Panel({
   title,

@@ -716,3 +716,34 @@ table.flagged td.mono { font-family: var(--mono); }
   display: grid; place-items: center;
   font: 700 12px var(--sans); color: var(--ink-2);
 }
+
+/* Right-side detail sheet (findings, and reusable elsewhere). Slides in over the list so
+   you never scroll away from what you clicked; the scrim dims and closes on click. */
+.drawer-scrim {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex; justify-content: flex-end;
+  animation: drawer-fade 0.12s ease;
+}
+.drawer {
+  width: min(600px, 94vw); height: 100%;
+  background: var(--card); border-left: 1px solid var(--line-2);
+  box-shadow: -18px 0 44px -30px rgba(0, 0, 0, 0.8);
+  display: flex; flex-direction: column;
+  animation: drawer-in 0.16s ease;
+}
+@keyframes drawer-fade { from { opacity: 0; } }
+@keyframes drawer-in { from { transform: translateX(26px); opacity: 0.4; } }
+.drawer-head {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 14px 16px; border-bottom: 1px solid var(--line); flex: none;
+}
+.drawer-title { display: block; font: 600 14.5px var(--sans); color: var(--ink); letter-spacing: -0.01em; }
+.drawer-close {
+  appearance: none; border: 0; background: var(--raised); color: var(--ink-2);
+  width: 28px; height: 28px; border-radius: 7px; cursor: pointer;
+  font-size: 17px; line-height: 1; flex: none;
+  display: grid; place-items: center;
+}
+.drawer-close:hover { background: var(--line-2); color: var(--ink); }
+.drawer-body { overflow-y: auto; padding: 16px 18px 26px; flex: 1; }
