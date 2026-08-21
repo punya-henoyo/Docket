@@ -5,6 +5,26 @@ import { FindingDetail, FindingsTable } from "../components/FindingsTable";
 import { Empty, Panel } from "../components/ui";
 import { cweLabel } from "../cwe";
 
+const SEV_COLOR: Record<Severity, string> = {
+  critical: "var(--crit)",
+  high: "var(--high)",
+  medium: "var(--med)",
+  low: "var(--low)",
+  info: "var(--info)",
+};
+
+const titleCase = (s: string) => s[0].toUpperCase() + s.slice(1);
+
+/** Findings.
+ *
+ *  Severity is a segmented control, not a row of buttons: the active filter used to wear
+ *  the primary-CTA fill, so a filter state looked like the page's main action. Selection
+ *  here is a raised cell with a brand underline, which leaves exactly one filled button
+ *  on any page.
+ *
+ *  Verdict and CWE filters share one bar with a single "showing n of m" and a single
+ *  clear. Previously each rendered its own row, so two active filters printed the same
+ *  count twice on two lines with two clears. */
 export function Findings({
   findings,
   selected,
@@ -33,6 +53,12 @@ export function Findings({
     [findings],
   );
 
+  const bySeverity = useMemo(() => {
+    const acc: Partial<Record<Severity, number>> = {};
+    for (const f of findings) acc[f.severity] = (acc[f.severity] ?? 0) + 1;
+    return acc;
+  }, [findings]);
+
   const shown = useMemo(
     () =>
       findings
@@ -45,51 +71,66 @@ export function Findings({
   );
 
   const active = selected && shown.some((f) => f.id === selected.id) ? selected : shown[0] ?? null;
+  const filtered = shown.length !== findings.length;
+  const repoLabel = (scan?.repo || "").replace(/^github:/, "");
+
+  const clearAll = () => {
+    setFilter("all");
+    onCweSelect(null);
+    onVerdictSelect(null);
+  };
 
   return (
     <>
       <div className="page-head">
-        <h1>Findings</h1>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+          <h1>Findings</h1>
+          {repoLabel && (
+            <span className="note" style={{ fontSize: 13 }}>
+              {repoLabel}{scan?.ref ? ` @ ${scan.ref}` : ""}
+            </span>
+          )}
+        </div>
         <div className="head-actions">
-          <button
-            className={filter === "all" ? "btn primary" : "btn"}
-            onClick={() => setFilter("all")}
-          >
-            all {findings.length}
-          </button>
-          {present.map((s) => (
-            <button
-              key={s}
-              className={filter === s ? "btn primary" : "btn"}
-              onClick={() => setFilter(s)}
-            >
-              {s} {findings.filter((f) => f.severity === s).length}
-            </button>
-          ))}
+          <button className="btn primary" onClick={onGoRepos}>New scan</button>
         </div>
       </div>
 
-      {verdictFilter && (
-        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-          <span className="chip">triage: {verdictFilter.replace("_", " ")}</span>
-          <span className="note">
-            showing {shown.length} of {findings.length}
-          </span>
-          <button className="btn sm" onClick={() => onVerdictSelect(null)}>
-            clear
+      {findings.length > 0 && (
+        <div className="segmented" role="group" aria-label="Filter by severity">
+          <button aria-pressed={filter === "all"} onClick={() => setFilter("all")}>
+            All <span className="n">{findings.length}</span>
           </button>
+          {present.map((s) => (
+            <button key={s} aria-pressed={filter === s} onClick={() => setFilter(s)}>
+              <span className="dot" style={{ background: SEV_COLOR[s] }} />
+              {titleCase(s)} <span className="n">{bySeverity[s]}</span>
+            </button>
+          ))}
         </div>
       )}
 
-      {cweFilter && (
-        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-          <span className="chip">{cweLabel(cweFilter)}</span>
-          <span className="note">
-            showing {shown.length} of {findings.length}
+      {(filtered || verdictFilter || cweFilter) && (
+        <div className="filterbar">
+          <span className="count">
+            Showing <span className="n">{shown.length}</span> of {findings.length}
           </span>
-          <button className="btn sm" onClick={() => onCweSelect(null)}>
-            clear
-          </button>
+          {(verdictFilter || cweFilter) && <span className="sep" />}
+          {verdictFilter && (
+            <span className="chip dismiss">
+              triage: {verdictFilter.replace("_", " ")}
+              <button onClick={() => onVerdictSelect(null)}
+                      aria-label="Clear triage filter">×</button>
+            </span>
+          )}
+          {cweFilter && (
+            <span className="chip dismiss">
+              {cweLabel(cweFilter)}
+              <button onClick={() => onCweSelect(null)}
+                      aria-label="Clear CWE filter">×</button>
+            </span>
+          )}
+          <button className="clear" onClick={clearAll}>Clear all</button>
         </div>
       )}
 
@@ -108,6 +149,13 @@ export function Findings({
                 Pick a repository
               </button>
             )}
+          </Empty>
+        </Panel>
+      ) : shown.length === 0 ? (
+        <Panel>
+          <Empty>
+            <div>No finding matches these filters.</div>
+            <button className="btn" onClick={clearAll}>Clear all filters</button>
           </Empty>
         </Panel>
       ) : (

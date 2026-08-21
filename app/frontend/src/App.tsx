@@ -295,14 +295,17 @@ export default function App() {
 
   const scanning = scan?.status === "queued" || scan?.status === "fetching" || scan?.status === "scanning";
 
+  // The repo of the RUNNING scan, which is not necessarily the displayed one.
+  const liveRepo = (runs.find((r) => r.run_name === liveId)?.target ?? "")
+    .replace(/^github:/, "")
+    .split("@")[0] || null;
+
   return (
     <div className="shell">
       <nav className="rail">
         <div className="brand">
-          <div className="brand-mark">
-            Henoyo<span className="brand-dot">.</span>
-          </div>
-          <div className="brand-product">docket</div>
+          <span className="brand-tile" aria-hidden="true" />
+          <span className="brand-mark">docket</span>
         </div>
 
         {session?.login && (
@@ -340,25 +343,23 @@ export default function App() {
         ))}
 
         <div className="rail-sep" />
-        <div className="rail-foot">$ docket connect</div>
+        <div className="rail-foot">
+          <span>by Henoyo</span>
+          <span className="v">v0.1.0</span>
+        </div>
       </nav>
 
       <main className="main">
         {liveId && scan?.id !== liveId && (
-          <div
-            className="note"
-            style={{
-              display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
-              border: "1px solid var(--ok)", borderRadius: "var(--r)",
-              padding: "10px 14px", color: "var(--ink-2)",
-              background: "color-mix(in srgb, var(--ok) 8%, transparent)",
-            }}
-          >
+          <div className="banner">
             <span className="live">●</span>
-            A scan is still running. You are looking at a different run.
-            <button className="btn primary" style={{ marginLeft: "auto" }}
-                    onClick={resumeLive}>
-              Back to the live scan
+            <span>
+              A scan is still running
+              {liveRepo ? <> on <b>{liveRepo}</b></> : null}. You are looking at a
+              different run.
+            </span>
+            <button className="btn primary" onClick={resumeLive}>
+              Go to the live scan
             </button>
           </div>
         )}
