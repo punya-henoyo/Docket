@@ -40,6 +40,28 @@ fi
 log "deploying ${LOCAL:0:8} -> ${REMOTE:0:8}"
 "${GIT[@]}" pull --ff-only --quiet origin "$BRANCH" || { log "pull failed"; exit 1; }
 
+# THE FRONTEND IS PART OF THE DEPLOY TOO, AND IT FAILS THE SAME SILENT WAY AS THE IMAGE.
+#
+# The console serves app/frontend/dist, which is .gitignored and built separately — so a
+# pull alone leaves the UI on the PREVIOUS commit while /api/session answers 200 and the
+# page looks perfectly healthy. Rebuild when the frontend source moved (dist is ignored,
+# so it never shows in the diff and never triggers this itself). Built as the repo owner,
+# not root, so node_modules/ and dist/ never become root-owned and unwritable to the next
+# non-root run. Fails loudly and rolls back rather than serving a stale UI over new code.
+if "${GIT[@]}" diff --name-only "$LOCAL" "$REMOTE" | grep -qE '^app/frontend/'; then
+    log "frontend moved — rebuilding app/frontend/dist"
+    if ! command -v npm >/dev/null 2>&1; then
+        log "npm is not installed on this host — cannot build the frontend. Rolling back to ${LOCAL:0:8}"
+        "${GIT[@]}" reset --hard --quiet "$LOCAL"
+        exit 1
+    fi
+    if ! sudo -u "$GIT_USER" bash -lc "cd '$REPO/app/frontend' && npm ci --silent && npm run build" >/dev/null 2>&1; then
+        log "frontend build FAILED — rolling back to ${LOCAL:0:8}, not serving a stale UI over new code"
+        "${GIT[@]}" reset --hard --quiet "$LOCAL"
+        exit 1
+    fi
+fi
+
 # THE SANDBOX IMAGE IS PART OF THE DEPLOY, AND IT IS THE HALF THAT FAILS SILENTLY.
 #
 # runtime/sandbox.py build_image() is `if not force and image_exists(image): return False`
