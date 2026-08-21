@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { Finding, ScanState, Severity, Verdict } from "../types";
 import { SEVERITIES } from "../types";
 import { FindingDetail, FindingsTable } from "../components/FindingsTable";
-import { Empty, Panel } from "../components/ui";
+import { Drawer, Empty, findingLocation, Panel, ruleLeaf, SevTag } from "../components/ui";
 import { cweLabel } from "../cwe";
 
 const SEV_COLOR: Record<Severity, string> = {
@@ -38,7 +38,7 @@ export function Findings({
 }: {
   findings: Finding[];
   selected: Finding | null;
-  onSelect: (f: Finding) => void;
+  onSelect: (f: Finding | null) => void;
   scan: ScanState | null;
   onGoRepos: () => void;
   cweFilter: string | null;
@@ -70,7 +70,9 @@ export function Findings({
     [findings, filter, cweFilter, verdictFilter],
   );
 
-  const active = selected && shown.some((f) => f.id === selected.id) ? selected : shown[0] ?? null;
+  // The finding whose detail sheet is open — only when the user actually picked one, so
+  // the drawer never auto-opens on the first row the way the old below-table panel did.
+  const active = selected && shown.some((f) => f.id === selected.id) ? selected : null;
   const filtered = shown.length !== findings.length;
   const repoLabel = (scan?.repo || "").replace(/^github:/, "");
 
@@ -164,9 +166,18 @@ export function Findings({
             <FindingsTable findings={shown} selectedId={active?.id} onSelect={onSelect} />
           </Panel>
           {active && (
-            <Panel>
+            <Drawer
+              onClose={() => onSelect(null)}
+              title={
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <SevTag severity={active.severity} />
+                  {ruleLeaf(active.rule_id)}
+                </span>
+              }
+              subtitle={<>{findingLocation(active)}{active.cwe ? ` · ${cweLabel(active.cwe)}` : ""}</>}
+            >
               <FindingDetail finding={active} />
-            </Panel>
+            </Drawer>
           )}
         </>
       )}
