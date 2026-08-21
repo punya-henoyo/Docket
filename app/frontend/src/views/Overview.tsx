@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Finding, RunSummary, ScanState, Severity, WatchState } from "../types";
+import type { Finding, FixPr, RunSummary, ScanState, Severity, WatchState } from "../types";
 import { SEVERITIES } from "../types";
 import { cweLabel } from "../cwe";
 import { SeverityDonut, StackedRuns } from "../components/charts";
@@ -37,6 +37,7 @@ export function Overview({
   scan,
   runs,
   watch,
+  fixes,
   onGoFindings,
   onGoRepos,
   onGoPulls,
@@ -46,6 +47,7 @@ export function Overview({
   scan: ScanState | null;
   runs: RunSummary[];
   watch: WatchState | null;
+  fixes: FixPr[];
   onGoFindings: () => void;
   onGoRepos: () => void;
   onGoPulls: () => void;
@@ -117,13 +119,12 @@ export function Overview({
       .slice(0, 8),
     [latestByRepo]);
 
+  // Fix PRs from the durable /api/fixes source (live GitHub), not the watcher's memory —
+  // so this survives a console restart. Newest first.
   const fixPrs = useMemo(
-    () => (watch?.results ?? [])
-      .filter((r) => r.fix?.number)
-      .sort((a, b) => b.at - a.at),
-    [watch],
+    () => [...fixes].sort((a, b) => b.at - a.at),
+    [fixes],
   );
-  const filesFixed = (r: (typeof fixPrs)[number]) => r.fix?.files?.length ?? 0;
 
   // ── the scoped scan: single-repo detail comes from a loaded ScanState ─────────────
   const scopeRun = scope !== "all" ? latestByRepo.get(scope) ?? null : null;
@@ -208,16 +209,16 @@ export function Overview({
         <>
           <div className="rows">
             {scopedFix.slice(0, 4).map((r) => (
-              <a key={`${r.repo}#${r.number}`} href={r.fix!.url}
+              <a key={`${r.repo}#${r.fix.number}`} href={r.fix.url}
                  target="_blank" rel="noreferrer"
-                 title={`Fix for ${r.repo} #${r.number} — opens on GitHub`}>
+                 title={`Fix PR #${r.fix.number} in ${r.repo} — opens on GitHub`}>
                 <span style={{ minWidth: 0, flex: 1 }}>
                   <span className="clip" style={{ display: "block", fontSize: 13.5 }}>
-                    {r.title || `#${r.number}`}
+                    {r.title || `Fix #${r.fix.number}`}
                   </span>
-                  <span className="path" style={{ display: "block", fontSize: 11.5 }}>
-                    #{r.number} → fix #{r.fix!.number} · {filesFixed(r)} file
-                    {filesFixed(r) === 1 ? "" : "s"}
+                  <span className="path clip" style={{ display: "block", fontSize: 11.5 }}>
+                    {scope === "all" ? `${r.repo} · ` : ""}
+                    {r.number ? `#${r.number} → ` : ""}fix #{r.fix.number}
                   </span>
                 </span>
                 <span className="tag" style={{ background: "rgba(18,183,106,0.12)",
