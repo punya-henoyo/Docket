@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
 import { ApiError } from "./api";
 import type {
-  Finding, Repo, RunSummary, ScanState, Session, Severity, Verdict, WatchState,
+  Finding, FixPr, Repo, RunSummary, ScanState, Session, Severity, Verdict, WatchState,
 } from "./types";
 import { Overview } from "./views/Overview";
 import { Scan } from "./views/Scan";
@@ -52,6 +52,9 @@ export default function App() {
   const [watch, setWatch] = useState<WatchState | null>(null);
   const [watchBusy, setWatchBusy] = useState(false);
   const [watchError, setWatchError] = useState<string | null>(null);
+  // Fix PRs read live from GitHub, so "Fixes shipped" survives a restart. Polled slower
+  // than the watcher — each pull hits GitHub per repo, and open fix PRs change rarely.
+  const [fixes, setFixes] = useState<FixPr[]>([]);
   const [liveId, setLiveId] = useState<string | null>(
     () => sessionStorage.getItem("docket.liveId"),
   );
@@ -93,6 +96,19 @@ export default function App() {
         .catch(() => {});
     pull();
     const id = setInterval(pull, 5000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  // Fix PRs, read from GitHub so the dashboard shows them regardless of restarts. Every
+  // 30s: infrequent because it costs a GitHub call per repo and open fix PRs are stable.
+  useEffect(() => {
+    let alive = true;
+    const pull = () =>
+      api.github.getFixes()
+        .then((f) => { if (alive) setFixes(f); })
+        .catch(() => {});
+    pull();
+    const id = setInterval(pull, 30000);
     return () => { alive = false; clearInterval(id); };
   }, []);
 
@@ -385,6 +401,7 @@ export default function App() {
             scan={scan}
             runs={runs}
             watch={watch}
+            fixes={fixes}
             onGoFindings={() => go("findings")}
             onGoRepos={() => go("repos")}
             onGoPulls={() => go("pulls")}

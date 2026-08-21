@@ -1546,6 +1546,54 @@ def list_runs() -> list[dict[str, Any]]:
     return runs
 
 
+def list_fix_prs() -> list[dict[str, Any]]:
+    """Open `docket/fix/*` pull requests, read LIVE from GitHub.
+
+    The dashboard's "Fixes shipped" used to read the PR watcher's in-memory results, which
+    a console restart wipes — so after every autodeploy the panel went blank even though
+    the fix PRs were still open on GitHub. This reads the durable source instead: every fix
+    docket opened is a branch named `docket/fix/<original-PR>-<sha>`, so listing open PRs
+    whose head matches that prefix reconstructs the panel from reality, restart or not.
+
+    Repos are the union of what is watched and what has been scanned, so a fix shows even
+    if its repo is not currently under watch. A per-repo call failing is skipped, not
+    fatal — one unreachable repo must not blank the whole panel.
+    """
+    token = SESSION.token
+    if not token:
+        return []
+    repos: set[str] = set(SESSION.watch.get("repos") or [])
+    for r in list_runs():
+        target = str(r.get("target") or "")
+        if target.startswith("github:"):
+            repos.add(target.removeprefix("github:").split("@")[0])
+
+    fixes: list[dict[str, Any]] = []
+    for repo in sorted(repos):
+        try:
+            prs = _api(f"/repos/{repo}/pulls?state=open&per_page=100", token) or []
+        except Exception:  # noqa: BLE001 — one bad repo must not sink the list
+            continue
+        for pr in prs if isinstance(prs, list) else []:
+            head = str(((pr.get("head") or {}).get("ref")) or "")
+            if not head.startswith("docket/fix/"):
+                continue
+            match = re.match(r"docket/fix/(\d+)-", head)
+            fixes.append({
+                "repo": repo,
+                # The PULL REQUEST the fix targets, parsed from the branch name — that is
+                # what the dashboard threads the fix back to.
+                "number": int(match.group(1)) if match else None,
+                "title": pr.get("title") or "",
+                "fix": {"number": pr.get("number"), "url": pr.get("html_url")},
+                # No created_at parse needed: fix PR numbers rise monotonically, so the
+                # number sorts newest-first and doubles as the `at` the frontend reads.
+                "at": int(pr.get("number") or 0),
+            })
+    fixes.sort(key=lambda f: f["at"], reverse=True)
+    return fixes
+
+
 DOWNLOAD_FORMATS = {
     "json": ("report.json", "application/json"),
     "sarif": ("report.sarif", "application/json"),
@@ -1729,6 +1777,10 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self._static(path)
             elif path == "/api/runs":
                 self._json(200, {"runs": list_runs()})
+            elif path == "/api/fixes":
+                # Durable "Fixes shipped": read from GitHub, not the watcher's memory, so
+                # it survives a restart. See list_fix_prs.
+                self._json(200, {"fixes": list_fix_prs()})
             elif path.startswith("/api/download/"):
                 rest = path[len("/api/download/"):]
                 name, _, fmt = rest.rpartition(".")

@@ -155,6 +155,17 @@ export interface WatchState {
   results: PrResult[];
 }
 
+/** A fix PR docket opened, read live from GitHub (`/api/fixes`) so the dashboard's
+ *  "Fixes shipped" survives a console restart, unlike the watcher's in-memory results. */
+export interface FixPr {
+  repo: string;
+  /** The original PR the fix targets, parsed from the `docket/fix/<n>-<sha>` branch. */
+  number: number | null;
+  title: string;
+  fix: { number: number; url: string };
+  at: number;
+}
+
 export interface EntryPoint {
   method?: string;
   path?: string;

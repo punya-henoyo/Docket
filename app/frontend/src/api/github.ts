@@ -1,9 +1,12 @@
 /** GitHub connect: session, repo picking, repo-scan lifecycle.
  *  Served by engine/docket/interface/connect.py. */
-import type { Repo, ScanState, Session, WatchState } from "../types";
+import type { FixPr, Repo, ScanState, Session, WatchState } from "../types";
 import { postJson, req } from "./client";
 
 export const getSession = () => req<Session>("/api/session");
+
+/** Fix PRs read live from GitHub — durable across restarts, unlike the watcher's memory. */
+export const getFixes = () => req<{ fixes: FixPr[] }>("/api/fixes").then((r) => r.fixes);
 
 export const getRepos = () => req<{ repos: Repo[] }>("/api/repos").then((r) => r.repos);
 
