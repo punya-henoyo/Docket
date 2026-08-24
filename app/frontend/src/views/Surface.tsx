@@ -1,4 +1,5 @@
 import type { ScanState } from "../types";
+import { AttackPaths } from "../components/AttackPaths";
 import { SurfacePanel } from "../components/SurfacePanel";
 import { Empty, Panel } from "../components/ui";
 
@@ -32,7 +33,10 @@ export function Surface({ scan, onGoRepos }: {
           </Empty>
         </Panel>
       ) : (
-        <SurfacePanel scan={scan} title="" />
+        <>
+          {scan?.surface && <AttackPaths surface={scan.surface} />}
+          <SurfacePanel scan={scan} title="" />
+        </>
       )}
     </>
   );
