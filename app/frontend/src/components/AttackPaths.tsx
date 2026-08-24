@@ -5,10 +5,10 @@ import { Drawer, Panel } from "./ui";
 /** Attack paths — the recon candidates drawn as reachable-input → dangerous-sink, each a
  *  button that opens the full flow and the agent's reasoning in a drawer.
  *
- *  Built from data the Surface tab already has: each candidate carries a sink (file:line)
- *  and a prose `why`; the source is the entry point whose route the candidate names. When
- *  no entry point matches, the source reads "attacker input" rather than inventing one.
- *  This is a visual layer over the candidate list below, not a replacement for it. */
+ *  Built from data the Surface tab already has (entry_points + candidates), so it is a
+ *  visual layer over the candidate list below, not a replacement. A candidate that names
+ *  a route becomes a path (entry → sink); a config/source weakness with no route (a
+ *  hardcoded secret, debug mode) becomes a single node, not a fake "GET /" source. */
 
 type Risk = { label: string; cls: "crit" | "high" | "med" };
 
@@ -22,34 +22,42 @@ function riskOf(title: string): Risk {
 }
 const rank = (r: Risk) => (r.cls === "crit" ? 0 : r.cls === "high" ? 1 : 2);
 
-/** The route the candidate is about, matched to a mapped entry point. */
+/** The SPECIFIC route a candidate names, matched to a mapped entry point — longest match
+ *  wins and the bare "/" is never a match, so a candidate about /admin/logs no longer
+ *  resolves to the root route. Returns null for candidates that name no route. */
 function matchEntry(cand: Candidate, entries: EntryPoint[]): EntryPoint | null {
-  const paths = (cand.title ?? "").match(/\/[A-Za-z0-9_<>:./-]+/g) ?? [];
-  for (const p of paths) {
-    const hit = entries.find(
-      (e) => e.path && (e.path === p || e.path.startsWith(p) || p.startsWith(e.path)));
-    if (hit) return hit;
+  const tokens = (cand.title ?? "").match(/\/[A-Za-z0-9_<>:./-]+/g) ?? [];
+  let best: EntryPoint | null = null;
+  let bestLen = 0;
+  for (const p of tokens) {
+    for (const e of entries) {
+      const ep = e.path;
+      if (!ep || ep.length <= 1) continue; // never let "/" match everything
+      if ((ep === p || p.startsWith(ep) || ep.startsWith(p)) && ep.length > bestLen) {
+        best = e;
+        bestLen = ep.length;
+      }
+    }
   }
-  const f = (cand.file ?? "").split(":")[0];
-  if (f) {
-    const hit = entries.find((e) => (e.file ?? "").split(":")[0] === f);
-    if (hit) return hit;
-  }
-  return null;
+  return best;
 }
 
 const splitTitle = (title: string) => {
   const m = title.match(/\s*\(([A-Z0-9-]+)\)\s*$/);
   return { name: m ? title.slice(0, m.index).trim() : title.trim(), id: m?.[1] ?? null };
 };
-const sourceLabel = (e: EntryPoint | null) =>
-  e ? `${e.method ? e.method + " " : ""}${e.path ?? e.file ?? "route"}` : "attacker input";
+const sourceLabel = (e: EntryPoint) => `${e.method ? e.method + " " : ""}${e.path ?? e.file ?? "route"}`;
+const hasRoute = (title: string) => /\/[A-Za-z]/.test(title);
 
 export function AttackPaths({ surface }: { surface: Surface }) {
   const [open, setOpen] = useState<number | null>(null);
   const entries = surface.entry_points ?? [];
   const rows = (surface.candidates ?? [])
-    .map((c, i) => ({ c, i, entry: matchEntry(c, entries), risk: riskOf(c.title ?? "") }))
+    .map((c, i) => {
+      const entry = matchEntry(c, entries);
+      const routed = !!entry || hasRoute(c.title ?? "");
+      return { c, i, entry, routed, risk: riskOf(c.title ?? ""), ...splitTitle(c.title ?? "") };
+    })
     .sort((a, b) => rank(a.risk) - rank(b.risk));
 
   if (rows.length === 0) return null;
@@ -58,26 +66,31 @@ export function AttackPaths({ surface }: { surface: Surface }) {
   return (
     <Panel
       title="Attack paths"
-      action={<span className="note" style={{ fontSize: 12 }}>reachable input → sink · click to visualize</span>}
+      action={<span className="note" style={{ fontSize: 12 }}>reachable input → sink · click any to visualize</span>}
     >
       <div className="apaths">
-        {rows.map(({ c, i, entry, risk }) => {
-          const { name, id } = splitTitle(c.title ?? "");
-          return (
-            <button className="apath" key={i} onClick={() => setOpen(i)}>
-              <span className={`asev ${risk.cls}`}>{risk.label}</span>
-              <span className="apath-main">
-                <span className="apath-name clip">{name}{id && <span className="apath-id"> {id}</span>}</span>
-                <span className="apath-chain">
-                  <span className="anode source clip">{sourceLabel(entry)}</span>
-                  <span className="aarrow">→</span>
-                  <span className="anode sink clip">{c.file ?? "sink"}</span>
-                </span>
+        {rows.map((r) => (
+          <button className="apath" key={r.i} onClick={() => setOpen(r.i)}>
+            <span className={`asev ${r.risk.cls}`}><span className="d" />{r.risk.label}</span>
+            <span className="apath-main">
+              <span className="apath-name clip">
+                {r.name}{r.id && <span className="apath-id">{r.id}</span>}
               </span>
-              <span className="apath-go">visualize →</span>
-            </button>
-          );
-        })}
+              <span className="apath-flow">
+                {r.routed ? (
+                  <>
+                    <span className="anode source clip">{r.entry ? sourceLabel(r.entry) : "attacker input"}</span>
+                    <span className="aconn"><span className="aline" /><span className="ahead">▸</span></span>
+                    <span className="anode sink clip">{r.c.file ?? "sink"}</span>
+                  </>
+                ) : (
+                  <span className="anode weak clip">{r.c.file ?? "—"}</span>
+                )}
+              </span>
+            </span>
+            <span className="apath-chev" aria-hidden="true">›</span>
+          </button>
+        ))}
       </div>
 
       {active && (
@@ -85,39 +98,36 @@ export function AttackPaths({ surface }: { surface: Surface }) {
           onClose={() => setOpen(null)}
           title={
             <span style={{ display: "inline-flex", alignItems: "center", gap: 9 }}>
-              <span className={`asev ${active.risk.cls}`}>{active.risk.label}</span>
-              {splitTitle(active.c.title ?? "").name}
+              <span className={`asev ${active.risk.cls}`}><span className="d" />{active.risk.label}</span>
+              {active.name}
             </span>
           }
-          subtitle={splitTitle(active.c.title ?? "").id ?? active.c.file}
+          subtitle={active.id ?? active.c.file}
         >
-          <div className="apath-flow">
+          <div className="apath-flow-v">
             <div className="anode source big">
-              <span className="t">Entry · attacker-reachable</span>
-              <span className="loc">{sourceLabel(active.entry)}</span>
+              <span className="t">{active.routed ? "Entry · attacker-reachable" : "Weakness · source"}</span>
+              <span className="loc">{active.entry ? sourceLabel(active.entry) : active.routed ? "attacker input" : active.c.file}</span>
               {active.entry?.auth && <span className="d">auth: {active.entry.auth}</span>}
               {active.entry?.file && <span className="d">{active.entry.file}</span>}
             </div>
-            <div className="aarrow big">↓</div>
-            <div className="anode sink big">
-              <span className="t">Sink · dangerous operation</span>
-              <span className="loc">{active.c.file ?? "—"}</span>
-            </div>
+            {active.routed && (
+              <>
+                <div className="aarrow-v">↓</div>
+                <div className="anode sink big">
+                  <span className="t">Sink · dangerous operation</span>
+                  <span className="loc">{active.c.file ?? "—"}</span>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="apath-why">
             <div className="eyebrow" style={{ marginBottom: 6 }}>Why this is reachable</div>
             <p style={{ margin: 0, color: "var(--ink-2)", fontSize: 14, lineHeight: 1.65 }}>
-              {active.c.why || "The agent flagged this route but recorded no reasoning."}
+              {active.c.why || "The agent flagged this but recorded no reasoning."}
             </p>
           </div>
-
-          {!active.entry && (
-            <div className="note" style={{ marginTop: 14 }}>
-              No mapped entry point matched this candidate's route, so the source is shown
-              generically. The sink and reasoning are from recon.
-            </div>
-          )}
         </Drawer>
       )}
     </Panel>
