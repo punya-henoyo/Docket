@@ -58,7 +58,21 @@ def resolve_in_root(root: str | Path, relative: str) -> Path:
     base = Path(root).resolve()
     if not base.is_dir():
         raise SourceAccessError(f"no source tree available at {root}")
-    candidate = (base / str(relative).lstrip("/")).resolve()
+    # The agent is shown the source root as an absolute path and sometimes echoes it back,
+    # passing "/var/folders/.../src/repo" (or a child of it) where a path RELATIVE to the
+    # root is expected. Map such an in-tree absolute argument to its relative form rather
+    # than nesting it under the root a second time, which yields a path that does not exist
+    # and reads to the model as "not a directory" — a live recon failure mode that stranded
+    # the agent until it ran out of turns and mapped nothing. An absolute path OUTSIDE the
+    # tree is left untouched and still caught by the containment check below.
+    rel = str(relative)
+    if rel.startswith("/"):
+        abs_arg = Path(rel).resolve()
+        if abs_arg == base:
+            rel = "."
+        elif base in abs_arg.parents:
+            rel = str(abs_arg.relative_to(base))
+    candidate = (base / rel.lstrip("/")).resolve()
     if candidate != base and base not in candidate.parents:
         raise SourceAccessError(
             f"refused: {relative!r} resolves outside the source tree. Paths must be "
@@ -67,7 +81,7 @@ def resolve_in_root(root: str | Path, relative: str) -> Path:
     # resolve() already followed any symlink; compare against the unresolved path to
     # notice that it did. Without this, a link in the repo pointing at /etc passes the
     # containment check above, because by then the path IS /etc.
-    unresolved = base / str(relative).lstrip("/")
+    unresolved = base / rel.lstrip("/")
     if unresolved.is_symlink() or (unresolved.exists() and unresolved.resolve() != unresolved):
         if base not in unresolved.resolve().parents and unresolved.resolve() != base:
             raise SourceAccessError(f"refused: {relative!r} is a symlink out of the tree")
@@ -256,6 +270,20 @@ def demo() -> None:
         inner = list_source(root, "app")
         assert {e["path"] for e in inner["entries"]} == {"app/views.py", "app/safe.py"}
         assert next(e for e in inner["entries"] if e["path"] == "app/views.py")["lines"] == 40
+
+        # An in-tree ABSOLUTE path is honoured, not nested under the root a second time.
+        # This is the recon failure fixed in resolve_in_root: the agent passes back the
+        # absolute source path it was shown, and it used to resolve to a bogus nested path
+        # that read as "not a directory". Now it maps to the same result as the relative form.
+        abs_app = str(Path(root).resolve() / "app")
+        assert list_source(root, abs_app)["ok"], "in-tree absolute dir path must resolve"
+        assert {e["path"] for e in list_source(root, abs_app)["entries"]} == \
+            {"app/views.py", "app/safe.py"}
+        assert read_source(root, str(Path(root).resolve() / "app/views.py"))["ok"], \
+            "in-tree absolute file path must resolve"
+        assert list_source(root, str(Path(root).resolve()))["ok"], "absolute root == root"
+        # An OUTSIDE absolute path is still not readable (nested, so not-found, never escapes).
+        assert read_source(root, "/etc/passwd")["ok"] is False
 
         # --- grep -------------------------------------------------------------------
         found = grep_source(root, "escape(")
