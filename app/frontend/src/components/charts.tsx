@@ -187,11 +187,14 @@ export function StackedRuns({
           <span>{Math.round(max / 2)}</span>
           <span>0</span>
         </div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height, flex: 1,
+        {/* min-width:0 lets the plot shrink with its grid column; overflow-x:auto keeps a
+            large run count scrolling inside the card instead of widening the whole page. */}
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height, flex: 1,
+                      minWidth: 0, overflowX: "auto",
                       borderBottom: "1px solid var(--line)" }}>
           {runs.map((r, i) => (
             <div key={i} title={`${r.label}: ${r.total} finding(s)`}
-                 style={{ flex: 1, minWidth: 6, height: `${(r.total / max) * 100}%`,
+                 style={{ flex: 1, minWidth: 3, height: `${(r.total / max) * 100}%`,
                           display: "flex", flexDirection: "column-reverse",
                           borderRadius: "3px 3px 0 0", overflow: "hidden" }}>
               {SEVERITIES.filter((s) => r.counts[s]).map((s) => (
