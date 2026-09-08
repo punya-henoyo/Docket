@@ -10,35 +10,40 @@
      - Semantic colour (severity, ok, warn) is reserved for state and never used as
        decoration, so red on this page always means something is wrong. */
 :root {
-  --page: #0a0a0b;
-  --card: #101113;
-  --raised: #17181b;
-  --ink: #f2f4f7;
-  --ink-2: #98a2b3;
-  --ink-3: #667085;
-  --line: #1e2024;
-  --line-2: #2a2d33;
-  --wash: rgba(255, 255, 255, 0.045);
-  --inv-bg: #f2f4f7;
-  --inv-ink: #0a0a0b;
+  /* Henoyo Design System v1 (Cream / Editorial). Cream paper, near-black ink,
+     verdant the only brand hue. Reds/blues/ambers are system states only. */
+  --page: #F8F6F1;      /* paper-50 — the page (cream, not white) */
+  --card: #FFFEFB;      /* paper-0 — cards */
+  --raised: #F0EDE5;    /* paper-100 — soft fills / elevated */
+  --ink: #1A1F1C;       /* ink-900 — primary text */
+  --ink-2: #5A625B;     /* text-secondary — captions */
+  --ink-3: #878F85;     /* text-tertiary — labels, metadata */
+  --line: #E3DFD4;      /* paper-200 — borders */
+  --line-2: #C9C4B5;    /* paper-300 — strong borders */
+  --wash: rgba(26, 31, 28, 0.045);  /* subtle ink hover on paper */
+  --inv-bg: #1A1F1C;    /* ink-900 — dark surface on light */
+  --inv-ink: #F8F6F1;   /* paper-on-ink */
 
-  /* Identity, not state. The GitHub App icon's mint. */
-  --brand: #7fe7c4;
-  --brand-hover: #6ddcb6;
-  --brand-ink: #08110d;
+  /* Verdant — the ONLY brand hue. Green lives here, never in state. */
+  --brand: #3B6047;         /* verdant-600 — brand surface / CTA */
+  --brand-hover: #2B4A35;   /* verdant-700 */
+  --brand-ink: #FFFEFB;     /* paper-on-verdant */
+  --brand-bright: #4FA776;  /* verdant-bright — the "go" / wordmark period */
 
-  --crit: #f04438;
-  --high: #f79009;
-  --med: #fdb022;
-  --low: #2e90fa;
-  --info: #667085;
-  --ok: #12b76a;
-  --sweep: rgba(18, 183, 106, 0.2);
+  /* System states only — contrast-tuned for cream. */
+  --crit: #C0261B;   /* red */
+  --high: #C2410C;   /* orange */
+  --med: #A16207;    /* amber (gold — distinct from high's orange on cream) */
+  --low: #1D4ED8;    /* blue */
+  --info: #6B7280;   /* neutral */
+  --ok: #3B6047;     /* success = verdant (one green) */
+  --sweep: rgba(79, 167, 118, 0.18);  /* verdant tint */
 
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --r: 12px;
-  --r-sm: 8px;
+  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --r: 10px;    /* cards */
+  --r-sm: 6px;  /* buttons */
 }
 
 * { box-sizing: border-box; }
@@ -76,8 +81,10 @@ button { font: inherit; color: inherit; }
 .num { font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
 
 .eyebrow {
-  font: 500 12px/1 var(--sans);
-  color: var(--ink-2);
+  font: 500 11px/1 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  color: var(--ink-3);
 }
 
 /* ── shell ─────────────────────────────────────────────────────────────── */
@@ -133,10 +140,12 @@ button { font: inherit; color: inherit; }
   box-shadow: 0 0.8px 0 0 var(--page), 2.6px 0.8px 0 0 var(--page);
 }
 .brand-mark {
-  font: 600 19px/1 var(--sans);
-  letter-spacing: -0.02em;
+  font: italic 500 20px/1 var(--serif);
+  letter-spacing: 0;
   color: var(--ink);
 }
+/* Wordmark rule: italic voice + the one verdant moment, the period. */
+.brand-mark::after { content: "."; color: var(--brand-bright); font-style: normal; }
 
 .org {
   display: flex;
@@ -224,7 +233,7 @@ button { font: inherit; color: inherit; }
 }
 
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
-.page-head h1 { font: 600 26px var(--sans); }
+.page-head h1 { font: 500 27px/1.1 var(--serif); letter-spacing: -0.01em; }
 .head-actions { display: flex; gap: 8px; align-items: center; }
 
 /* ── controls ──────────────────────────────────────────────────────────── */
