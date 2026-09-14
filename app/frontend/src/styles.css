@@ -234,7 +234,7 @@ button { font: inherit; color: inherit; }
 
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
 .page-head h1 { font: 500 27px/1.1 var(--serif); letter-spacing: -0.01em; }
-.head-actions { display: flex; gap: 8px; align-items: center; }
+.head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ── controls ──────────────────────────────────────────────────────────── */
 .btn {
@@ -775,9 +775,9 @@ table.flagged td.mono { font-family: var(--mono); }
   padding: 3px 10px 3px 8px; border-radius: 999px; white-space: nowrap;
 }
 .asev .d { width: 6px; height: 6px; border-radius: 50%; flex: none; }
-.asev.crit { color: var(--crit); background: rgba(240,68,56,.1); } .asev.crit .d { background: var(--crit); }
-.asev.high { color: var(--high); background: rgba(247,144,9,.1); } .asev.high .d { background: var(--high); }
-.asev.med  { color: var(--med);  background: rgba(253,176,34,.1); } .asev.med .d { background: var(--med); }
+.asev.crit { color: var(--crit); background: color-mix(in srgb, var(--crit) 12%, transparent); } .asev.crit .d { background: var(--crit); }
+.asev.high { color: var(--high); background: color-mix(in srgb, var(--high) 12%, transparent); } .asev.high .d { background: var(--high); }
+.asev.med  { color: var(--med);  background: color-mix(in srgb, var(--med) 12%, transparent); } .asev.med .d { background: var(--med); }
 
 .apath-main { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .apath-name { font: 600 14px var(--sans); color: var(--ink); letter-spacing: -.01em; }
@@ -789,7 +789,7 @@ table.flagged td.mono { font-family: var(--mono); }
   background: var(--raised); border: 1px solid var(--line-2); color: var(--ink-2);
 }
 .anode.source { color: var(--ink); }
-.anode.sink { color: var(--crit); border-color: rgba(240,68,56,.4); background: rgba(240,68,56,.07); }
+.anode.sink { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 40%, transparent); background: color-mix(in srgb, var(--crit) 8%, transparent); }
 .anode.weak { color: var(--ink-2); border-style: dashed; }
 .aconn { flex: none; display: flex; align-items: center; padding: 0 2px; }
 .aline { width: 22px; height: 1px; background: linear-gradient(90deg, var(--line-2), var(--crit)); }
@@ -801,8 +801,8 @@ table.flagged td.mono { font-family: var(--mono); }
 
 .apath-flow-v { display: flex; flex-direction: column; gap: 6px; }
 .anode.big { max-width: none; display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; border-radius: 10px; }
-.anode.big.source { background: linear-gradient(180deg, rgba(240,68,56,.1), var(--raised)); border-color: rgba(240,68,56,.34); }
-.anode.big.sink { background: linear-gradient(0deg, rgba(240,68,56,.1), var(--raised)); }
+.anode.big.source { background: linear-gradient(180deg, color-mix(in srgb, var(--crit) 10%, transparent), var(--raised)); border-color: color-mix(in srgb, var(--crit) 34%, transparent); }
+.anode.big.sink { background: linear-gradient(0deg, color-mix(in srgb, var(--crit) 10%, transparent), var(--raised)); }
 .anode.big .t { font: 700 9.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--crit); }
 .anode.big .loc { font: 600 13px var(--mono); color: var(--ink); }
 .anode.big .d { font: 12px var(--mono); color: var(--ink-3); }

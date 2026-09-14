@@ -221,7 +221,7 @@ export function Overview({
                     {r.number ? `#${r.number} → ` : ""}fix #{r.fix.number}
                   </span>
                 </span>
-                <span className="tag" style={{ background: "rgba(18,183,106,0.12)",
+                <span className="tag" style={{ background: "color-mix(in srgb, var(--ok) 12%, transparent)",
                              color: "var(--ok)", font: "600 10px var(--sans)",
                              borderRadius: 5, padding: "2px 7px", flex: "none" }}>
                   OPENED

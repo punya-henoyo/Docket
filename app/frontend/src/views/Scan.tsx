@@ -156,8 +156,13 @@ export function Scan({
 
       <div className="split">
         <Panel
-          title={<span className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
-            {scan ? `${scan.repo}${scan.ref ? "@" + scan.ref : ""}` : "NO SCAN RUNNING"}
+          title={<span className="mono" title={scan ? `${scan.repo}${scan.ref ? "@" + scan.ref : ""}` : undefined}
+            style={{ fontSize: 11, color: "var(--ink-3)", display: "block",
+              flex: "0 1 auto", minWidth: 0, overflow: "hidden",
+              textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {scan
+              ? `${scan.repo}${scan.ref ? "@" + (/^[0-9a-f]{9,}$/i.test(scan.ref) ? scan.ref.slice(0, 7) : scan.ref) : ""}`
+              : "NO SCAN RUNNING"}
           </span>}
           action={<span className="mono" style={{ fontSize: 11,
             color: running ? "var(--ok)" : "var(--ink-3)" }}>
@@ -167,7 +172,7 @@ export function Scan({
           <Radar scan={scan} onSelect={onSelectFinding} newestId={newestId} />
 
           {!scan?.historical && (
-            <div className="stages" style={{ borderTop: "1px dashed rgba(255,255,255,.2)",
+            <div className="stages" style={{ borderTop: "1px dashed var(--line-2)",
                                              paddingTop: 9 }}>
               {SCANNERS.map((s) => {
                 const state = scan?.stages?.[s] ?? "pending";

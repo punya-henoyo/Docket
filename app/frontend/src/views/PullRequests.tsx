@@ -186,7 +186,7 @@ function Row({ result, selected, onSelect }: {
           display: "flex", alignItems: "center", gap: 12, width: "100%",
           padding: "12px 16px", border: 0, textAlign: "left",
           color: "inherit", cursor: "pointer",
-          background: selected ? "var(--panel-2, rgba(127,127,127,.10))" : "none",
+          background: selected ? "var(--wash)" : "none",
         }}
       >
         <span title={v.label} style={{
@@ -305,7 +305,7 @@ function Timeline({ progress }: { progress: PrProgress }) {
           </span>
           <span style={{ minWidth: 0, flex: 1 }}>
             <span style={{ fontSize: 13, color: s.state === "pending"
-                             ? "var(--muted, #888)" : "inherit" }}>
+                             ? "var(--ink-3)" : "inherit" }}>
               {s.label}
             </span>
             {s.detail && (
@@ -340,9 +340,9 @@ function Drawer({ result, onClose }: { result: PrResult; onClose: () => void }) 
       aria-label={`Detail for pull request ${result.number}`}
       style={{
         position: "fixed", top: 0, right: 0, bottom: 0, width: "min(440px, 92vw)",
-        background: "var(--panel, #14171c)",
-        borderLeft: "1px solid var(--line, rgba(127,127,127,.25))",
-        boxShadow: "-18px 0 44px -30px rgba(0,0,0,.8)",
+        background: "var(--card)",
+        borderLeft: "1px solid var(--line)",
+        boxShadow: "-18px 0 44px -30px rgba(26,31,28,.18)",
         display: "flex", flexDirection: "column", zIndex: 40,
       }}
     >
@@ -455,7 +455,7 @@ function FixDiff({ fix }: { fix: NonNullable<PrResult["fix"]> }) {
     if (c === "+") return { background: "color-mix(in srgb, var(--ok) 14%, transparent)", color: "var(--ok)" };
     if (c === "-") return { background: "color-mix(in srgb, var(--crit) 14%, transparent)", color: "var(--crit)" };
     if (c === "@") return { color: "var(--info)", opacity: 0.8 };
-    return { color: "var(--muted, #8a94a3)" };
+    return { color: "var(--ink-2)" };
   };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -470,8 +470,8 @@ function FixDiff({ fix }: { fix: NonNullable<PrResult["fix"]> }) {
         <div key={f.path} style={{ border: "1px solid var(--line, rgba(127,127,127,.25))",
                                    borderRadius: 6, overflow: "hidden" }}>
           <div className="mono" style={{ fontSize: 12, padding: "6px 10px",
-                background: "var(--panel-2, rgba(127,127,127,.08))",
-                borderBottom: "1px solid var(--line, rgba(127,127,127,.25))" }}>
+                background: "var(--raised)",
+                borderBottom: "1px solid var(--line)" }}>
             {f.path}
           </div>
           <div style={{ overflowX: "auto" }}>

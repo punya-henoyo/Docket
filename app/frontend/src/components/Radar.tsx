@@ -106,7 +106,7 @@ export function Radar({
               height: r * 2,
               borderRadius: "50%",
               border: `1px ${state === "skipped" ? "dashed" : "solid"} ${
-                lit ? "rgba(255,255,255,.34)" : "rgba(255,255,255,.12)"
+                lit ? "rgba(26,31,28,.30)" : "rgba(26,31,28,.10)"
               }`,
               transition: "border-color .4s ease",
               pointerEvents: "none",
@@ -153,7 +153,7 @@ export function Radar({
           transform: "translate(-50%,-50%)",
           width: CORE * 2,
           height: CORE * 2,
-          border: "2px solid rgba(255,255,255,.4)",
+          border: "1.5px solid var(--line-2)",
           borderRadius: "50%",
           display: "grid",
           placeItems: "center",

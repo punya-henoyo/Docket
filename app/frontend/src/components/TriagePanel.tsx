@@ -116,7 +116,7 @@ export function TriagePanel({
       )}
 
       {/* Spend sits with triage because triage is the only thing here that spends. */}
-      <div style={{ borderTop: "1px dashed rgba(255,255,255,.2)", paddingTop: 9, display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ borderTop: "1px dashed var(--line-2)", paddingTop: 9, display: "flex", flexDirection: "column", gap: 6 }}>
         <div style={{ display: "flex", justifyContent: "space-between", font: "500 12.5px var(--sans)" }}>
           <span className="eyebrow">Spend</span>
           <span style={{ color: tight ? "var(--high)" : "var(--ink-2)", fontVariantNumeric: "tabular-nums" }}>

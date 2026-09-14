@@ -94,7 +94,7 @@ export function SurfacePanel({ scan, title = "Attack surface" }:
       )}
 
       {surface.auth_model && (
-        <div style={{ borderTop: "1px dashed rgba(255,255,255,.2)", paddingTop: 9 }}>
+        <div style={{ borderTop: "1px dashed var(--line-2)", paddingTop: 9 }}>
           <div className="eyebrow">Auth model</div>
           <div className="note" style={{ color: "var(--ink-2)", marginTop: 4, maxWidth: "72ch" }}>
             {surface.auth_model}
@@ -103,7 +103,7 @@ export function SurfacePanel({ scan, title = "Attack surface" }:
       )}
 
       {surface.candidates?.length > 0 && (
-        <div style={{ borderTop: "1px dashed rgba(255,255,255,.2)", paddingTop: 9 }}>
+        <div style={{ borderTop: "1px dashed var(--line-2)", paddingTop: 9 }}>
           <div className="eyebrow">
             Candidates ({surface.candidates.length}) — no scanner rule matches these
           </div>
@@ -127,7 +127,7 @@ export function SurfacePanel({ scan, title = "Attack surface" }:
       )}
 
       {surface.notes && (
-        <div style={{ borderTop: "1px dashed rgba(255,255,255,.2)", paddingTop: 9 }}>
+        <div style={{ borderTop: "1px dashed var(--line-2)", paddingTop: 9 }}>
           <div className="eyebrow">Could not determine</div>
           <div className="note" style={{ marginTop: 4, maxWidth: "72ch" }}>
             {surface.notes}
