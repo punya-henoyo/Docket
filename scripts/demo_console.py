@@ -123,14 +123,27 @@ class FakeGitHub(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 — stdlib naming
         path = self.path.split("?", 1)[0]
-        if path.endswith("/tarball"):
-            full_name = path[len("/repos/"):-len("/tarball")]
+        if "/tarball" in path:
+            # Real GitHub takes an optional /{ref} suffix (connect.py's fetch_source
+            # always sends one); the fixture has one snapshot per repo regardless of
+            # ref, so only the part before /tarball matters.
+            full_name = path[len("/repos/"):path.index("/tarball")]
             if full_name not in REPOS:
                 self.send_error(404)
                 return
             return self._send(tarball(full_name), "application/gzip")
         if path == "/user":
             return self._json({"login": "acme-security"})
+        # list_repos() (interface/connect.py) hits this OAuth endpoint, not the GitHub
+        # App /user/installations one below — that one is unused dead weight here, kept
+        # only so a future installations-based flow has a stub to point at. Real GitHub
+        # returns a flat array, not wrapped.
+        if path.startswith("/user/repos"):
+            return self._json([
+                {"full_name": name, "private": meta["private"],
+                 "language": meta["language"], "updated_at": "2026-08-12T06:00:00Z"}
+                for name, meta in REPOS.items()
+            ])
         if path == "/user/installations":
             return self._json({"installations": [{"id": 1}]})
         if path.startswith("/user/installations/"):

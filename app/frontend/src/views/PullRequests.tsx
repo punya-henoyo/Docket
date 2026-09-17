@@ -348,7 +348,7 @@ function Drawer({ result, onClose }: { result: PrResult; onClose: () => void }) 
     >
       <header style={{ display: "flex", alignItems: "flex-start", gap: 10,
                        padding: "14px 16px",
-                       borderBottom: "1px solid var(--line, rgba(127,127,127,.25))" }}>
+                       borderBottom: "1px solid var(--line)" }}>
         <span style={{ minWidth: 0, flex: 1 }}>
           <span style={{ display: "block", fontSize: 13.5, overflow: "hidden",
                          textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -467,7 +467,7 @@ function FixDiff({ fix }: { fix: NonNullable<PrResult["fix"]> }) {
         )}
       </div>
       {fix.files.map((f) => (
-        <div key={f.path} style={{ border: "1px solid var(--line, rgba(127,127,127,.25))",
+        <div key={f.path} style={{ border: "1px solid var(--line)",
                                    borderRadius: 6, overflow: "hidden" }}>
           <div className="mono" style={{ fontSize: 12, padding: "6px 10px",
                 background: "var(--raised)",

@@ -86,6 +86,11 @@ export function ruleLeaf(ruleId: string | null | undefined): string {
   return parts[parts.length - 1] || afterScanner;
 }
 
+/** A ref is either a branch/tag name or a full 40-char commit SHA. Only the SHA is
+ *  shortened: matching on "looks hex" would also truncate a branch named `deadbeef1`. */
+export const shortRef = (ref: string) =>
+  /^[0-9a-f]{40}$/i.test(ref) ? ref.slice(0, 7) : ref;
+
 export function findingLocation(finding: Finding): string {
   // Same reason as ruleLeaf: an event-stream finding may have no location at all.
   const { source_file, method, path, parameter } = finding.location ?? {};

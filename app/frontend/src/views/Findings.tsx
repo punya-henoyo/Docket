@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { Finding, ScanState, Severity, Verdict } from "../types";
 import { SEVERITIES } from "../types";
 import { FindingDetail, FindingsTable } from "../components/FindingsTable";
-import { Drawer, Empty, findingLocation, Panel, ruleLeaf, SevTag } from "../components/ui";
+import { Drawer, Empty, findingLocation, Panel, ruleLeaf, SevTag, shortRef } from "../components/ui";
 import { cweLabel } from "../cwe";
 
 const SEV_COLOR: Record<Severity, string> = {
@@ -89,7 +89,7 @@ export function Findings({
           <h1>Findings</h1>
           {repoLabel && (
             <span className="note" style={{ fontSize: 13 }}>
-              {repoLabel}{scan?.ref ? ` @ ${scan.ref}` : ""}
+              {repoLabel}{scan?.ref ? ` @ ${shortRef(scan.ref)}` : ""}
             </span>
           )}
         </div>

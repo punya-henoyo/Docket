@@ -4,7 +4,7 @@ import { Radar } from "../components/Radar";
 import { TriagePanel } from "../components/TriagePanel";
 import { AgentActivity } from "../components/AgentActivity";
 import { CweBreakdown } from "../components/CweBreakdown";
-import { Panel } from "../components/ui";
+import { Panel, shortRef } from "../components/ui";
 import { useState } from "react";
 import { github, runs } from "../api";
 
@@ -161,7 +161,7 @@ export function Scan({
               flex: "0 1 auto", minWidth: 0, overflow: "hidden",
               textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {scan
-              ? `${scan.repo}${scan.ref ? "@" + (/^[0-9a-f]{9,}$/i.test(scan.ref) ? scan.ref.slice(0, 7) : scan.ref) : ""}`
+              ? `${scan.repo}${scan.ref ? "@" + shortRef(scan.ref) : ""}`
               : "NO SCAN RUNNING"}
           </span>}
           action={<span className="mono" style={{ fontSize: 11,
