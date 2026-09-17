@@ -6,6 +6,7 @@ import type {
   ControlPack,
   ControlResult,
   ControlStatus,
+  Finding,
   PackResult,
   PackSummary,
   ScanState,
@@ -25,9 +26,13 @@ import { Drawer, Empty, ErrorNote, Panel } from "../components/ui";
 export function Compliance({
   scan,
   error,
+  onSelectFinding,
 }: {
   scan: ScanState | null;
   error?: string | null;
+  /** Opens a finding in the Findings view. A failed control that a reproduction
+   *  corroborates is the strongest thing on this page, and it was a dead end. */
+  onSelectFinding?: (finding: Finding) => void;
 }) {
   const packs = useMemo(() => scan?.compliance ?? [], [scan]);
   const [activePack, setActivePack] = useState<string | null>(null);
@@ -161,6 +166,8 @@ export function Compliance({
             title={definitions[selected.control_id]?.title}
             requirement={definitions[selected.control_id]?.requirement}
             citation={definitions[selected.control_id]?.citation}
+            findings={scan?.findings ?? []}
+            onSelectFinding={onSelectFinding}
           />
         </Drawer>
       )}

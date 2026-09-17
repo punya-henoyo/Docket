@@ -64,6 +64,9 @@ export interface Finding {
   cvss?: Cvss | null;
   /** Rule ids folded into this finding when several matched the same line. Empty on
    *  an unmerged finding. */
+  /** Stable across runs, unlike `id` (a per-run uuid4). Compliance results reference
+   *  findings by this, so it is what a control links through on. */
+  dedupe_key?: string;
   merged_rules?: string[];
   /** Only populated when those rules DISAGREED about the weakness, in which case
    *  `cwe` is null — docket will not pick one arbitrarily. */

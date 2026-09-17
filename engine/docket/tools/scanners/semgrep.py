@@ -42,6 +42,11 @@ _MOUNT = "/work/source/"
 SEMGREP_EXCLUDES = (
     "*.md", "*.rst", "*.txt", "docs", "site-packages", "node_modules",
     "vendor", "third_party", "*.lock", "*.min.js", "dist", "build", ".git",
+    # docket's own output directory (core/paths.RUNS_DIR_NAME). A repo that has been
+    # scanned before otherwise re-scans every previous run's artifacts, including the
+    # patched copies --fix writes under fix/<name>/tree/ — so one real issue reappears
+    # once per historical run and the report is mostly docket looking at itself.
+    "docket_runs",
 )
 
 # NOT `auto`, for two reasons that turn out to be the same reason.
@@ -265,6 +270,8 @@ def demo() -> None:
     # test file is still a leaked secret.
     assert not any(e.startswith("test") for e in SEMGREP_EXCLUDES), SEMGREP_EXCLUDES
     assert "*.md" in SEMGREP_EXCLUDES and "node_modules" in SEMGREP_EXCLUDES
+    # Measured: 213 of 262 findings on this repo came from docket's own run artifacts.
+    assert "docket_runs" in SEMGREP_EXCLUDES, SEMGREP_EXCLUDES
     # ── PR scoping ──────────────────────────────────────────────────────────
     # These paths come from a pull request diff, so anyone who can open a PR picks
     # these strings. Traversal and absolute paths are dropped, not escaped.

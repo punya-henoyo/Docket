@@ -96,7 +96,12 @@ def add_scan_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                              "and answers each control with a file:line citation. Controls "
                              "no repository can answer (board review cadence, audit "
                              "schedules) are reported as such rather than guessed at. "
-                             "Needs a model and a --source tree.")
+                             "Needs a model and a --source tree. COST SCALES WITH THE "
+                             "REPOSITORY, not the control count: measured at ~$0.10 per "
+                             "pack on a small app and ~$2 on a 30k-line one, because the "
+                             "reading is the expensive part. Set --budget and expect a "
+                             "truncated audit rather than a surprise bill — an audit that "
+                             "ran out says so.")
     parser.add_argument("--compliance-deep", type=int, default=0, metavar="N",
                         help="After the batched audit, give N controls that came back "
                              "failed or inconclusive a second, focused agent, worst-first "
@@ -128,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_scan_args(sub.add_parser("scan", help="Run a scan against a target."))
     add_view_args(sub.add_parser("view", help="Show a past run's findings."))
     sub.add_parser("doctor", help="Check the environment (LLM key, Docker, search).")
+    sub.add_parser("packs", help="List the control packs --compliance can use.")
     connect = sub.add_parser(
         "connect", help="Serve the console: connect GitHub, then scan a repo.")
     connect.add_argument("--port", type=int, default=8765,
@@ -162,6 +168,8 @@ def demo() -> None:
     assert ci.changed_files == "changed.txt"
     assert ci.triage == 12 and ci.budget == 1.5 and ci.recon is True
     assert ci.fix == 3
+
+    assert parser.parse_args(["packs"]).command == "packs"
 
     packs = parser.parse_args(["scan", "--static-only", "--source", "/repo",
                                "--compliance", "owasp-api-2023,twelve-factor",

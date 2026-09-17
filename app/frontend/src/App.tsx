@@ -459,7 +459,7 @@ export default function App() {
             onVerdictSelect={setVerdictFilter}
           />
         ) : view === "compliance" ? (
-          <Compliance scan={scan} error={scanError} />
+          <Compliance scan={scan} error={scanError} onSelectFinding={openFinding} />
         ) : view === "repos" ? (
           <Repositories
             session={session}

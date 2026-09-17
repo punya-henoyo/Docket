@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 
 class Severity(str, Enum):
@@ -147,6 +147,12 @@ class Finding(BaseModel):
     # finding would be a claim docket cannot support.
     merged_cwes: list[str] = Field(default_factory=list)
 
+    # SERIALISED, not just computed. It is already the SARIF partialFingerprint, so it is
+    # nothing new to a reader — but compliance results reference findings BY dedupe_key
+    # (core/compliance.link_findings, deliberately stable across runs where `id` is a
+    # per-run uuid4), and without it in the JSON the console holds a list of keys it
+    # cannot match to anything it was given.
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def dedupe_key(self) -> str:
         """Same (rule, route, param) from two agents/payloads -> same key. Reused verbatim

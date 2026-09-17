@@ -29,8 +29,14 @@ MAX_GREP_HITS = 80
 CONTEXT_LINES = 12
 
 # Reading these wastes turns and context without ever containing the app's own logic.
+# "docket_runs" is docket's OWN output directory (core/paths.RUNS_DIR_NAME, spelled out
+# here because this module is shim-imported and stays stdlib-only). Scanning a repository
+# that has been scanned before otherwise reads every previous run's artifacts — including
+# the patched COPIES of source that --fix writes under fix/<name>/tree/. Measured on this
+# repo: 213 of 262 findings came from docket_runs/, and the noise starved the compliance
+# budget before it reached half its controls.
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build",
-              ".next", "target", "vendor", ".mypy_cache", ".pytest_cache"}
+              ".next", "target", "vendor", ".mypy_cache", ".pytest_cache", "docket_runs"}
 _BINARY_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip",
                     ".gz", ".tar", ".whl", ".so", ".dylib", ".dll", ".exe", ".class",
                     ".jar", ".woff", ".woff2", ".ttf", ".mp4", ".mp3"}

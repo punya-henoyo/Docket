@@ -109,6 +109,10 @@ def run_trivy(sandbox: Any, run_dir: Path, *, timeout_sec: int = 120) -> list[Fi
     command = (
         "mkdir -p /work/run/artifacts/scanners && "
         "trivy fs --scanners vuln --format json --quiet "
+        # docket's own output directory. --fix writes patched COPIES of the source under
+        # docket_runs/<run>/fix/<name>/tree/, each with its own requirements.txt, so a
+        # repo scanned before reports the same dependency CVE once per historical run.
+        "--skip-dirs docket_runs "
         "--output /work/run/artifacts/scanners/trivy.json /work/source"
     )
     try:
@@ -123,6 +127,12 @@ def run_trivy(sandbox: Any, run_dir: Path, *, timeout_sec: int = 120) -> list[Fi
 
 
 def demo() -> None:
+    # The command must skip docket's own run directory, or a repo that has been scanned
+    # before reports every previous run's patched copies as fresh dependency findings.
+    import inspect
+
+    assert "--skip-dirs docket_runs" in inspect.getsource(run_trivy)
+
     sample = json.dumps({
         "Results": [{
             "Target": "package-lock.json",

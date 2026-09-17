@@ -21,6 +21,7 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
 | `engine/docket/static/` | SAST ingest, Semgrep runner, sink-to-endpoint correlation |
 | `engine/docket/llm/` | context budget + conversation compaction |
 | `engine/docket/report/` | finding model, dedupe, SARIF, writer, usage |
+| `engine/docket/compliance/` | control packs (JSON data), result model, policy ingest |
 | `engine/docket/interface/` | CLI, TUI (Textual), local web viewer |
 | `engine/docket/skills/` | markdown playbooks agents load on demand |
 
@@ -101,6 +102,46 @@ regardless of the wrapper. `containers/`, `tests/`, and packaging live at the re
    never FALSE_POSITIVE (the only verdict that gets somebody breached). An agent that
    exhausts its turns lands on UNCERTAIN by the same route. Don't "improve" this into a
    binary.
+
+13. **A control result is a third kind of claim, and it stays in a third list.** A
+   `Finding` is a reproduction (rule 1), a static candidate is a pattern match (rule 10),
+   and a `ControlResult` (`docket/compliance/models.py`) is an agent's cited reading of
+   whether a written requirement is met. Its evidence is a `Citation` — file, line, quote
+   — deliberately NOT a `PoC`, because a read is not a reproduction. It lives in
+   `report["compliance"]`, never in `findings`, never in `finding_count`, never in the
+   exit code. Same argument as rule 10: the structure enforces the distinction.
+
+   Three things are written by CODE and never by a model, and each closes a way of
+   inflating the numbers. A control whose `observability` is not `source` is never sent to
+   an agent at all — most of RBI's and SEBI's frameworks are organisational, and asking a
+   model a question with no code in it is asking it to invent one. A control no agent
+   reached is `unknown` carrying `core.triage.UNJUDGED_PREFIX`, so "we could not tell"
+   and "we ran out of money" stay distinguishable. And the finding cross-link is computed
+   by CWE and rule leaf at report-build time, never by file: linking a debug-mode control
+   to every finding in a 2,000-line `app.py` is a coincidence dressed as corroboration.
+
+14. **A cited file is resolved, and there is no percentage.** `record_controls` runs every
+   citation through `resolve_in_root` — the same containment check every source read uses.
+   A plausible path that is not in the scanned tree is a fabrication with a filename
+   attached; the claim is downgraded to `unknown` with `downgraded_from` recorded, never
+   dropped, so an unaccepted claim stays distinguishable from one nobody made. Measured on
+   the first live run: this is what stopped a `pass` citing `config/env.py` in a repo that
+   has no such file.
+
+   `PackResult` has no `score` and no `percent` field, and the string "compliant" must
+   never appear in a rendered label — asserted in `compliance/models.py`,
+   `report/markdown.py` and `report/pr_report.py`. Pass-rate and coverage move in opposite
+   directions, so a single number rewards an agent that gave up on the hard controls. Two
+   numbers or none. Don't add the field; somebody will divide by it.
+
+15. **Compliance is advisory at the gate.** It never enters `GateResult.reasons`, never
+   changes `conclusion`, never moves `exit_code`, and annotates at `notice` level only.
+   The two fail-opens in `service/gate.py`'s docstring hit it harder than they hit triage:
+   under a zero budget or on a fork PR every control returns `unknown`, and there is no
+   safe reading of that — blocking reds every pull request for a reason nobody can act on,
+   passing puts a green tick next to the word "SEBI". The escalation you would want, a
+   failed control corroborated by a reproduced finding, already blocks via the finding.
+   `tests/test_gate.py` proves all of it.
 
 ## Conventions
 - Every module has a runnable `demo()` self-check. Run them all with `make check`

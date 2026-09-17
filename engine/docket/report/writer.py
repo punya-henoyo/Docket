@@ -449,6 +449,39 @@ def format_summary(report: dict, *, paths: dict[str, Path] | None = None, full: 
             f"({reachable} mapped to an endpoint, {confirmed} whose CWE was proven "
             f"elsewhere on this target) — leads only, see flagged_not_proven"
         )
+    for pack in report.get("compliance") or []:
+        # One line per pack, stated in the same "N of M, and here is what is missing"
+        # shape as the static-candidate line above and for the same reason: a reader must
+        # not be able to take one number as a total. `assessed` is pass+fail — neither
+        # not-applicable nor not-answerable belongs in a denominator.
+        if not isinstance(pack, dict):
+            continue
+        rows = [r for r in (pack.get("results") or []) if isinstance(r, dict)]
+        tally: dict[str, int] = {}
+        for row in rows:
+            tally[str(row.get("status"))] = tally.get(str(row.get("status")), 0) + 1
+        assessed = tally.get("pass", 0) + tally.get("fail", 0)
+        title = pack.get("pack_title") or pack.get("pack_id") or "pack"
+        if assessed:
+            lines.append(
+                f"{title}: {tally.get('pass', 0)} of {assessed} decided control(s) "
+                f"satisfied, {tally.get('fail', 0)} not "
+                f"({pack.get('total_controls', len(rows))} in the pack, "
+                f"{tally.get('not_observable', 0)} not answerable from code)"
+            )
+        else:
+            lines.append(
+                f"{title}: NO control could be assessed from source "
+                f"({pack.get('total_controls', len(rows))} in the pack) — not a pass"
+            )
+        if pack.get("unjudged"):
+            # The state a reader would otherwise misread as "inconclusive". Almost always
+            # the budget ran out partway through.
+            lines.append(
+                f"  {pack['unjudged']} control(s) were never reached — this audit is "
+                f"incomplete, not clean"
+            )
+
     for finding in findings:
         param = f" ({finding['location']['parameter']})" if finding["location"].get("parameter") else ""
         lines.append(
@@ -527,6 +560,24 @@ def demo() -> None:
     # absent key blanked the whole console page once already (runs.py:87).
     assert build_report(empty, run_name="r", target="t")["compliance"] == []
     assert build_report(empty, run_name="r", target="t")["compliance_requested"] == 0
+
+    # --- the text summary a `docket view` reader gets --------------------------------
+    text = format_summary(audited)
+    assert "Pack: 0 of 1 decided control(s) satisfied, 1 not" in text, text
+    assert "3 in the pack" in text, text
+    assert "compliant" not in text.lower(), text
+    starved = build_report(empty, run_name="r", target="t", compliance=[PackResult(
+        pack_id="p", pack_title="Starved", authority="a", total_controls=40,
+        requested=14, judged=0, unjudged=14,
+        results=[ControlResult(control_id="p:1", rationale="never reached",
+                               looked_at="nothing")])])
+    starved_text = format_summary(starved)
+    # A pack that assessed nothing must never read as a clean pass in the terminal.
+    assert "NO control could be assessed" in starved_text, starved_text
+    assert "not a pass" in starved_text, starved_text
+    assert "never reached" in starved_text and "incomplete, not clean" in starved_text
+    # And a run with no pack adds no lines at all.
+    assert "in the pack" not in format_summary(build_report(empty, run_name="r", target="t"))
     # `patches` records what --fix attempted, refusals included, with the agent's claim and
     # the scanner's verdict side by side. A claimed fix that did not verify must be visible
     # as exactly that, not absent.

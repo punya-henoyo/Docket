@@ -46,6 +46,35 @@ def cmd_doctor(args) -> int:
     return EXIT_CLEAN if report.ok else EXIT_ERROR
 
 
+def cmd_packs(args) -> int:
+    """List the control packs. Without this the only way to learn a pack id is to get one
+    wrong and read the error, which is a poor way to find out what a tool can do."""
+    from docket.compliance.packs import list_packs
+
+    rows = list_packs()
+    if not rows:
+        print("no control packs found", file=sys.stderr)
+        return EXIT_ERROR
+    width = max(len(str(r["id"])) for r in rows)
+    print(f"{'PACK':<{width}}  CHECKABLE  TITLE")
+    for row in rows:
+        if not row.get("usable"):
+            print(f"{row['id']:<{width}}  {'—':>9}  UNREADABLE: {row.get('error', '')}")
+            continue
+        # "14 of 43", never a percentage, and never just the pack size. The gap between
+        # the two numbers IS the honest part: most of a regulatory framework is
+        # organisational and no repository answers it.
+        checkable = f"{row['source_controls']} of {row['total_controls']}"
+        print(f"{row['id']:<{width}}  {checkable:>9}  {row['title']}"
+              + (f"  [{row['authority']}]" if row.get("authority") else "")
+              + ("  (uploaded)" if row.get("origin") == "uploaded" else ""))
+    print()
+    print("CHECKABLE is how many of a pack's controls can be answered by reading source.")
+    print("The rest are organisational or deployment properties: docket reports them as")
+    print("unassessed and never counts them as satisfied.")
+    return EXIT_CLEAN
+
+
 def cmd_scan(args) -> int:
     # --triage/--recon/--fix are agents pointed at source, so they need an LLM even under
     # --static-only. Checking that here means a CI job that asked for verdicts is told it
@@ -55,7 +84,15 @@ def cmd_scan(args) -> int:
     # first call — and whose max_cost_usd is 0.0, which `spent >= budget` turns into a
     # refusal of every agent before its first turn. The run would report no patches as
     # though it had tried and found nothing to do.
-    wants_agents = bool(args.triage or args.recon or args.fix)
+    # `--compliance` belongs here too, and it is the fifth path into the same trap. A
+    # control pack is judged by an agent reading source, so without it
+    # `--static-only --compliance python-baseline` skips the up-front LLM check, takes
+    # Config.static_only() below (llm="", max_cost_usd=0.0), and then run_scan's own
+    # repair calls Config.from_env() — which RAISES on an unconfigured machine, deep in a
+    # scan, instead of refusing cleanly here with the reason. run_scan defends against
+    # this as well; deciding it here keeps the two agreeing rather than relying on the
+    # repair, which is what the comment below already says.
+    wants_agents = bool(args.triage or args.recon or args.fix or args.compliance)
     env = check_environment(require_sandbox=not args.no_sandbox,
                             require_llm=not args.static_only or wants_agents)
     if not env.ok:
@@ -212,7 +249,7 @@ def cmd_connect(args) -> int:
 def main() -> None:
     args = build_parser().parse_args()
     handlers = {"scan": cmd_scan, "view": cmd_view, "doctor": cmd_doctor,
-                "connect": cmd_connect}
+                "connect": cmd_connect, "packs": cmd_packs}
     sys.exit(handlers[args.command](args))
 
 

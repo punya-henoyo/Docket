@@ -7,7 +7,11 @@ against that reading.
 
 Two passes, because the cheap one is not always enough:
 
-  batched     one agent per chunk of ~12 source-observable controls. ~$0.05-0.25/pack.
+  batched     one agent per chunk of ~12 source-observable controls. Cost scales with
+              the REPOSITORY, not the control count, because the reading dominates:
+              measured at ~$0.10/pack on a 70-line app and ~$1 per chunk on docket's own
+              30k-line tree. Budget accordingly; a pack that runs out says so rather than
+              reporting the controls it never reached as clean.
   escalation  one focused agent per control that came back `fail` or `unknown`, capped
               by `deep` and run worst-first, so a cap truncates the tail rather than the
               criticals. Sequential and max_agents=1 — concurrent agents make the budget

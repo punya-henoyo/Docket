@@ -22,6 +22,7 @@ A docket is a register where nothing is entered without evidence. That is the wh
 - [Finding the surface](#finding-the-surface)
 - [Static analysis, triaged by an agent](#static-analysis-triaged-by-an-agent-that-reads-the-code)
 - [Static analysis, used as a lead generator](#static-analysis-used-as-a-lead-generator)
+- [Compliance, without the percentage](#compliance-without-the-percentage)
 - [Proof, per vulnerability class](#proof-per-vulnerability-class)
   - [Verified live](#verified-live)
 - [Agent capabilities](#agent-capabilities)
@@ -194,6 +195,61 @@ nothing downstream can present one as the other.
 `--sarif` accepts any SAST tool's SARIF 2.x (Semgrep, CodeQL, Bandit, gosec), which is
 usually cheaper than running an engine: no install, and it is what the team already
 standardised on.
+
+## Compliance, without the percentage
+
+Docket answers "can this be exploited?". The other question regulated buyers ask is "does
+this codebase satisfy the rules we are held to?" — and the honest answer to that has a
+shape most vendors will not show you.
+
+```
+docket scan --source . --compliance python-baseline,owasp-api-2023 --budget 2.00
+```
+
+An agent reads the repository and answers each control with a file and line you can open.
+A cited path is resolved against the scanned tree, so a plausible-looking citation to a
+file that is not there gets the claim thrown out rather than recorded as a pass.
+
+Seven packs ship as JSON data — adding one is a file, not a code change:
+
+| Pack | Checkable from source |
+|---|---|
+| `owasp-api-2023` — OWASP API Security Top 10 | 9 of 10 |
+| `twelve-factor` — The Twelve-Factor App | 11 of 12 |
+| `python-baseline` / `node-baseline` / `java-baseline` | 18 / 18 / 16, all of them |
+| `rbi-csf` — RBI Cyber Security Framework | **14 of 40** |
+| `sebi-cscrf` — SEBI CSCRF | **14 of 43** |
+
+The two bold numbers are the point. Most of RBI's and SEBI's frameworks are
+organisational: a board reviewing a policy annually, VAPT on a schedule, an incident
+reported within six hours. No repository answers those at any budget. Docket marks them
+`not answerable from code`, never sends them to an agent, and never counts them as
+satisfied.
+
+So a report reads:
+
+> **SEBI CSCRF — 11 of 13 decided controls satisfied**
+> 43 controls in this pack · 29 not answerable from code
+> *Evidence-based review of source code. Not an attestation of compliance.*
+
+There is no percentage, and there is no `score` field to compute one from. Pass-rate and
+coverage move in opposite directions — an agent that gives up on every hard control scores
+100% on what is left — so a single number rewards exactly the failure you most need to
+see. A self-check asserts the word "compliant" never reaches a rendered label.
+
+Compliance results are **advisory**: they never change a pull request's pass or fail. A
+control verdict is weaker evidence than a triage verdict, which is already barred from
+blocking a merge. When a failed control is corroborated by a reproduced finding, that
+finding blocks on its own.
+
+Cost scales with the repository, not the control count — the reading is the expensive
+part. Measured: about $0.10 per pack on a small app, about $2 on a 30,000-line one. Set
+`--budget`. A pack that runs out of money reports the controls it never reached as
+*never reached*, never as satisfied.
+
+You can also upload your own policy — `.md`, `.txt`, `.docx` or `.pdf`. An agent compiles
+it into a reviewable pack, dropping any clause it cannot locate in your document rather
+than inventing one.
 
 ## Proof, per vulnerability class
 

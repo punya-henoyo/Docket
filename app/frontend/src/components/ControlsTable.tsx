@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { ControlResult, ControlStatus, PackResult } from "../types";
+import type { ControlResult, ControlStatus, Finding, PackResult } from "../types";
 import { CONTROL_STATUSES, CONTROL_STATUS_LABEL } from "../types";
 import { Empty } from "./ui";
 
@@ -206,16 +206,68 @@ export function ControlsTable({
 /** Drawer body for one control: what was required, what was decided, and the lines the
  *  decision was read from. The citations are the point — a control marked satisfied with
  *  nothing to open is exactly what this feature exists not to produce. */
+/** The findings a control links to, as rows you can open.
+ *
+ *  `proven_findings` holds dedupe_keys, not ids, because a link has to survive a rescan.
+ *  Anything that no longer exists in this scan is simply not rendered — a dangling row
+ *  labelled with a hash helps nobody. */
+function LinkedFindings({
+  keys,
+  findings,
+  onSelect,
+}: {
+  keys: string[];
+  findings: Finding[];
+  onSelect?: (finding: Finding) => void;
+}) {
+  const matched = findings.filter((f) => f.dedupe_key && keys.includes(f.dedupe_key));
+  if (matched.length === 0) return null;
+  return (
+    <div className="rows" style={{ marginTop: 6 }}>
+      {matched.map((f) => (
+        <button
+          key={f.id}
+          onClick={() => onSelect?.(f)}
+          disabled={!onSelect}
+          style={{
+            display: "flex",
+            alignItems: "baseline",
+            justifyContent: "space-between",
+            gap: 10,
+            background: "none",
+            border: 0,
+            width: "100%",
+            textAlign: "left",
+            cursor: onSelect ? "pointer" : "default",
+            font: "13px var(--sans)",
+            color: "var(--ink-2)",
+          }}
+        >
+          <span className="clip" style={{ minWidth: 0 }}>{f.title}</span>
+          <span style={{ font: "11.5px var(--mono)", color: "var(--ink-3)", flex: "none" }}>
+            {f.severity} ↗
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function ControlDetail({
   result,
   title,
   requirement,
   citation,
+  findings = [],
+  onSelectFinding,
 }: {
   result: ControlResult;
   title?: string;
   requirement?: string;
   citation?: string;
+  /** This scan's findings, so a link can be resolved to something openable. */
+  findings?: Finding[];
+  onSelectFinding?: (finding: Finding) => void;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -287,17 +339,32 @@ export function ControlDetail({
       )}
 
       {result.proven_findings.length > 0 && (
-        <div className="note bad">
-          {result.proven_findings.length} reproduced finding
-          {result.proven_findings.length === 1 ? "" : "s"} of this weakness class exist in this
-          scan. This is not only a review opinion.
+        <div>
+          <div className="note bad">
+            {result.proven_findings.length} reproduced finding
+            {result.proven_findings.length === 1 ? "" : "s"} of this weakness class exist in
+            this scan. This is not only a review opinion.
+          </div>
+          <LinkedFindings
+            keys={result.proven_findings}
+            findings={findings}
+            onSelect={onSelectFinding}
+          />
         </div>
       )}
       {result.contradicted_by.length > 0 && (
-        <div className="note bad">
-          Contradiction: this control was marked satisfied, but {result.contradicted_by.length}{" "}
-          reproduced finding{result.contradicted_by.length === 1 ? "" : "s"} of the same weakness
-          class exist in this scan. Treat the pass with suspicion.
+        <div>
+          <div className="note bad">
+            Contradiction: this control was marked satisfied, but{" "}
+            {result.contradicted_by.length} reproduced finding
+            {result.contradicted_by.length === 1 ? "" : "s"} of the same weakness class exist
+            in this scan. Treat the pass with suspicion.
+          </div>
+          <LinkedFindings
+            keys={result.contradicted_by}
+            findings={findings}
+            onSelect={onSelectFinding}
+          />
         </div>
       )}
     </div>
