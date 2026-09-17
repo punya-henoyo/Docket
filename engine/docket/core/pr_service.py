@@ -149,6 +149,11 @@ def scan_pull_request(
     budget_usd: float | None = None,
     run_url: str | None = None,
     recon: bool = True,
+    # HEAD ONLY, like recon and for the same reason: a control result is an agent's
+    # reading and is phrased afresh each run, so auditing the base too would double the
+    # cost to produce a comparison that is not stable enough to diff.
+    compliance: list[str] | None = None,
+    compliance_deep: int = 0,
 ) -> PullRequestOutcome:
     """Scan one pull request and, when `post` is given, publish the verdict.
 
@@ -231,6 +236,7 @@ def scan_pull_request(
 
         head_report = scan(repo=ref.repo, sha=ref.head_sha, paths=plan.paths,
                            triage_max=triage_max, budget_usd=budget_usd, recon=recon,
+                           compliance=compliance, compliance_deep=compliance_deep,
                            triage_filter=is_new_here)
         if head_report is None:
             raise RuntimeError("the head scan produced no report")
@@ -358,6 +364,36 @@ def demo() -> None:
     scan_pull_request(ref, token="t", fetch_files=files_py, scan=scan_sides,
                       baselines=BaselineCache(), triage_max=0, recon=False)
     assert {r for _, r in sides} == {False}, sides
+
+    # ── compliance runs on HEAD only, for the same reason recon does ────────
+    # Auditing the base too would double the cost of every pull request to produce a
+    # comparison that is not stable enough to diff: a control result is an agent's
+    # reading, phrased afresh each run.
+    packs: list = []
+
+    def scan_packs(**kw):
+        # The whole kwargs, so the base case can assert the keyword is ABSENT rather
+        # than present-and-empty. The two are different claims about the call.
+        packs.append((kw["sha"], kw))
+        return report([])
+
+    scan_pull_request(ref, token="t", fetch_files=files_py, scan=scan_packs,
+                      baselines=BaselineCache(), triage_max=0, recon=False,
+                      compliance=["owasp-api-2023"], compliance_deep=2)
+    by_sha = dict(packs)
+    assert by_sha["head1"]["compliance"] == ["owasp-api-2023"], by_sha["head1"]
+    assert by_sha["head1"]["compliance_deep"] == 2, by_sha["head1"]
+    # The base scan is never even TOLD about a pack. Not "told and given none" — the
+    # keyword does not reach it, so no future default can quietly turn it on.
+    assert "compliance" not in by_sha["base1"], by_sha["base1"]
+    assert "compliance_deep" not in by_sha["base1"], by_sha["base1"]
+
+    # ...and a watcher with no pack chosen still reaches the head scan with nothing,
+    # so run_scan skips the stage rather than inventing one.
+    packs.clear()
+    scan_pull_request(ref, token="t", fetch_files=files_py, scan=scan_packs,
+                      baselines=BaselineCache(), triage_max=0, recon=False)
+    assert dict(packs)["head1"]["compliance"] is None, dict(packs)["head1"]
 
     # ── a real PR: base scanned once, then cached ───────────────────────────
     calls: list = []

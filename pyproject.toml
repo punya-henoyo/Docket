@@ -17,6 +17,12 @@ dependencies = [
 app = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
+    # Reading an uploaded compliance policy that arrives as a PDF. Pure Python, no
+    # compiled extensions. Here rather than in the core dependencies because a scan does
+    # not need it: .md, .txt and .docx are all read with the standard library (a .docx is
+    # a zip of XML), and compliance/ingest.py refuses a PDF with an actionable message
+    # rather than returning empty text when this is absent.
+    "pypdf>=5",
 ]
 # Real token counting for pre-flight context sizing (llm/context_budget.py). Optional
 # because the character fallback keeps a scan running without it; worth installing

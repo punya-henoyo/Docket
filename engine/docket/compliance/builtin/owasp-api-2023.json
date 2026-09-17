@@ -1,0 +1,121 @@
+{
+  "id": "owasp-api-2023",
+  "title": "OWASP API Security Top 10 (2023)",
+  "authority": "OWASP",
+  "version": "2023",
+  "origin": "builtin",
+  "source_url": "https://owasp.org/API-Security/editions/2023/en/0x11-t10/",
+  "notes": "Risk names are OWASP's. The `requirement` text is docket's plain statement of the obligation each risk implies, not a quotation of OWASP's prose; `citation` locates the risk in the published list so the original is one click away. Nine of the ten are answerable by reading source. API9 is inventory and documentation governance, which a repository cannot settle, so it is marked process and is never handed to an agent.",
+  "controls": [
+    {
+      "id": "owasp-api-2023:API1",
+      "title": "Broken Object Level Authorization",
+      "requirement": "Every handler that retrieves, updates or deletes an object identified by a client-supplied id must verify that the authenticated caller is authorised for that specific object, not merely authenticated.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "OWASP API Security Top 10 2023, API1:2023",
+      "evidence_hint": "route handlers taking an id from the path, query or body; ORM get-by-primary-key calls with no owner/tenant filter; a decorator that checks login but not ownership",
+      "cwe": ["CWE-639", "CWE-285"],
+      "rule_ids": ["idor"]
+    },
+    {
+      "id": "owasp-api-2023:API2",
+      "title": "Broken Authentication",
+      "requirement": "Authentication endpoints and token handling must be implemented correctly: credentials verified against a strong password hash, tokens signed and validated with a verified algorithm and secret, session and token lifetimes bounded, and credential-stuffing or brute-force attempts rate limited.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "OWASP API Security Top 10 2023, API2:2023",
+      "evidence_hint": "jwt.decode without verify/algorithms pinned; md5/sha1 or plain comparison of passwords; login routes with no throttle; tokens with no expiry claim",
+      "cwe": ["CWE-287", "CWE-307", "CWE-916"],
+      "rule_ids": ["authentication_jwt", "weak_password_detection"]
+    },
+    {
+      "id": "owasp-api-2023:API3",
+      "title": "Broken Object Property Level Authorization",
+      "requirement": "Endpoints must control which object properties a caller may read or write: responses must not expose properties the caller is not entitled to, and writes must not accept client-supplied values for properties only the server may set.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "OWASP API Security Top 10 2023, API3:2023",
+      "evidence_hint": "serializers with no field allowlist; Model(**request.json) or Object.assign(model, req.body); returning a whole ORM row including password_hash, is_admin or internal flags",
+      "cwe": ["CWE-915", "CWE-213"],
+      "rule_ids": ["mass_assignment", "information_disclosure"]
+    },
+    {
+      "id": "owasp-api-2023:API4",
+      "title": "Unrestricted Resource Consumption",
+      "requirement": "APIs must bound the resources a single caller can consume: request rate, request and upload body size, page size on list endpoints, query depth or complexity, and timeouts on outbound calls.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "OWASP API Security Top 10 2023, API4:2023",
+      "evidence_hint": "rate-limit middleware present and applied; MAX_CONTENT_LENGTH or body-parser limit set; list endpoints with a capped page size; requests/fetch calls passing a timeout",
+      "cwe": ["CWE-770", "CWE-400"],
+      "rule_ids": []
+    },
+    {
+      "id": "owasp-api-2023:API5",
+      "title": "Broken Function Level Authorization",
+      "requirement": "Administrative and privileged operations must enforce a role or permission check at the handler, and that check must not be inferable only from the route name or client-side routing.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "OWASP API Security Top 10 2023, API5:2023",
+      "evidence_hint": "admin routes with no role decorator or guard; permission checks applied to some handlers in a blueprint but not others; a middleware allowlist that a new route silently misses",
+      "cwe": ["CWE-285", "CWE-862"],
+      "rule_ids": ["broken_function_level_authorization"]
+    },
+    {
+      "id": "owasp-api-2023:API6",
+      "title": "Unrestricted Access to Sensitive Business Flows",
+      "requirement": "Business flows whose automated abuse causes harm (registration, purchase, transfer, redemption, messaging) must carry a control beyond authentication, such as throttling, a challenge, device or behaviour checks, or a server-side limit per account.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "OWASP API Security Top 10 2023, API6:2023",
+      "evidence_hint": "signup/checkout/transfer handlers; whether any per-account or per-ip counter, captcha hook or idempotency key guards them",
+      "cwe": ["CWE-799", "CWE-837"],
+      "rule_ids": ["business_logic"]
+    },
+    {
+      "id": "owasp-api-2023:API7",
+      "title": "Server Side Request Forgery",
+      "requirement": "Where the API fetches a remote resource at a URL influenced by the client, the destination must be validated against an allowlist and redirects must not be followed to unvalidated hosts.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "OWASP API Security Top 10 2023, API7:2023",
+      "evidence_hint": "requests.get / fetch / http.request / urlopen whose URL derives from request data; webhook, avatar-import, preview and pdf-render features; absence of a host allowlist or of allow_redirects=False",
+      "cwe": ["CWE-918"],
+      "rule_ids": ["ssrf"]
+    },
+    {
+      "id": "owasp-api-2023:API8",
+      "title": "Security Misconfiguration",
+      "requirement": "The deployed configuration must be hardened: debug mode off, stack traces not returned to clients, CORS not open to arbitrary origins with credentials, security headers set, default credentials absent, and unnecessary HTTP methods disabled.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "OWASP API Security Top 10 2023, API8:2023",
+      "evidence_hint": "DEBUG=True, app.run(debug=True), NODE_ENV not pinned; CORS allow_origin='*' together with allow_credentials; error handlers returning exception text; hardcoded default admin credentials",
+      "cwe": ["CWE-16", "CWE-209"],
+      "rule_ids": ["information_disclosure"]
+    },
+    {
+      "id": "owasp-api-2023:API9",
+      "title": "Improper Inventory Management",
+      "requirement": "The organisation must maintain a current inventory of API hosts, versions and environments, publish documentation for each, and decommission retired versions rather than leaving them reachable.",
+      "observability": "process",
+      "severity": "medium",
+      "citation": "OWASP API Security Top 10 2023, API9:2023",
+      "evidence_hint": "",
+      "cwe": ["CWE-1059"],
+      "rule_ids": []
+    },
+    {
+      "id": "owasp-api-2023:API10",
+      "title": "Unsafe Consumption of APIs",
+      "requirement": "Data received from third-party and upstream APIs must be validated and bounded before use, transport to them must be encrypted and certificate-verified, and their redirects must not be blindly followed.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "OWASP API Security Top 10 2023, API10:2023",
+      "evidence_hint": "verify=False or rejectUnauthorized:false on outbound calls; upstream JSON passed straight into a database write, template or eval; no schema check on a webhook payload",
+      "cwe": ["CWE-20", "CWE-295"],
+      "rule_ids": ["insecure_deserialization"]
+    }
+  ]
+}

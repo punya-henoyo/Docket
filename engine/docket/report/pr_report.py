@@ -112,6 +112,85 @@ def _verdict_note(finding: dict[str, Any]) -> str:
     }.get(verdict, "not triaged")
 
 
+def _compliance_block(packs: list[Any]) -> list[str]:
+    """Control-pack results, COLLAPSED and clearly subordinate to the findings table.
+
+    A `<details>` and not a heading, because this is the weakest claim on the page: an
+    agent's reading of a written requirement, which cannot block a merge and must not
+    look like it could. The findings table is what decides the check; this is context a
+    reviewer opens if they want it.
+
+    Two numbers per pack, never a percentage. Same reason as everywhere else: pass-rate
+    and coverage move in opposite directions, so one number rewards an agent that gave up.
+    """
+    rows: list[str] = []
+    summaries: list[str] = []
+    for pack in packs or []:
+        if not isinstance(pack, dict):
+            continue
+        results = [r for r in (pack.get("results") or []) if isinstance(r, dict)]
+        counts: dict[str, int] = {}
+        for result in results:
+            counts[str(result.get("status", "unknown"))] = (
+                counts.get(str(result.get("status", "unknown")), 0) + 1)
+        assessed = counts.get("pass", 0) + counts.get("fail", 0)
+        title = str(pack.get("pack_title") or pack.get("pack_id") or "pack")
+        total = pack.get("total_controls", len(results))
+        if assessed:
+            summaries.append(
+                f"**{title}** — {counts.get('pass', 0)} of {assessed} source-checkable "
+                f"controls satisfied, {counts.get('fail', 0)} not "
+                f"({total} in the pack, {counts.get('not_observable', 0)} not answerable "
+                "by reading a repository)."
+            )
+        else:
+            summaries.append(
+                f"**{title}** — no control could be assessed from source "
+                f"({total} in the pack). This is not a pass."
+            )
+        for result in results:
+            if result.get("status") != "fail":
+                continue
+            where = next((c for c in (result.get("citations") or [])
+                          if isinstance(c, dict) and c.get("file")), None)
+            location = ""
+            if where:
+                location = f"`{where['file']}" + (f":{where['line']}`" if where.get("line")
+                                                  else "`")
+            note = " ⚠︎ reproduced finding" if result.get("proven_findings") else ""
+            rows.append(f"| `{result.get('control_id', '?')}` | "
+                        f"{str(result.get('rationale', '')).strip()[:MAX_DESCRIPTION]} | "
+                        f"{location}{note} |")
+
+    if not summaries:
+        return []
+    out = [
+        "<details><summary>Compliance controls (advisory — does not affect this check)"
+        "</summary>",
+        "",
+        *(f"- {line}" for line in summaries),
+        "",
+    ]
+    if rows:
+        out += [
+            "**Not satisfied:**",
+            "",
+            "| Control | What docket read | Where |",
+            "| --- | --- | --- |",
+            *rows,
+            "",
+        ]
+    out += [
+        "An agent read the source and judged each control, citing the lines it opened. "
+        "This is an evidence-based review, not an attestation of compliance, and it "
+        "never changes the pass or fail above. Controls no repository can answer are "
+        "reported as unassessed and are never counted as satisfied.",
+        "</details>",
+        "",
+    ]
+    return out
+
+
 def render_comment(verdict: dict[str, Any], *, run_url: str | None = None) -> str:
     """The PR comment body. Markdown, and deliberately short.
 
@@ -192,6 +271,8 @@ def render_comment(verdict: dict[str, Any], *, run_url: str | None = None) -> st
                 "</details>",
                 "",
             ]
+
+    lines += _compliance_block(verdict.get("compliance") or [])
 
     scoped = verdict.get("scoped_to") or []
     if scoped:
@@ -336,6 +417,54 @@ def demo() -> None:
     noline = {"new": [{"rule_id": "r", "severity": "high",
                        "location": {"path": "a.py", "source_file": "a.py"}}]}
     assert inline_comments(noline, "abc") == []
+
+    # --- compliance: advisory, collapsed, and never able to look like a blocker -------
+    packs = [{
+        "pack_id": "sebi-cscrf", "pack_title": "SEBI CSCRF", "total_controls": 43,
+        "results": [
+            {"control_id": "sebi-cscrf:pr-secrets", "status": "fail",
+             "rationale": "A database password is a literal in settings.py.",
+             "proven_findings": ["deadbeef"],
+             "citations": [{"file": "settings.py", "line": 7}]},
+            {"control_id": "sebi-cscrf:pr-session", "status": "pass"},
+            *({"status": "not_observable"} for _ in range(29)),
+        ],
+    }]
+    body = render_comment({"exit_code": 0, "reason": "clean", "new": [], "fixed": [],
+                           "compliance": packs})
+    # Collapsed, and the summary line itself says it is advisory: a reviewer scanning the
+    # comment must not mistake this for the thing that decides the check.
+    assert "<details><summary>Compliance controls (advisory" in body, body
+    assert "does not affect this check" in body, body
+    # Two numbers, denominator = what was ASSESSED, not the pack size.
+    assert "1 of 2 source-checkable controls satisfied" in body, body
+    assert "29 not answerable by reading a repository" in body, body
+    # A failure cites the line a reviewer can open, and says when it is corroborated.
+    assert "`settings.py:7`" in body and "reproduced finding" in body, body
+    assert "not an attestation of compliance" in body, body
+    # The word that must never appear on a pull request next to a regulator's name.
+    assert "compliant" not in body.lower(), body
+    # A clean check stays CLEAN. A failed control on the same pull request must not
+    # change the headline a reviewer reads first — that is the advisory contract, and
+    # this is where it would visibly break.
+    assert "No new findings introduced by this change." in body, body
+    assert body.index("No new findings") < body.index("Compliance controls"), body
+
+    # A pack that assessed nothing must say so rather than render an empty, reassuring
+    # block.
+    empty = render_comment({"exit_code": 0, "reason": "clean", "new": [], "fixed": [],
+                            "compliance": [{"pack_id": "p", "pack_title": "P",
+                                            "total_controls": 40,
+                                            "results": [{"status": "unknown"}]}]})
+    assert "no control could be assessed" in empty and "not a pass" in empty, empty
+
+    # No pack requested renders exactly what it did before this feature existed.
+    assert "Compliance controls" not in render_comment(
+        {"exit_code": 0, "reason": "clean", "new": [], "fixed": []})
+    # Malformed rows must not raise: this renders at the end of a scan that already cost
+    # money, and a crash here loses the comment entirely.
+    for junk in ("nope", [None], [{"results": "no"}], [{"results": [None]}], [{}]):
+        render_comment({"exit_code": 0, "reason": "c", "new": [], "compliance": junk})
 
     print("report.pr_report: ok")
 

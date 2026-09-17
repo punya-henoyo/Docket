@@ -1,0 +1,187 @@
+{
+  "id": "java-baseline",
+  "title": "Java / Spring security baseline",
+  "authority": "docket",
+  "version": "1",
+  "origin": "builtin",
+  "source_url": "https://owasp.org/www-project-top-ten/",
+  "notes": "Docket's own curated baseline for Java and Spring services, drawn from the weakness classes OWASP, the Spring Security reference and the OWASP Java cheat sheets all agree on, restated as controls a reader can check. Not a published standard and it does not claim to be one: `authority` is docket. Every control here is answerable by reading a repository.",
+  "controls": [
+    {
+      "id": "java-baseline:secrets",
+      "title": "No credentials in source",
+      "requirement": "Passwords, keys and connection strings must come from the environment, a vault, or an externalised configuration source, never from committed source or a committed properties file.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "OWASP A07 / CWE-798",
+      "evidence_hint": "spring.datasource.password or jwt.secret with a literal value in application.properties / application.yml; keystore passwords in code; credentials in a committed profile",
+      "cwe": ["CWE-798"],
+      "rule_ids": ["hardcoded-secret", "hardcoded-password"]
+    },
+    {
+      "id": "java-baseline:pinned-deps",
+      "title": "Dependency versions pinned",
+      "requirement": "Dependencies must be declared at exact versions, managed through a bill of materials or dependency-management block, rather than with version ranges or dynamic versions that resolve differently on each build.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "CWE-1104",
+      "evidence_hint": "pom.xml versions using LATEST or RELEASE; gradle dependencies with a + range; a spring-boot-dependencies BOM present or absent",
+      "cwe": ["CWE-1104"],
+      "rule_ids": []
+    },
+    {
+      "id": "java-baseline:deserialization",
+      "title": "No Java deserialization of untrusted data",
+      "requirement": "ObjectInputStream, XMLDecoder and equivalent native deserializers must not read data that crossed a trust boundary. Received data must use a schema-validated format.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-502",
+      "evidence_hint": "new ObjectInputStream(...).readObject(); XMLDecoder; a cache, session store or message consumer configured with a Java serialization codec; Jackson with default typing enabled",
+      "cwe": ["CWE-502"],
+      "rule_ids": ["insecure_deserialization"]
+    },
+    {
+      "id": "java-baseline:sql",
+      "title": "Parameterised database queries",
+      "requirement": "SQL must be issued through PreparedStatement bind parameters, JPA named parameters or a query builder's parameter API. Query text must never be assembled by concatenation with request data.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-89",
+      "evidence_hint": "Statement.executeQuery with a concatenated string; String.format into SQL; @Query with SpEL or string concatenation; createQuery built from a request value",
+      "cwe": ["CWE-89"],
+      "rule_ids": ["sql-injection", "formatted-sql-query"]
+    },
+    {
+      "id": "java-baseline:command",
+      "title": "External commands built from an argument list",
+      "requirement": "Commands must use ProcessBuilder with a command list. Runtime.exec with a single assembled string, or a list whose elements interpolate request data, is command injection.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-78",
+      "evidence_hint": "Runtime.getRuntime().exec(String); ProcessBuilder built from a concatenated string; sh -c passed a request value",
+      "cwe": ["CWE-78"],
+      "rule_ids": ["command-injection"]
+    },
+    {
+      "id": "java-baseline:xxe",
+      "title": "XML parsers hardened against external entities",
+      "requirement": "DocumentBuilderFactory, SAXParserFactory, XMLInputFactory and Transformer instances that read external XML must disable DTDs and external entity resolution explicitly; the platform defaults do not.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-611",
+      "evidence_hint": "a factory created with no setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true); XMLConstants.FEATURE_SECURE_PROCESSING absent; setExpandEntityReferences(true)",
+      "cwe": ["CWE-611"],
+      "rule_ids": ["xxe"]
+    },
+    {
+      "id": "java-baseline:expression-injection",
+      "title": "No expression language evaluated on user input",
+      "requirement": "SpEL, OGNL, MVEL and template expressions must not be compiled or evaluated from values that came from a request.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-917",
+      "evidence_hint": "SpelExpressionParser().parseExpression on request data; @Value or @Query carrying a request-derived expression; a template engine given user-supplied source",
+      "cwe": ["CWE-917", "CWE-94"],
+      "rule_ids": ["ssti", "rce"]
+    },
+    {
+      "id": "java-baseline:password-hash",
+      "title": "Passwords hashed with a slow KDF",
+      "requirement": "Stored passwords must use Argon2, bcrypt, scrypt or PBKDF2 with a per-user salt and a sane work factor. MessageDigest is not a password hash, and NoOpPasswordEncoder must not appear outside a test.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "OWASP Password Storage Cheat Sheet; CWE-916",
+      "evidence_hint": "MessageDigest.getInstance(\"MD5\"|\"SHA-1\") on a password; NoOpPasswordEncoder; BCryptPasswordEncoder and its strength argument",
+      "cwe": ["CWE-916", "CWE-327"],
+      "rule_ids": ["weak_password_detection"]
+    },
+    {
+      "id": "java-baseline:random",
+      "title": "Cryptographic randomness for security values",
+      "requirement": "Tokens, session ids, reset codes and nonces must come from SecureRandom. java.util.Random and Math.random are predictable from observed output.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-338",
+      "evidence_hint": "new Random() or Math.random() used to build a token, id, otp or salt; UUID.randomUUID is acceptable, a time-seeded Random is not",
+      "cwe": ["CWE-338", "CWE-330"],
+      "rule_ids": []
+    },
+    {
+      "id": "java-baseline:tls",
+      "title": "TLS validation not disabled",
+      "requirement": "Trust managers and hostname verifiers must not be replaced with permissive implementations. A trust-all TrustManager removes every protection TLS provides.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-295",
+      "evidence_hint": "an X509TrustManager whose checkServerTrusted body is empty; HostnameVerifier returning true; setDefaultSSLSocketFactory with a permissive context",
+      "cwe": ["CWE-295"],
+      "rule_ids": []
+    },
+    {
+      "id": "java-baseline:authz",
+      "title": "Endpoints carry an authorisation decision",
+      "requirement": "Every non-public endpoint must be covered by an explicit authorisation rule — a security filter chain matcher, @PreAuthorize, or equivalent — rather than inheriting a permissive default.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-862",
+      "evidence_hint": "anyRequest().permitAll(); a filter chain whose matchers miss a controller added later; controllers with no method security and no matching rule",
+      "cwe": ["CWE-862", "CWE-285"],
+      "rule_ids": ["broken_function_level_authorization"]
+    },
+    {
+      "id": "java-baseline:csrf",
+      "title": "CSRF protection not blanket-disabled",
+      "requirement": "CSRF protection may only be disabled where the application is genuinely stateless and token-authenticated. Disabling it wholesale on a cookie-session application is exploitable.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-352",
+      "evidence_hint": "csrf().disable() or csrf(AbstractHttpConfigurer::disable) together with session-based or cookie authentication elsewhere in the same config",
+      "cwe": ["CWE-352"],
+      "rule_ids": ["csrf"]
+    },
+    {
+      "id": "java-baseline:path-traversal",
+      "title": "User-supplied paths contained",
+      "requirement": "A filename from a request must be normalised and then checked to be inside the intended directory, by path relativisation rather than by a string prefix comparison.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-22",
+      "evidence_hint": "new File(dir, request.getParameter(...)); Paths.get with a request value; a startsWith() containment check; no normalize() before the check",
+      "cwe": ["CWE-22"],
+      "rule_ids": ["path_traversal_lfi_rfi"]
+    },
+    {
+      "id": "java-baseline:actuator",
+      "title": "Management and diagnostic endpoints not public",
+      "requirement": "Actuator, JMX, heap dump and environment endpoints must be either disabled or restricted to an authenticated role and a management port, because they expose configuration and credentials.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-489 / CWE-215",
+      "evidence_hint": "management.endpoints.web.exposure.include=*; env, heapdump or beans exposed; an actuator path permitted in the security config",
+      "cwe": ["CWE-489", "CWE-215"],
+      "rule_ids": ["information_disclosure"]
+    },
+    {
+      "id": "java-baseline:errors",
+      "title": "Stack traces not returned to clients",
+      "requirement": "Error responses must not include stack traces, SQL, or internal paths. Whitelabel and debug error pages must be off in a deployed configuration.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-209",
+      "evidence_hint": "server.error.include-stacktrace=always; include-message=always; an @ExceptionHandler returning ex.getMessage() or a printStackTrace to the response",
+      "cwe": ["CWE-209"],
+      "rule_ids": ["information_disclosure"]
+    },
+    {
+      "id": "java-baseline:log-injection",
+      "title": "Untrusted values not interpolated into log patterns",
+      "requirement": "User-controlled values must be passed as logging parameters, not concatenated into the message or format, and lookup evaluation in the logging configuration must be off.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-117 / CWE-532",
+      "evidence_hint": "log.info(\"user \" + userInput); String.format built into a log call; a log4j2 configuration where message lookups are enabled; request headers or bodies logged whole",
+      "cwe": ["CWE-117", "CWE-532"],
+      "rule_ids": ["information_disclosure", "header_injection"]
+    }
+  ]
+}

@@ -34,7 +34,8 @@ export const activeScans = () =>
   );
 
 export const startRepoScan = (repo: string, ref?: string, triageMax = 0,
-                              recon = false, budgetUsd = 0) =>
+                              recon = false, budgetUsd = 0,
+                              compliance: string[] = []) =>
   postJson<{ id: string; status: string }>("/api/scan", {
     repo,
     ...(ref ? { ref } : {}),
@@ -43,6 +44,10 @@ export const startRepoScan = (repo: string, ref?: string, triageMax = 0,
     ...(triageMax ? { triage_max: triageMax } : {}),
     ...(recon ? { recon: true } : {}),
     ...(budgetUsd > 0 ? { budget_usd: budgetUsd } : {}),
+    // Control packs to audit against, by id. Omitted when none is chosen: an empty list
+    // and an absent key mean the same thing to the backend, but sending nothing keeps
+    // the request identical to what it was before this feature existed.
+    ...(compliance.length ? { compliance } : {}),
   });
 
 /** The pull-request watcher: which repositories it polls and what it has found. */
@@ -51,6 +56,10 @@ export const getWatch = () => req<WatchState>("/api/watch");
 export const setWatch = (body: {
   enabled: boolean; repos?: string[]; interval_sec?: number; triage_max?: number;
   autofix?: boolean;
+  /** Control packs applied to every pull request the watcher scans. A standing choice,
+   *  like triage_max and autofix, not a per-pull-request one. */
+  compliance?: string[];
+  compliance_deep?: number;
 }) => postJson<WatchState>("/api/watch", body);
 
 export const AUTH_START = "/auth/start";

@@ -36,6 +36,10 @@ check:
 	  docket.static.triage docket.tools.source_read.tools docket.tools.source_write.tools \
 	  docket.agents.prompts.triage_static docket.agents.prompts.fix \
 	  docket.core.triage docket.core.recon \
+	  docket.compliance.models docket.compliance.packs docket.compliance.ingest \
+	  docket.compliance.service \
+	  docket.core.compliance \
+	  docket.tools.compliance.tool docket.agents.prompts.compliance \
 	  docket.tools.triage.tool docket.tools.recon.tool docket.tools.fix.tool docket.tools.source.tools \
 	  docket.report.markdown \
 	  docket.agents.prompts.root \
@@ -45,7 +49,7 @@ check:
 	  docket.core.pull_request docket.core.pr_watcher docket.core.pr_service \
 	  docket.core.remediation docket.report.diff docket.report.pr_report \
 	  docket.interface.session_store \
-	  app.backend.routers.service \
+	  app.backend.routers.service app.backend.routers.compliance \
 	  docket.service.store docket.service.poll docket.service.delivery docket.service.validate docket.service.fix \
 	  docket.tools.output_store docket.tools.shell.tools docket.tools.http_request.tools \
 	  docket.tools.reporting.tool docket.tools.notes.tools docket.tools.todo.tools \
@@ -74,7 +78,8 @@ test-fast:
 	                  tests/test_budget.py tests/test_viewer.py tests/test_gate.py \
 	                  tests/test_diff_scope.py tests/test_scm.py \
 	                  tests/test_service_store.py tests/test_source_write.py \
-	                  tests/test_validate.py tests/test_fix.py ; do \
+	                  tests/test_validate.py tests/test_fix.py \
+	                  tests/test_compliance.py ; do \
 	  uv run python $$f >/dev/null 2>&1 && echo "ok   $$f" || { echo "FAIL $$f"; exit 1; }; \
 	done
 

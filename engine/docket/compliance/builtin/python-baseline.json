@@ -1,0 +1,209 @@
+{
+  "id": "python-baseline",
+  "title": "Python security baseline",
+  "authority": "docket",
+  "version": "1",
+  "origin": "builtin",
+  "source_url": "https://owasp.org/www-project-top-ten/",
+  "notes": "Docket's own curated baseline, drawn from the weakness classes that OWASP, PyPA packaging guidance and the Bandit rule set all agree on, restated as controls a reader can check. Not a published standard and it does not claim to be one: `authority` is docket. Every control here is answerable by reading a Python repository, which is why the pack has no process entries.",
+  "controls": [
+    {
+      "id": "python-baseline:secrets",
+      "title": "No credentials in source",
+      "requirement": "API keys, passwords, tokens and connection strings must be read from the environment or a secret store, never written into source or committed configuration.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "OWASP A07 / CWE-798",
+      "evidence_hint": "string literals assigned to SECRET_KEY, PASSWORD, TOKEN, API_KEY; a committed .env with real values; settings modules with literal DSNs",
+      "cwe": ["CWE-798"],
+      "rule_ids": ["hardcoded-secret", "hardcoded-password", "generic-api-key"]
+    },
+    {
+      "id": "python-baseline:pinned-deps",
+      "title": "Dependencies pinned and locked",
+      "requirement": "Every dependency must be declared with an exact or bounded version and resolved through a committed lockfile, so a build is reproducible and a compromised upstream release cannot be pulled in silently.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "PyPA packaging guidance; CWE-1104",
+      "evidence_hint": "requirements.txt with bare package names; pyproject.toml with no constraints; a missing uv.lock / poetry.lock / requirements.lock",
+      "cwe": ["CWE-1104"],
+      "rule_ids": []
+    },
+    {
+      "id": "python-baseline:eval",
+      "title": "No dynamic evaluation of untrusted input",
+      "requirement": "eval, exec, compile and __import__ must not be reached with values derived from a request, a file, or any other untrusted source.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-95",
+      "evidence_hint": "eval( / exec( / compile( anywhere; check whether the argument traces back to request data",
+      "cwe": ["CWE-95", "CWE-94"],
+      "rule_ids": ["rce"]
+    },
+    {
+      "id": "python-baseline:pickle",
+      "title": "No unsafe deserialization",
+      "requirement": "pickle, marshal, shelve and dill must not load data that crossed a trust boundary. Use JSON or a schema-validated format for anything received.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-502",
+      "evidence_hint": "pickle.load / pickle.loads / marshal.loads; a cache, queue or session backend configured with a pickle serializer",
+      "cwe": ["CWE-502"],
+      "rule_ids": ["insecure_deserialization", "pickle"]
+    },
+    {
+      "id": "python-baseline:yaml",
+      "title": "YAML loaded safely",
+      "requirement": "YAML from any external source must be parsed with yaml.safe_load or an equivalent safe loader. yaml.load with the default loader constructs arbitrary Python objects.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-502",
+      "evidence_hint": "yaml.load( without Loader=SafeLoader; yaml.unsafe_load; yaml.full_load on external input",
+      "cwe": ["CWE-502"],
+      "rule_ids": ["yaml-load", "pyyaml-load"]
+    },
+    {
+      "id": "python-baseline:subprocess",
+      "title": "No shell string interpolation",
+      "requirement": "External commands must be invoked as an argument list with shell=False. A command assembled by string formatting with untrusted input is command injection.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-78",
+      "evidence_hint": "subprocess with shell=True; os.system; os.popen; f-strings or % formatting inside a command string",
+      "cwe": ["CWE-78"],
+      "rule_ids": ["command-injection", "os-system"]
+    },
+    {
+      "id": "python-baseline:sql",
+      "title": "Parameterised database queries",
+      "requirement": "SQL must be built with bound parameters or an ORM's query API. Query text must never be assembled by string concatenation or formatting with request data.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-89",
+      "evidence_hint": "cursor.execute with an f-string or % formatting; .raw( / text( with interpolation; SQLAlchemy text() built from request values",
+      "cwe": ["CWE-89"],
+      "rule_ids": ["sql-injection", "formatted-sql-query"]
+    },
+    {
+      "id": "python-baseline:password-hash",
+      "title": "Passwords hashed with a slow KDF",
+      "requirement": "Stored passwords must use argon2, bcrypt, scrypt or PBKDF2 with a per-user salt and a sane work factor. A general-purpose digest is not a password hash.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "OWASP Password Storage Cheat Sheet; CWE-916",
+      "evidence_hint": "hashlib.md5/sha1/sha256 applied to a password; django/passlib/bcrypt/argon2 usage; a work factor left at a library minimum",
+      "cwe": ["CWE-916", "CWE-327"],
+      "rule_ids": ["weak_password_detection"]
+    },
+    {
+      "id": "python-baseline:random",
+      "title": "Cryptographic randomness for security values",
+      "requirement": "Tokens, session ids, password-reset codes and nonces must come from `secrets` or os.urandom. The `random` module is deterministic and predictable from observed output.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-338",
+      "evidence_hint": "random.random / randint / choice / sample used to build a token, id, otp or salt",
+      "cwe": ["CWE-338", "CWE-330"],
+      "rule_ids": []
+    },
+    {
+      "id": "python-baseline:tls-verify",
+      "title": "Outbound TLS verified, with a timeout",
+      "requirement": "Outbound HTTP calls must verify certificates and must set a timeout. Disabling verification removes the only protection against an intercepting proxy.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-295",
+      "evidence_hint": "requests/httpx calls with verify=False; ssl._create_unverified_context; urlopen with no timeout; requests.get with no timeout=",
+      "cwe": ["CWE-295", "CWE-400"],
+      "rule_ids": []
+    },
+    {
+      "id": "python-baseline:debug",
+      "title": "Debug mode off and errors not leaked",
+      "requirement": "Debug and development modes must be off in any deployed configuration, and error responses must not carry stack traces, SQL, or configuration values to the client.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-489 / CWE-209",
+      "evidence_hint": "DEBUG = True; app.run(debug=True); FLASK_ENV=development; an error handler returning repr(exc) or traceback.format_exc()",
+      "cwe": ["CWE-489", "CWE-209"],
+      "rule_ids": ["information_disclosure"]
+    },
+    {
+      "id": "python-baseline:autoescape",
+      "title": "Template autoescaping enabled",
+      "requirement": "HTML templates must autoescape by default, and any explicit unescaping must be applied to values that are not attacker-controlled.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-79",
+      "evidence_hint": "jinja2.Environment without autoescape=True; |safe, mark_safe, Markup( applied to request data; render_template_string on user input",
+      "cwe": ["CWE-79", "CWE-1336"],
+      "rule_ids": ["xss", "ssti"]
+    },
+    {
+      "id": "python-baseline:assert",
+      "title": "No security checks written as assert",
+      "requirement": "Authorisation, validation and invariant checks must not be expressed with `assert`: the interpreter removes every assert under -O, so the check silently disappears in an optimised deployment.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "CWE-617",
+      "evidence_hint": "assert statements in request handlers, permission helpers or validators, as opposed to in tests",
+      "cwe": ["CWE-617"],
+      "rule_ids": []
+    },
+    {
+      "id": "python-baseline:tempfile",
+      "title": "Temporary files created safely",
+      "requirement": "Temporary files must be created atomically with tempfile.mkstemp or NamedTemporaryFile. A predictable path in a shared directory is a symlink race.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "CWE-377",
+      "evidence_hint": "tempfile.mktemp; hardcoded /tmp/<name> paths; os.path.join('/tmp', user_value)",
+      "cwe": ["CWE-377"],
+      "rule_ids": []
+    },
+    {
+      "id": "python-baseline:xxe",
+      "title": "XML parsed without external entities",
+      "requirement": "XML from an external source must be parsed with defusedxml or with external entity and DTD processing explicitly disabled.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-611",
+      "evidence_hint": "xml.etree.ElementTree, minidom, lxml.etree.fromstring or SAX parsers applied to request or upload data with no resolve_entities=False",
+      "cwe": ["CWE-611"],
+      "rule_ids": ["xxe"]
+    },
+    {
+      "id": "python-baseline:path-traversal",
+      "title": "User-supplied paths contained",
+      "requirement": "A filename or path from a request must be resolved and then checked to be inside the intended directory, by parent traversal rather than by a string prefix comparison.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-22",
+      "evidence_hint": "open(), send_file(), os.path.join() reached by a request value; a startswith() containment check; no .resolve() before the check",
+      "cwe": ["CWE-22"],
+      "rule_ids": ["path_traversal_lfi_rfi"]
+    },
+    {
+      "id": "python-baseline:log-secrets",
+      "title": "Secrets absent from logs",
+      "requirement": "Logging must not record passwords, tokens, card numbers, full request bodies or authorization headers, including in exception handlers that serialise a whole request.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-532",
+      "evidence_hint": "logger calls with request.form, request.json, request.headers or an auth token; print of a credential; exception handlers logging locals()",
+      "cwe": ["CWE-532"],
+      "rule_ids": ["information_disclosure"]
+    },
+    {
+      "id": "python-baseline:ssrf",
+      "title": "Outbound URLs from requests are constrained",
+      "requirement": "Where the application fetches a URL that a client influenced, the destination must be validated against an allowlist and redirects must not be followed to unvalidated hosts.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-918",
+      "evidence_hint": "requests/httpx/urlopen whose URL comes from request data; webhook, import-from-url, avatar-fetch or link-preview features; missing allow_redirects=False",
+      "cwe": ["CWE-918"],
+      "rule_ids": ["ssrf"]
+    }
+  ]
+}

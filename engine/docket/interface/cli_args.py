@@ -90,6 +90,17 @@ def add_scan_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                              "Cheap and flat-cost, and it surfaces candidates no pattern "
                              "match can see (a route with no auth, a guard an env var "
                              "disables). Also needs a model.")
+    parser.add_argument("--compliance", default=None, metavar="PACK[,PACK]",
+                        help="Audit the source against one or more control packs, e.g. "
+                             "owasp-api-2023,twelve-factor. An agent reads the repository "
+                             "and answers each control with a file:line citation. Controls "
+                             "no repository can answer (board review cadence, audit "
+                             "schedules) are reported as such rather than guessed at. "
+                             "Needs a model and a --source tree.")
+    parser.add_argument("--compliance-deep", type=int, default=0, metavar="N",
+                        help="After the batched audit, give N controls that came back "
+                             "failed or inconclusive a second, focused agent, worst-first "
+                             "(default: 0, off). Costs roughly one more agent per control.")
     return parser
 
 
@@ -143,12 +154,20 @@ def demo() -> None:
     # no diff scope. Every one is opt-in, so a plain `docket scan` costs what it did.
     assert (static.triage, static.recon, static.fix, static.budget, static.changed_files) \
         == (0, False, 0, None, None)
+    # Compliance is opt-in for the same reason: it spawns agents and spends money.
+    assert (static.compliance, static.compliance_deep) == (None, 0), static
     ci = parser.parse_args(["scan", "--static-only", "--source", "/repo",
                             "--changed-files", "changed.txt", "--triage", "12",
                             "--budget", "1.50", "--recon", "--fix", "3"])
     assert ci.changed_files == "changed.txt"
     assert ci.triage == 12 and ci.budget == 1.5 and ci.recon is True
     assert ci.fix == 3
+
+    packs = parser.parse_args(["scan", "--static-only", "--source", "/repo",
+                               "--compliance", "owasp-api-2023,twelve-factor",
+                               "--compliance-deep", "5"])
+    assert packs.compliance == "owasp-api-2023,twelve-factor", packs.compliance
+    assert packs.compliance_deep == 5
 
     view = parser.parse_args(["view", "baseline", "--format", "sarif", "--full"])
     assert view.run_name == "baseline" and view.format == "sarif" and view.full is True

@@ -359,6 +359,7 @@ def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
                  budget_usd: float | None = None,
                  triage_filter: Callable[[dict], bool] | None = None,
                  recon: bool = False, role: str = "head",
+                 compliance: list[str] | None = None, compliance_deep: int = 0,
                  progress: tuple[str, Any] | None = None) -> dict[str, Any] | None:
     """Fetch a commit and scan it, returning report.json. Used for both sides of a diff.
 
@@ -442,6 +443,7 @@ def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
             target_url=None, whitebox_path=str(source), run_name=run_name,
             use_sandbox=True, store=store, static_only=True,
             triage_max=triage_max, recon=recon, scope_paths=paths,
+            compliance=compliance or None, compliance_deep=compliance_deep,
             budget_usd=budget_usd, on_finding=found,
             # The live timeline. Without these the console shows a spinner for five
             # minutes, which is indistinguishable from a hung scan.
@@ -766,6 +768,56 @@ def _post_for_pr(ref: Any, verdict: dict[str, Any]) -> dict[str, str]:
     )
 
 
+def repo_compliance(repo: str) -> tuple[list[str], int] | None:
+    """The per-repo control-pack override from the service store, or None.
+
+    This is `Policy.compliance_packs`' only consumer. Two mechanisms exist for watcher
+    settings and they are not the same thing: `SESSION.watch` holds one standing choice
+    for every watched repository (what the console sets today), while `watched_repos.policy`
+    in service.db holds a per-repo one (what PUT /api/service/repos writes). A repo with a
+    policy overrides the session-wide default; a repo without one inherits it.
+
+    Returns None — not an empty list — when there is no override, because `[]` is an
+    operator saying "audit nothing for this repo" and must not be confused with "nothing
+    was configured". Degrades to None on ANY failure: a missing database, a locked one, a
+    malformed blob. A pull-request scan must never fail because a settings lookup did.
+    """
+    try:
+        from docket.service.store import Store, db_path
+
+        path = db_path()
+        if not path.exists():
+            return None
+        store = Store(path)
+        try:
+            for row in store.watched():
+                if row.get("full_name") != repo:
+                    continue
+                policy = row.get("policy") or {}
+                if not isinstance(policy, dict):
+                    return None
+                packs = policy.get("compliance_packs")
+                if packs is None:
+                    return None
+                if not isinstance(packs, list):
+                    # A bare string here iterates CHARACTER BY CHARACTER: "twelve-factor"
+                    # becomes thirteen pack ids named "t", "w", "e"... load_packs then
+                    # raises on the first one and takes the pull-request scan down with
+                    # it. The blob is a schemaless JSON column, so this is reachable by
+                    # anyone who PUTs a policy by hand.
+                    logger.warning("ignoring a non-list compliance_packs policy for %s", repo)
+                    return None
+                deep = policy.get("compliance_deep")
+                return ([str(p) for p in packs if str(p).strip()],
+                        int(deep) if isinstance(deep, int) and deep >= 0 else 0)
+        finally:
+            store.close()
+    except Exception:  # noqa: BLE001 — a settings lookup must not sink a scan
+        logger.debug("could not read the per-repo compliance policy for %s", repo,
+                     exc_info=True)
+    return None
+
+
 def _watch_loop() -> None:
     """Poll watched repositories until stopped. Runs on its own thread."""
     from docket.core.paths import runs_root
@@ -815,12 +867,22 @@ def _watch_loop() -> None:
         # has no handler around handle(), so the exception also killed the watcher thread
         # and every later pull request went unscanned in silence.
         progress_sink(ref.repo, ref.number)
+        # Resolved once per pull request, outside the try, so a settings read is never
+        # mistaken for a scan failure.
+        packs_for_repo = repo_compliance(ref.repo) or (
+            list(SESSION.watch.get("compliance") or []),
+            int(SESSION.watch.get("compliance_deep") or 0),
+        )
         try:
             outcome = scan_pull_request(
                 ref, token=SESSION.token or "", fetch_files=changed_files,
                 scan=partial(_scan_for_pr, progress=(ref.repo, ref.number)),
                 baselines=baselines, post=_post_for_pr,
                 triage_max=int(SESSION.watch.get("triage_max") or 5),
+                # Per-repo policy wins; otherwise the standing choice set with the watch,
+                # which is the same shape triage_max and autofix already use.
+                compliance=packs_for_repo[0],
+                compliance_deep=packs_for_repo[1],
             )
             posted = dict(outcome.posted)
             # Retained BEFORE autofix runs, so the button works whether autofix is off,
@@ -965,6 +1027,11 @@ class Session:
     watch: dict[str, Any] = field(default_factory=lambda: {
         "enabled": False,
         "autofix": False,
+        # Control packs applied to every pull request this watcher scans. [] not None:
+        # the console distinguishes "no pack chosen" from "a pack ran and assessed
+        # nothing", and an absent key would collapse the two (see runs.py:87).
+        "compliance": [],
+        "compliance_deep": 0,
         "repos": [],
         "interval_sec": 30,
         "last_poll": None,
@@ -1265,7 +1332,9 @@ def fetch_source(full_name: str, token: str, dest: Path, ref: str | None = None)
 
 def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = None,
                   triage_max: int = 0, recon: bool = False, cancel: Any = None,
-                  budget_usd: float | None = None) -> None:
+                  budget_usd: float | None = None,
+                  compliance: list[str] | None = None,
+                  compliance_deep: int = 0) -> None:
     """Fetch + scan, updating SESSION.scans[scan_id] as it goes. Never raises: the
     status dict is how the browser learns something failed.
 
@@ -1364,6 +1433,8 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             cancel=cancel,
             on_agent=note_agent,
             budget_usd=budget_usd,
+            compliance=compliance or None,
+            compliance_deep=compliance_deep,
         )
         # Persist the same artifacts `docket scan` writes, so a console scan is
         # visible to `docket view`, to the run-history panel, and to anything reading
@@ -1371,6 +1442,9 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
         from docket.core.paths import run_path
         from docket.report.writer import write_report
 
+        # Into the live state BEFORE the report is written, so a console watching the
+        # scan sees the pack results at the same moment the artifact gets them.
+        set_state(compliance=[p.model_dump(mode="json") for p in result.compliance])
         write_report(
             store, run_path(run_name), run_name=run_name,
             target=f"github:{full_name}" + (f"@{ref}" if ref else ""),
@@ -1379,6 +1453,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             agents=SESSION.scans[scan_id].get("agents"),
             summary=result.summary, cost_usd=result.cost_usd,
             agents_spawned=result.agents_spawned, success=result.success,
+            compliance=result.compliance,
         )
         from docket.report.state import get_global_report_state
 
@@ -1461,6 +1536,10 @@ def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
         # The attack surface an agent mapped: entry points, auth model, and candidates
         # no scanner rule encodes. None until recon runs, which is off by default.
         "surface": None,
+        # One row per requested control pack. An EMPTY LIST, never null: the console
+        # distinguishes "no pack was requested" from "a pack ran and assessed nothing",
+        # and a missing key would collapse the two (see the runs.py:87 scar).
+        "compliance": [],
         "coverage": {},
         "agents": [],
         "cost_usd": 0.0,
@@ -1474,7 +1553,8 @@ def new_scan_state(scan_id: str, full_name: str, ref: str | None = None,
         # nuclei needs a live URL and a source-only scan has none, and triage is off
         # unless asked for because it costs LLM money per finding.
         "stages": {"fetch": "pending", "trivy": "pending", "semgrep": "pending",
-                   "nuclei": "pending", "recon": "pending", "triage": "pending"},
+                   "nuclei": "pending", "recon": "pending", "compliance": "pending",
+                   "triage": "pending"},
         "findings": [],
         "finding_count": 0,
         "error": None,
@@ -1732,6 +1812,9 @@ def load_run(run_name: str) -> tuple[int, dict[str, Any]]:
         "error": None,
         "summary": data.get("summary", ""),
         "surface": data.get("surface") or None,
+        # Survives a reload for the same reason coverage and spend do: a finished run
+        # that was audited must not render as one that never was.
+        "compliance": data.get("compliance") or [],
         # Coverage and spend are in the report and must survive a reload. Without them
         # the console showed "not recorded" and "$0.0000" for a run that recorded both,
         # which reads as "nothing was analysed and nothing was spent" — the two claims
@@ -1821,6 +1904,14 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self._repos()
             elif path == "/api/watch":
                 self._json(200, watch_state())
+            elif path == "/api/compliance/packs":
+                from docket.compliance.service import packs_index
+
+                self._json(*packs_index())
+            elif path.startswith("/api/compliance/packs/"):
+                from docket.compliance.service import pack_detail
+
+                self._json(*pack_detail(path[len("/api/compliance/packs/"):]))
             elif path == "/api/scans/active":
                 self._json(200, {"scans": active_scans()})
             elif path.startswith("/api/scan/"):
@@ -1840,6 +1931,48 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 # the router decide, so a deep link or a refresh does not 404.
                 self._static("/index.html")
 
+        def do_DELETE(self) -> None:  # noqa: N802 — stdlib naming
+            """One route today. Present because deleting an uploaded pack IS a delete, and
+            a POST spelled /delete would be the kind of thing nobody removes later."""
+            path = urllib.parse.urlparse(self.path).path
+            if not path.startswith("/api/compliance/packs/"):
+                self._json(404, {"error": "no such endpoint"})
+                return
+            from docket.compliance.service import delete_pack
+
+            self._json(*delete_pack(path[len("/api/compliance/packs/"):]))
+
+        def _upload_pack(self) -> None:
+            """Raw body + ?filename=, so no multipart parser and no new dependency.
+
+            Length-checked BEFORE the read: rfile.read(n) with an attacker-supplied n is
+            how a single request becomes the server's memory ceiling.
+            """
+            from docket.compliance.ingest import MAX_BYTES
+            from docket.compliance.service import upload_pack
+            from docket.config.settings import RUNS_DIR, Config
+
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            filename = (query.get("filename") or [""])[0]
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except (TypeError, ValueError):
+                self._json(400, {"error": "a valid Content-Length is required"})
+                return
+            if length <= 0:
+                self._json(400, {"error": "no file content was sent"})
+                return
+            if length > MAX_BYTES:
+                self._json(413, {"error": f"file too large; the limit is "
+                                          f"{MAX_BYTES // 1024 // 1024} MB"})
+                return
+            body = self.rfile.read(length)
+            try:
+                config = Config.from_env()
+            except RuntimeError:
+                config = None  # the service layer answers 503 and names the fix
+            self._json(*upload_pack(body, filename, config=config, run_dir=RUNS_DIR))
+
         def do_POST(self) -> None:  # noqa: N802 — stdlib naming
             post_path = urllib.parse.urlparse(self.path).path
             if post_path == "/api/scan/cancel":
@@ -1850,6 +1983,9 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if post_path == "/api/pr/fix":
                 self._open_fix()
+                return
+            if post_path == "/api/compliance/packs":
+                self._upload_pack()
                 return
             if post_path != "/api/scan":
                 self._send(404, b"not found", "text/plain")
@@ -1900,7 +2036,28 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                     return
 
             recon = bool(body.get("recon"))
-            if triage_max or recon:
+            # Validated here, not in the scan thread. A typo'd pack id discovered after
+            # the container is up costs the operator a scan that cannot answer what they
+            # asked; refusing now costs nothing. Same stance as the --compliance flag.
+            compliance = [str(p).strip() for p in (body.get("compliance") or [])
+                          if str(p).strip()]
+            if compliance:
+                from docket.compliance.packs import PackError, load_packs
+
+                try:
+                    load_packs(compliance)
+                except PackError as exc:
+                    self._json(400, {"error": str(exc)})
+                    return
+            try:
+                compliance_deep = int(body.get("compliance_deep") or 0)
+            except (TypeError, ValueError):
+                self._json(400, {"error": "compliance_deep must be a whole number"})
+                return
+            if compliance_deep < 0:
+                self._json(400, {"error": "compliance_deep cannot be negative"})
+                return
+            if triage_max or recon or compliance:
                 try:
                     from docket.config.settings import Config
 
@@ -1920,7 +2077,7 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             threading.Thread(
                 target=run_repo_scan,
                 args=(full_name, SESSION.token, scan_id, ref, triage_max, recon, token,
-                      budget_usd),
+                      budget_usd, compliance, compliance_deep),
                 name=f"docket-scan-{scan_id}", daemon=True,
             ).start()
             self._json(202, {"id": scan_id, "status": "queued"})
@@ -1954,11 +2111,32 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             except (TypeError, ValueError):
                 self._json(400, {"error": "interval_sec must be a whole number"})
                 return
+            # Validated HERE, not per pull request. A typo'd pack id would otherwise be
+            # discovered inside the watcher thread, once per pull request, forever — and
+            # the console would show a watcher that runs and quietly audits nothing.
+            packs = [str(p).strip() for p in (body.get("compliance") or [])
+                     if str(p).strip()]
+            if packs:
+                from docket.compliance.packs import PackError, load_packs
+
+                try:
+                    load_packs(packs)
+                except PackError as exc:
+                    self._json(400, {"error": str(exc)})
+                    return
+            try:
+                compliance_deep = max(0, int(body.get("compliance_deep") or 0))
+            except (TypeError, ValueError):
+                self._json(400, {"error": "compliance_deep must be a whole number"})
+                return
             with SESSION.lock:
                 SESSION.watch["triage_max"] = max(0, int(body.get("triage_max") or 5))
                 # Opt-in. Opening pull requests on someone's repository is not a
                 # thing to start doing because a checkbox defaulted on.
                 SESSION.watch["autofix"] = bool(body.get("autofix"))
+                # Opt-in for the same reason: a pack is agents, and agents are money.
+                SESSION.watch["compliance"] = packs
+                SESSION.watch["compliance_deep"] = compliance_deep
             self._json(200, start_watching(repos, interval))
 
         def _open_fix(self) -> None:
@@ -2179,6 +2357,8 @@ def restore_session() -> bool:
             "interval_sec": int(watch.get("interval_sec") or 30),
             "triage_max": int(watch.get("triage_max") or 5),
             "autofix": bool(watch.get("autofix")),
+            "compliance": [str(p) for p in (watch.get("compliance") or [])],
+            "compliance_deep": int(watch.get("compliance_deep") or 0),
         })
         resume = bool(watch.get("enabled")) and bool(SESSION.watch["repos"])
         repos = list(SESSION.watch["repos"])
@@ -2269,10 +2449,59 @@ def demo() -> None:
     state = new_scan_state("abc", "o/r")
     assert state["status"] == "queued" and state["finding_count"] == 0
     assert state["ref"] is None  # None means "whatever GitHub calls the default"
-    assert set(state["stages"]) == {"fetch", "trivy", "semgrep", "nuclei", "recon", "triage"}
+    # Must match app/frontend/src/types.ts SCANNERS exactly. A stage the backend reports
+    # and the console does not know about is a phase the operator watches as a silent gap:
+    # compliance ran eight agents and $2.28 between recon and triage with no bulb for it.
+    assert set(state["stages"]) == {"fetch", "trivy", "semgrep", "nuclei", "recon",
+                                    "compliance", "triage"}
     # Both AI phases cost real money per run, so both are opt-in and neither can be
     # switched on by a caller that simply forgot to pass a flag.
     assert state["triage_max"] == 0, "triage costs money, so it must be opt-in"
+    assert state["compliance"] == [], "a control pack costs money, so it must be opt-in"
+
+    # --- per-repo compliance policy: the fallback is where this silently breaks --------
+    import tempfile as _tempfile
+
+    from docket.service.store import Store, db_path
+
+    _cwd = Path(_tempfile.mkdtemp())
+    _prev = os.getcwd()
+    os.chdir(_cwd)
+    try:
+        # No database at all is the normal case, and it must read as "no override" so the
+        # session-wide setting is used — never as "audit nothing".
+        assert repo_compliance("o/r") is None
+        path = db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        store = Store(path)
+        try:
+            # Watched, but no compliance policy: still inherit.
+            store.watch("o/r", {"triage_max": 5})
+            assert repo_compliance("o/r") is None, "a repo with no pack policy must inherit"
+            # A real override wins.
+            store.watch("o/r", {"compliance_packs": ["twelve-factor", " "],
+                                "compliance_deep": 2})
+            assert repo_compliance("o/r") == (["twelve-factor"], 2), repo_compliance("o/r")
+            # [] is an operator saying "audit nothing HERE", which is a different answer
+            # from "nothing configured" and must not fall back to the session default.
+            store.watch("o/r", {"compliance_packs": []})
+            assert repo_compliance("o/r") == ([], 0), repo_compliance("o/r")
+            # A repo nobody configured is unaffected by another repo's policy.
+            assert repo_compliance("other/repo") is None
+            # A malformed blob degrades to inherit rather than raising inside the watcher.
+            # A bare STRING would otherwise iterate character by character into thirteen
+            # pack ids and take the scan down on the first load. It must read as "not
+            # configured" and inherit.
+            store.watch("bad/repo", {"compliance_packs": "twelve-factor"})
+            assert repo_compliance("bad/repo") is None, repo_compliance("bad/repo")
+            # A negative depth is clamped rather than passed through.
+            store.watch("neg/repo", {"compliance_packs": ["twelve-factor"],
+                                     "compliance_deep": -4})
+            assert repo_compliance("neg/repo") == (["twelve-factor"], 0)
+        finally:
+            store.close()
+    finally:
+        os.chdir(_prev)
     assert state["recon"] is False, "recon costs money, so it must be opt-in"
     assert state["surface"] is None, "no surface until an agent actually maps one"
     assert new_scan_state("abc", "o/r", None, 0, True)["recon"] is True

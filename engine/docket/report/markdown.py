@@ -66,6 +66,94 @@ def _coverage_section(coverage: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _compliance_section(packs: list[dict[str, Any]]) -> list[str]:
+    """Control-pack results, as a section a person reads rather than a table of numbers.
+
+    Two numbers per pack and never one, for the reason stated in
+    compliance/models.py: pass-rate and coverage move in opposite directions, so a single
+    percentage rewards an agent that gives up on the hard controls. A pack that assessed
+    nothing says so in words.
+
+    Every failed control prints its citation. A control marked satisfied with nothing a
+    reader can open is exactly what this feature exists not to produce.
+    """
+    if not packs:
+        return []
+    lines = ["## Compliance", ""]
+    for pack in packs:
+        if not isinstance(pack, dict):
+            continue
+        results = [r for r in (pack.get("results") or []) if isinstance(r, dict)]
+        counts: dict[str, int] = {}
+        for result in results:
+            key = str(result.get("status", "unknown"))
+            counts[key] = counts.get(key, 0) + 1
+        assessed = counts.get("pass", 0) + counts.get("fail", 0)
+        total = pack.get("total_controls", len(results))
+
+        lines.append(f"### {pack.get('pack_title', pack.get('pack_id', 'pack'))}")
+        lines.append("")
+        if assessed:
+            lines.append(
+                f"**{counts.get('pass', 0)} of {assessed} source-checkable controls "
+                f"satisfied**, {counts.get('fail', 0)} not. {total} control(s) in the pack."
+            )
+        else:
+            lines.append(
+                f"**No control could be assessed from source.** {total} control(s) in the "
+                "pack. This is not a pass: nothing here was checked."
+            )
+        detail = []
+        if counts.get("not_observable"):
+            detail.append(f"{counts['not_observable']} cannot be answered by reading a "
+                          "repository (organisational or deployment controls)")
+        if counts.get("unknown"):
+            detail.append(f"{counts['unknown']} inconclusive")
+        if counts.get("not_applicable"):
+            detail.append(f"{counts['not_applicable']} do not apply here")
+        if pack.get("unjudged"):
+            detail.append(f"{pack['unjudged']} were never reached by an agent")
+        if detail:
+            lines.append("")
+            lines.append("- " + "\n- ".join(detail))
+        lines.append("")
+
+        failed = [r for r in results if r.get("status") == "fail"]
+        if failed:
+            lines.append("**Not satisfied:**")
+            lines.append("")
+            for result in failed:
+                where = ", ".join(
+                    f"`{c.get('file')}" + (f":{c['line']}`" if c.get("line") else "`")
+                    for c in (result.get("citations") or [])[:3]
+                    if isinstance(c, dict) and c.get("file")
+                )
+                proven = (" **A reproduced finding corroborates this.**"
+                          if result.get("proven_findings") else "")
+                lines.append(f"- **{result.get('control_id')}** — "
+                             f"{str(result.get('rationale', '')).strip()}{proven}"
+                             + (f" ({where})" if where else ""))
+            lines.append("")
+
+        contradicted = [r for r in results if r.get("contradicted_by")]
+        if contradicted:
+            lines += [
+                f"**{len(contradicted)} control(s) were marked satisfied while a "
+                "reproduced finding of the same weakness class exists in this scan.** "
+                "Treat those passes with suspicion:",
+                "",
+                *(f"- `{r.get('control_id')}`" for r in contradicted),
+                "",
+            ]
+    lines += [
+        "> This is an evidence-based review of source code, not an attestation of "
+        "compliance. Controls that no repository can answer are reported as unassessed "
+        "and are never counted as satisfied.",
+        "",
+    ]
+    return lines
+
+
 def _finding_block(finding: dict[str, Any], index: int) -> list[str]:
     severity = str(finding.get("severity", "info")).upper()
     lines = [
@@ -144,6 +232,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         ]
 
     lines += _coverage_section(report.get("coverage") or {})
+    lines += _compliance_section(report.get("compliance") or [])
 
     lines += [
         "## What this report is, and is not",
@@ -157,6 +246,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         "not scored by anyone — that is not a score of zero.",
         "- An agent **triage** verdict is reasoning over source about whether untrusted "
         "input can reach the line. Nothing was executed.",
+        "- A **compliance** control result is an agent's reading of whether a written "
+        "requirement is met, evidenced by a file and line it opened. It is weaker than a "
+        "triage verdict and far weaker than a reproduction, it is counted separately from "
+        "findings, and it never affects the pass/fail of this scan.",
         "- Nothing here was proven by exploitation unless a finding explicitly carries a "
         "reproduced request and response.",
         "",
@@ -191,6 +284,54 @@ def render_markdown(report: dict[str, Any]) -> str:
             "",
         ]
     return "\n".join(lines)
+
+
+def _compliance_demo() -> None:
+    """The three shapes that must not be confused with one another."""
+    # A pack that assessed nothing must SAY so. Silence here reads as a clean sheet.
+    nothing = "\n".join(_compliance_section([{
+        "pack_id": "sebi-cscrf", "pack_title": "SEBI CSCRF", "total_controls": 43,
+        "unjudged": 14,
+        "results": [{"status": "not_observable"}] * 29 + [{"status": "unknown"}] * 14,
+    }]))
+    assert "No control could be assessed" in nothing, nothing
+    assert "This is not a pass" in nothing, nothing
+    assert "29 cannot be answered" in nothing, nothing
+    assert "14 were never reached" in nothing, nothing
+    # The word that must never appear next to a regulator's name.
+    assert "compliant" not in nothing.lower(), nothing
+
+    mixed = "\n".join(_compliance_section([{
+        "pack_id": "twelve-factor", "pack_title": "The Twelve-Factor App",
+        "total_controls": 12, "unjudged": 0,
+        "results": [
+            {"control_id": "twelve-factor:II", "status": "pass",
+             "contradicted_by": ["abc1"]},
+            {"control_id": "twelve-factor:III", "status": "fail",
+             "rationale": "SECRET_KEY is a literal in settings.py.",
+             "proven_findings": ["deadbeef"],
+             "citations": [{"file": "settings.py", "line": 3}]},
+            {"control_id": "twelve-factor:VIII", "status": "not_observable"},
+        ],
+    }]))
+    # Two numbers, and the denominator is what was ASSESSED, not the pack size.
+    assert "1 of 2 source-checkable controls satisfied" in mixed, mixed
+    assert "12 control(s) in the pack" in mixed, mixed
+    # A failure prints the line a reader can open. Without it this is just an opinion.
+    assert "`settings.py:3`" in mixed, mixed
+    # ...and says when it is more than an opinion.
+    assert "A reproduced finding corroborates this." in mixed, mixed
+    # A pass sitting next to a reproduced exploit of the same class is the signal that
+    # says how far to trust the whole run, so it gets its own paragraph.
+    assert "marked satisfied while a reproduced finding" in mixed, mixed
+    assert "compliant" not in mixed.lower(), mixed
+
+    # No pack requested means no section at all, not an empty heading.
+    assert _compliance_section([]) == []
+    # Malformed rows must not raise: this renders at the end of a scan that already cost
+    # money, and a crash here loses the whole brief.
+    for junk in ([None], [{"results": "no"}], [{"results": [None]}], [{}]):
+        _compliance_section(junk)
 
 
 def demo() -> None:
@@ -241,6 +382,16 @@ def demo() -> None:
     bare = render_markdown({"findings": [], "finding_count": 0})
     assert "Not recorded for this run" in bare
     assert "before concluding the repository is clean" in bare
+    _compliance_demo()
+    # And the caveat that keeps a reader from over-reading a control result.
+    audited = render_markdown({"findings": [], "severity_counts": {}, "compliance": [{
+        "pack_id": "p", "pack_title": "Pack", "total_controls": 1,
+        "results": [{"control_id": "p:1", "status": "fail", "rationale": "x",
+                     "citations": [{"file": "a.py", "line": 1}]}]}]})
+    assert "## Compliance" in audited, audited
+    assert "never affects the pass/fail of this scan" in audited, audited
+    # A run with no pack renders exactly as it did before this feature existed.
+    assert "## Compliance" not in render_markdown({"findings": [], "severity_counts": {}})
     print("report.markdown: ok")
 
 

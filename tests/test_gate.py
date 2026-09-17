@@ -161,6 +161,77 @@ def test_real_run_reports() -> None:
             assert not annotation["path"].startswith("/"), (path, annotation)
 
 
+def _compliance_report(status: str = "fail", **overrides) -> dict:
+    """A report whose ONLY content is a compliance result. Nothing here is a finding."""
+    return report(compliance=[{
+        "pack_id": "sebi-cscrf", "pack_title": "SEBI CSCRF", "authority": "SEBI",
+        "total_controls": 45, "requested": 13, "judged": 13, "unjudged": 0,
+        "results": [{
+            "control_id": "sebi-cscrf:C1", "status": status,
+            "rationale": "Credentials are hardcoded in settings.py rather than read from "
+                         "the environment.",
+            "citations": [{"file": "settings.py", "line": 7, "quote": "PASSWORD = 'x'"}],
+            "proven_findings": [], "contradicted_by": [],
+        }],
+    }], compliance_requested=13, compliance_judged=13, compliance_unjudged=0, **overrides)
+
+
+def test_a_failed_control_never_gates() -> None:
+    """THE load-bearing compliance case.
+
+    A control result is an agent's reading of a written requirement — weaker evidence than
+    the triage verdict that is already barred from raising a finding to the floor. If this
+    test ever fails, docket has started failing builds on an LLM's opinion, and the two
+    fail-opens in gate.py's docstring (zero budget, fork PR with no key) mean it would do
+    so inconsistently.
+    """
+    clean = evaluate(report()).reasons
+    for status in ("fail", "pass", "unknown", "not_applicable", "not_observable"):
+        result = evaluate(_compliance_report(status))
+        assert (result.conclusion, result.exit_code) == ("success", 0), (status, result)
+        # Identical to a report with no compliance section at all: the control contributed
+        # nothing to the verdict, in either direction.
+        assert result.reasons == clean, (status, result.reasons)
+        assert not any("sebi" in r.lower() or "control" in r.lower() for r in result.reasons)
+
+
+def test_a_failed_control_annotates_at_notice_only() -> None:
+    """It may speak on the diff. It may not shout."""
+    annotations = evaluate(_compliance_report("fail")).annotations
+    assert len(annotations) == 1, annotations
+    only = annotations[0]
+    assert only["annotation_level"] == "notice", only
+    assert only["path"] == "settings.py" and only["start_line"] == 7, only
+    assert "sebi-cscrf:C1" in only["title"], only
+    # Never an attestation: the message says what was reviewed, not that anyone complies.
+    assert "compliant" not in only["message"].lower(), only
+
+    # A pass, an unknown and an uncited fail all annotate nothing: there is no line worth
+    # marking, and a marker on a line where nothing is known is noise.
+    for quiet in ("pass", "unknown", "not_applicable"):
+        assert evaluate(_compliance_report(quiet)).annotations == [], quiet
+    uncited = _compliance_report("fail")
+    uncited["compliance"][0]["results"][0]["citations"] = []
+    assert evaluate(uncited).annotations == [], uncited
+
+
+def test_a_broken_compliance_stage_needs_a_human() -> None:
+    """The one route to non-green, and it is about the RUN, not the code: the operator
+    asked for an audit and did not get one."""
+    result = evaluate(_compliance_report("fail", stages={"compliance": "error"}))
+    assert (result.conclusion, result.exit_code) == ("action_required", 1), result
+
+
+def test_malformed_compliance_cannot_crash_the_gate() -> None:
+    """Same totality guarantee the rest of the report gets: unreadable must not read
+    as green, and must not raise either."""
+    for junk in ("nope", {"a": 1}, [None], [{"results": "no"}], [{"results": [None]}],
+                 [{"results": [{"status": "fail", "citations": "x"}]}]):
+        result = evaluate(report(compliance=junk))
+        assert result.conclusion in ("success", "failure", "action_required"), junk
+        assert result.exit_code in (0, 1, 2), junk
+
+
 if __name__ == "__main__":
     test_floor_survives_a_false_positive_verdict()
     test_confirmed_verdict_fails()
@@ -175,4 +246,8 @@ if __name__ == "__main__":
     test_untriaged_findings_warn_but_do_not_block()
     test_trivy_cvss_floor()
     test_real_run_reports()
+    test_a_failed_control_never_gates()
+    test_a_failed_control_annotates_at_notice_only()
+    test_a_broken_compliance_stage_needs_a_human()
+    test_malformed_compliance_cannot_crash_the_gate()
     print("test_gate: ok")

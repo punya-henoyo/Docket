@@ -248,6 +248,128 @@ export interface ScanState {
   input_tokens?: number;
   output_tokens?: number;
   budget_usd?: number;
+  /** One row per requested control pack. ALWAYS an array — [] means no pack was asked
+   *  for, which is a different statement from a pack that ran and assessed nothing. */
+  compliance?: PackResult[];
+}
+
+/* ---------------------------------------------------------------------------
+ * Compliance. Mirrors engine/docket/compliance/models.py field-for-field.
+ *
+ * Note what is NOT here: no `score`, no `percent`. There is no honest single number —
+ * pass-rate and coverage move in opposite directions, so an agent that gives up on
+ * every hard control would score 100% on what is left. Render `counts` and `assessed`,
+ * or the backend's `label`. Never divide by `total_controls` to get a pass rate.
+ * ------------------------------------------------------------------------- */
+
+export type ControlStatus =
+  | "pass"
+  | "fail"
+  | "not_applicable"
+  /** Looked, could not settle it. The safe landing for anything unrecognised. */
+  | "unknown"
+  /** No repository can answer this one — it is organisational or a deployment property.
+   *  Written by the backend, never by a model, and never counted as satisfied. */
+  | "not_observable";
+
+/** Display order: what was decided first, what could not be answered last. */
+export const CONTROL_STATUSES: ControlStatus[] = [
+  "fail",
+  "pass",
+  "unknown",
+  "not_applicable",
+  "not_observable",
+];
+
+export const CONTROL_STATUS_LABEL: Record<ControlStatus, string> = {
+  fail: "Not satisfied",
+  pass: "Satisfied",
+  unknown: "Inconclusive",
+  not_applicable: "Not applicable",
+  not_observable: "Not answerable from code",
+};
+
+/** The compliance analogue of PoC, and deliberately weaker. A PoC is request/response:
+ *  something that happened. This is file/line/quote: something that was read. */
+export interface Citation {
+  file: string;
+  line: number | null;
+  quote: string;
+}
+
+export interface ControlResult {
+  control_id: string;
+  status: ControlStatus;
+  rationale: string;
+  citations: Citation[];
+  /** What was searched before giving up. Only meaningful on `unknown`. */
+  looked_at: string;
+  judged_by: string;
+  judged_at: string;
+  /** dedupe_keys of findings that independently PROVED this control's weakness class.
+   *  Non-empty on a `fail` means it is more than an LLM's opinion. */
+  proven_findings: string[];
+  /** A `pass` sitting next to a reproduced exploit of the same class. The count of these
+   *  is the honest measure of how far to trust a pack run. */
+  contradicted_by: string[];
+  /** Set when the finish tool refused to take a claim at face value — an uncited pass
+   *  becomes an unknown, and this records what it was. */
+  downgraded_from: ControlStatus | null;
+  escalated: boolean;
+}
+
+export interface PackResult {
+  pack_id: string;
+  pack_title: string;
+  authority: string;
+  version: string;
+  origin: "builtin" | "uploaded";
+  /** Every control in the pack, including the ones no repository can answer. */
+  total_controls: number;
+  results: ControlResult[];
+  requested: number;
+  judged: number;
+  /** Controls the runner wrote as unknown because no agent reached them. Distinct from
+   *  a control that was judged inconclusive — this one was never looked at. */
+  unjudged: number;
+}
+
+/** A row from GET /api/compliance/packs — what a picker needs, without the controls. */
+export interface PackSummary {
+  id: string;
+  title?: string;
+  authority?: string;
+  version?: string;
+  origin?: "builtin" | "uploaded";
+  source_url?: string;
+  total_controls?: number;
+  /** The number a picker must show BEFORE the choice: 14 of 43, not 43. */
+  source_controls?: number;
+  usable: boolean;
+  error?: string;
+}
+
+export interface ControlDefinition {
+  id: string;
+  title: string;
+  requirement: string;
+  observability: "source" | "runtime" | "process";
+  severity: Severity;
+  citation: string;
+  evidence_hint: string;
+  cwe: string[];
+  rule_ids: string[];
+}
+
+export interface ControlPack {
+  id: string;
+  title: string;
+  authority: string;
+  version: string;
+  origin: "builtin" | "uploaded";
+  source_url: string;
+  notes: string;
+  controls: ControlDefinition[];
 }
 
 export interface Session {
@@ -284,7 +406,11 @@ export interface RunSummary {
   failed?: boolean;
 }
 
-export const SCANNERS = ["fetch", "trivy", "semgrep", "nuclei", "recon", "triage"] as const;
+// Order matters: these are the radar's rings and the stage list, outermost last, and
+// they must match the order run_scan actually executes them in. `compliance` sits
+// between recon and triage because that is where the runner puts it.
+export const SCANNERS = ["fetch", "trivy", "semgrep", "nuclei", "recon", "compliance",
+                         "triage"] as const;
 export type Scanner = (typeof SCANNERS)[number];
 
 export const SCANNER_LABEL: Record<Scanner, string> = {
@@ -293,6 +419,7 @@ export const SCANNER_LABEL: Record<Scanner, string> = {
   semgrep: "semgrep · source",
   nuclei: "nuclei · live target",
   recon: "recon · AI attack surface",
+  compliance: "compliance · AI control audit",
   triage: "triage · AI reachability",
 };
 

@@ -176,6 +176,12 @@ class Policy(BaseModel):
     enabled_classes: list[str] | None = None
     # ge=0 because 0 is a real, meaningful setting: judge nothing.
     triage_max: int | None = Field(default=None, ge=0)
+    # Control packs to audit this repo's pull requests against, by id. None inherits;
+    # [] is an operator saying "audit nothing", which is a different answer.
+    compliance_packs: list[str] | None = None
+    # How many failed or inconclusive controls get a second, focused agent. ge=0 because
+    # 0 is meaningful: run the cheap batched pass and stop there.
+    compliance_deep: int | None = Field(default=None, ge=0)
     # gt=0 because 0 means UNSET, not "spend nothing" — a 0 ceiling would make every agent
     # trip its budget check before its first turn and record `uncertain`, which is a
     # fail-open dressed as a clean scan (see service/gate.py's opening comment).

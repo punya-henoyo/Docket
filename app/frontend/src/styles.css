@@ -1,4 +1,4 @@
-/* Design language: a dark product surface in the modern security-SaaS idiom.
+/* Design language: Henoyo Design System v1 — cream paper, near-black ink, one green.
    Supersedes the literal wireframe transcription, which used 2px and dashed borders
    and set every last label in monospace. That reads as a terminal dump, not a console
    someone briefs a security lead from.
@@ -808,3 +808,57 @@ table.flagged td.mono { font-family: var(--mono); }
 .anode.big .d { font: 12px var(--mono); color: var(--ink-3); }
 .aarrow-v { align-self: center; color: var(--crit); font-size: 20px; }
 .apath-why { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+
+/* ---------------------------------------------------------------------------
+ * Compliance. A control table is a different shape from the findings table: the
+ * requirement text is the widest thing on the row and the status is the narrowest,
+ * so .gtable's 1.5fr/90/1fr/88/78 grid does not fit it. Same construction though —
+ * a grid whose children all carry min-width: 0, because one long control id
+ * otherwise pushes the track past the viewport.
+ * ------------------------------------------------------------------------- */
+.ctable { display: flex; flex-direction: column; }
+.ctable > * {
+  display: grid;
+  /* TWO columns, not three. A third fixed track for the control id left ~58px for the
+     requirement inside .split's 340px rail and the cells collided. The id now sits under
+     the title instead, so there is no fixed track to squeeze the flexible one. */
+  grid-template-columns: minmax(0, 1fr) 140px;
+  align-items: center;
+  padding: 11px 16px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  background: none; border-left: 0; border-right: 0; border-bottom: 0;
+  color: inherit; width: 100%; font: 13.5px var(--sans);
+}
+.ctable > * > * { min-width: 0; }
+.ctable > button { cursor: pointer; transition: background .12s ease; }
+.ctable > button:hover { background: var(--wash); }
+.ctable > .head {
+  font: 500 11px var(--sans);
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3);
+  padding: 8px 16px;
+}
+.ctable .cid { font: 11.5px var(--mono); color: var(--ink-3); }
+.ctable .clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 640px) {
+  .ctable > * { grid-template-columns: minmax(0, 1fr) 110px; }
+}
+
+/* Status pill. Semantic colour only, per BRAND.md: a failed control is the same red
+   that means "something is wrong" everywhere else on this page, and `pass` is verdant —
+   the one green. Neutral grey for the two that assert nothing. */
+.cstat {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 500 12px var(--sans); color: var(--ink-2); white-space: nowrap;
+}
+.cstat .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.cstat.fail { color: var(--crit); }
+.cstat.fail .dot { background: var(--crit); }
+.cstat.pass { color: var(--ok); }
+.cstat.pass .dot { background: var(--ok); }
+.cstat.unknown { color: var(--med); }
+.cstat.unknown .dot { background: var(--med); }
+.cstat.not_applicable .dot { background: var(--ink-3); }
+/* Hollow, not filled: this control was never assessed, and a solid dot would read as
+   a result. */
+.cstat.not_observable .dot { background: none; border: 1.5px solid var(--line-2); }

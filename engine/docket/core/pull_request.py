@@ -263,6 +263,11 @@ def evaluate(base_report: dict[str, Any] | None, head_report: dict[str, Any],
         "caveats": diff.caveats,
         "scoped_to": plan.paths,
         "notes": plan.notes,
+        # From the HEAD report only, because compliance runs on head only (pr_service
+        # passes it there and never to the base scan). Carried through so the PR comment
+        # can show it; it is NOT part of `gate()` above and cannot move `exit_code` — see
+        # service/gate.py's advisory contract.
+        "compliance": head_report.get("compliance") or [],
     }
 
 

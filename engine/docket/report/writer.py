@@ -208,6 +208,7 @@ def build_report(
     suppressed_outside_diff: int = 0,
     patches: list | None = None,
     scanned_paths: list[str] | None = None,
+    compliance: list | None = None,
 ) -> dict:
     """`leads` are static-analysis candidates (docket.static.correlate.Lead). They are
     reported in a SEPARATE list from `findings` and never merged into it.
@@ -332,6 +333,24 @@ def build_report(
                             if triage_requested else 0,
         "triage_judged": len(triage_rows),
         "triage_unjudged": triage_unjudged,
+        # Control-pack results: a THIRD kind of claim, in a third list. A Finding is a
+        # reproduction and a static candidate is a pattern match; a control result is an
+        # agent's cited reading of whether a written requirement is met. Its evidence is a
+        # file:line somebody read, never a reproduced request, so it is deliberately NOT in
+        # `findings`, NOT in `finding_count` and NOT in the exit code — the same structural
+        # argument that keeps `flagged_not_proven` separate.
+        #
+        # Each row carries `counts`, `requested`, `judged` and `unjudged` rather than a
+        # percentage. There is no honest single number: pass-rate and coverage move in
+        # opposite directions, so an agent that gives up on every hard control would score
+        # 100% on what is left. See compliance/models.py PackResult.
+        "compliance": [p.model_dump(mode="json") for p in compliance or []],
+        # COMPLETENESS again, and for the same reason it exists for triage: a reader who
+        # cannot tell "assessed every checkable control" from "the budget died after two"
+        # will report a clean pack that nobody finished.
+        "compliance_requested": sum(p.requested for p in compliance or []),
+        "compliance_judged": sum(p.judged for p in compliance or []),
+        "compliance_unjudged": sum(p.unjudged for p in compliance or []),
         # How much of the tree was deliberately not reported. Diff-scoped scanning is
         # honest only if this number is stated: silence reads as "the repository is clean".
         "suppressed_outside_diff": suppressed_outside_diff,
@@ -381,7 +400,23 @@ def write_report(store: FindingStore, out_dir: Path, **kwargs) -> dict[str, Path
     # `target` ends up meaning, and reading it back keeps the two artifacts in agreement.
     sarif_path = write_sarif(out_dir / "report.sarif", sort_findings(store.findings()),
                              target=report["target"])
-    return {"json": json_path, "sarif": sarif_path}
+    paths = {"json": json_path, "sarif": sarif_path}
+    # Standalone, and only when a pack actually ran. A compliance.json sitting in every
+    # run directory holding `[]` reads as "audited, nothing to say" to anyone who finds
+    # it without the report beside it.
+    if report["compliance"]:
+        compliance_path = out_dir / "compliance.json"
+        compliance_path.write_text(json.dumps(redact_document({
+            "run_name": report["run_name"],
+            "target": report["target"],
+            "generated_at": report["generated_at"],
+            "requested": report["compliance_requested"],
+            "judged": report["compliance_judged"],
+            "unjudged": report["compliance_unjudged"],
+            "packs": report["compliance"],
+        }), indent=2))
+        paths["compliance"] = compliance_path
+    return paths
 
 
 def format_summary(report: dict, *, paths: dict[str, Path] | None = None, full: bool = False) -> str:
@@ -469,6 +504,29 @@ def demo() -> None:
     # Diff scoping is honest only if the suppressed count is stated.
     assert build_report(empty, run_name="r", target="t",
                         suppressed_outside_diff=42)["suppressed_outside_diff"] == 42
+    # --- compliance is a THIRD list, and must not leak into the first ------------------
+    from docket.compliance.models import ControlResult, ControlStatus, PackResult
+
+    failed = PackResult(
+        pack_id="p", pack_title="Pack", authority="a", total_controls=3,
+        requested=2, judged=2, unjudged=0,
+        results=[ControlResult(control_id="p:1", status=ControlStatus.FAIL,
+                               rationale="DEBUG is on",
+                               citations=[{"file": "settings.py", "line": 1}])])
+    audited = build_report(empty, run_name="r", target="t", compliance=[failed])
+    assert audited["compliance"][0]["pack_id"] == "p", audited["compliance"]
+    assert audited["compliance_requested"] == 2 and audited["compliance_judged"] == 2
+    # THE LOAD-BEARING ONE. A failed control is an agent's reading, not a reproduction.
+    # If it ever reaches finding_count it reaches the exit code, and docket starts failing
+    # builds on an LLM's opinion — which is exactly what the gate contract forbids.
+    assert audited["finding_count"] == 0, audited["finding_count"]
+    assert audited["findings"] == [] and audited["flagged_not_proven"] == []
+    assert audited["severity_counts"] == build_report(empty, run_name="r",
+                                                      target="t")["severity_counts"]
+    # A run with no pack requested says so with an empty list, never a missing key: one
+    # absent key blanked the whole console page once already (runs.py:87).
+    assert build_report(empty, run_name="r", target="t")["compliance"] == []
+    assert build_report(empty, run_name="r", target="t")["compliance_requested"] == 0
     # `patches` records what --fix attempted, refusals included, with the agent's claim and
     # the scanner's verdict side by side. A claimed fix that did not verify must be visible
     # as exactly that, not absent.

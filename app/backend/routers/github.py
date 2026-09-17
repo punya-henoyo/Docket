@@ -50,6 +50,11 @@ class RepoScanRequest(BaseModel):
     # actually costs. triage_max caps how many findings are judged and says nothing about
     # the cost of each. gt=0 because 0 means "unset", not "spend nothing".
     budget_usd: float | None = Field(default=None, gt=0)
+    # Control packs to audit the source against, by id. Off unless asked for: each pack
+    # spawns agents. Validated in the route so a typo'd id is refused before a container
+    # starts, not discovered after the scan is paid for.
+    compliance: list[str] = Field(default_factory=list)
+    compliance_deep: int = Field(default=0, ge=0)
 
 
 @router.get("/api/session")
@@ -201,7 +206,15 @@ def start_repo_scan(request: RepoScanRequest) -> dict:
     # interpolated into a GitHub API path.
     if ref is not None and not connect.valid_ref(ref):
         raise HTTPException(400, f"not a usable branch/tag/sha: {ref!r}")
-    if request.triage_max or request.recon:
+    packs = [p.strip() for p in request.compliance if p.strip()]
+    if packs:
+        from docket.compliance.packs import PackError, load_packs
+
+        try:
+            load_packs(packs)
+        except PackError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    if request.triage_max or request.recon or packs:
         # Refuse early with the real reason rather than starting a scan that dies partway
         # through its first agent turn. Config.from_env() is what loads .env, so asking it
         # beats reading os.environ — the same mistake that made oauth_config report an
@@ -230,7 +243,7 @@ def start_repo_scan(request: RepoScanRequest) -> dict:
     threading.Thread(
         target=connect.run_repo_scan,
         args=(request.repo, token, scan_id, ref, request.triage_max, request.recon,
-              cancel, request.budget_usd),
+              cancel, request.budget_usd, packs, request.compliance_deep),
         name=f"repo-scan-{scan_id}", daemon=True,
     ).start()
     return {"id": scan_id, "status": "queued"}

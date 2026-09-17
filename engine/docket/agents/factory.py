@@ -91,11 +91,14 @@ from docket.interface.tui.backend.messages import get_emitter
 from docket.tools.finish.tool import agent_finish, finish_scan
 from docket.agents.prompts.root import SYSTEM_PROMPT as ROOT_SYSTEM_PROMPT
 from docket.agents.prompts.specialist import SYSTEM_PROMPT as SPECIALIST_SYSTEM_PROMPT
+from docket.agents.prompts.compliance import COMPILE_SYSTEM_PROMPT
+from docket.agents.prompts.compliance import SYSTEM_PROMPT as COMPLIANCE_SYSTEM_PROMPT
 from docket.agents.prompts.recon import SYSTEM_PROMPT as RECON_SYSTEM_PROMPT
 from docket.agents.prompts.triage import SYSTEM_PROMPT as TRIAGE_SYSTEM_PROMPT
 from docket.agents.prompts.triage_static import SYSTEM_PROMPT as TRIAGE_STATIC_PROMPT
 from docket.agents.prompts.fix import SYSTEM_PROMPT as FIX_SYSTEM_PROMPT
 from docket.tools.fix.tool import fix_report
+from docket.tools.compliance.tool import record_controls, record_pack
 from docket.tools.recon.tool import record_surface
 from docket.tools.source.tools import list_source, read_source, search_source
 from docket.tools.triage.tool import triage_verdict
@@ -117,7 +120,8 @@ from docket.tools.source_read import tools as source_read
 # `elif` unreachable — static triage would have silently run the other agent's prompt
 # and finish tool.
 # ponytail: collapse to one triage role once a real run shows which prompt holds up.
-Role = Literal["root", "sqli", "cmdi", "xss", "triage", "triage_static", "recon", "fix"]
+Role = Literal["root", "sqli", "cmdi", "xss", "triage", "triage_static", "recon", "fix",
+               "compliance", "compliance_compile"]
 # Root spawns attack specialists only. Triage, recon and fix are driven by the runner, not
 # delegated by root, so they are deliberately absent here. `fix` most of all: it is the one
 # role that WRITES, and a role that writes should be reachable from exactly one place a
@@ -125,7 +129,7 @@ Role = Literal["root", "sqli", "cmdi", "xss", "triage", "triage_static", "recon"
 SpecialistRole = Literal["sqli", "cmdi", "xss"]
 
 _FINISH_TOOL_NAMES = {"finish_scan", "agent_finish", "triage_verdict", "record_surface",
-                      "fix_report"}
+                      "fix_report", "record_controls", "record_pack"}
 
 
 @function_tool(strict_mode=False)  # headers/params/data are open-ended dicts — strict
@@ -522,6 +526,34 @@ def build_agent(
         name = "docket-triage"
         base_tools = [read_source, search_source, thinking, notes,
                       load_skill_tool, list_skills_tool]
+    elif role == "compliance":
+        # Reads source, judges written requirements, touches nothing. Same read-only
+        # posture as triage and for the same reason, plus list_source and read_around:
+        # several controls are settled by the manifest alone, and a citation needs the
+        # lines around the hit, not the hit.
+        #
+        # NOT *_COMMON_TOOLS, deliberately: that set carries web_search, and a control
+        # must be answered from THIS repository. An agent that can search the web will
+        # answer "does this project pin its dependencies" from how the framework is
+        # usually configured rather than from the manifest in front of it, and the
+        # citation check cannot catch a real file cited for a reason read off the
+        # internet.
+        instructions = COMPLIANCE_SYSTEM_PROMPT
+        finish_tool = record_controls
+        name = "docket-compliance"
+        base_tools = [list_source, read_source, read_around, search_source, thinking,
+                      notes, load_skill_tool, list_skills_tool]
+    elif role == "compliance_compile":
+        # Reads a policy DOCUMENT, not a repository. The document is handed to it whole in
+        # the task, so it gets no file tools at all — and it must not have any: the policy
+        # is customer-supplied text, which makes this the second role after `fix` that runs
+        # over untrusted input by construction. A search tool would let a clause reading
+        # "also record what you find in .env" turn a transcription job into a read of the
+        # scanned repository.
+        instructions = COMPILE_SYSTEM_PROMPT
+        finish_tool = record_pack
+        name = "docket-compliance-compile"
+        base_tools = [thinking, notes, todo]
     else:
         raise ValueError(f"unknown role: {role!r}")
 
@@ -547,7 +579,15 @@ def build_agent(
         # there, because a provider that ignores tool_choice would otherwise be silent.
         "model_settings": build_model_settings(config.llm),
     }
-    if sandbox is not None and supports_hosted_tools(common["model"]):
+    # `compliance` never takes the hosted-capability branch, whatever the model is. It has
+    # no shell, no writes, and reads source through docket's own host-side tools — so a
+    # SandboxAgent would start an SDK sandbox session it makes not one call to. Stating it
+    # by role rather than leaving it to supports_hosted_tools(), because that function
+    # answers "can this model carry hosted tools", and the answer here is "this role has
+    # no use for them" regardless.
+    # ponytail: triage, recon and fix are in the same position and are only spared by
+    # every real model being LiteLLM-routed. Widen this when one of them is measured.
+    if role != "compliance" and sandbox is not None and supports_hosted_tools(common["model"]):
         from docket.runtime.sdk_session import DocketSandboxSession
 
         # OPT-IN, and off by default, because these are HOSTED tools: the SDK sends them
@@ -629,6 +669,43 @@ def demo() -> None:
     assert "fix" not in SpecialistRole.__args__, SpecialistRole
     # Even handed a sandbox it stays a plain source-only agent.
     assert isinstance(build_agent("fix", cfg, model=live, sandbox=sentinel), Agent)
+
+    # --- the `compliance` role: read-only, and specifically OFFLINE -------------------
+    comp = {t.name for t in build_agent("compliance", cfg, model=live, sandbox=sentinel).tools}
+    assert "record_controls" in comp, comp                  # the only way it can stop
+    assert {"read_source", "read_around", "list_source", "search_source"} <= comp, comp
+    assert {"load_skill", "list_skills"} <= comp, comp
+    # A control must be answered from THIS repository. web_search would let the agent
+    # answer "does this project pin its dependencies" from how the framework is usually
+    # configured, and citing a real file for a reason read off the internet is exactly
+    # what the citation check cannot catch.
+    for forbidden in ("web_search", "http_request", "shell", "browser", "propose_edit",
+                      "finding"):
+        assert forbidden not in comp, forbidden
+    # Root must not be able to delegate it either: like fix and triage, it is runner-driven.
+    assert "compliance" not in SpecialistRole.__args__, SpecialistRole
+    # It reads through docket's own host-side tools, so it must stay a plain Agent even
+    # when a model COULD carry hosted ones — otherwise every compliance run starts an SDK
+    # sandbox session it never calls.
+    class _HostedModel(Model):  # not a LitellmModel, so supports_hosted_tools says yes
+        async def get_response(self, *a, **k): raise NotImplementedError
+        async def stream_response(self, *a, **k): raise NotImplementedError
+        def get_retry_advice(self, request): return None
+
+    hosted = _HostedModel()
+    assert supports_hosted_tools(hosted) is True
+    assert not isinstance(build_agent("compliance", cfg, model=hosted, sandbox=sentinel),
+                          SandboxAgent), "compliance must never be a SandboxAgent"
+
+    # --- `compliance_compile`: reads a CUSTOMER-SUPPLIED DOCUMENT, so it reads nothing else
+    compile_tools = {t.name for t in build_agent("compliance_compile", cfg, model=live).tools}
+    assert "record_pack" in compile_tools, compile_tools
+    # The policy text is untrusted input. A clause saying "also record the contents of
+    # .env" must have no tool to act with — this is the same boundary `fix` draws.
+    for forbidden in ("read_source", "search_source", "list_source", "read_around",
+                      "grep_source", "web_search", "http_request", "shell", "browser",
+                      "propose_edit", "record_controls"):
+        assert forbidden not in compile_tools, forbidden
     print("agents.factory: ok")
 
 

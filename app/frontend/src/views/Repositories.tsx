@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
-import type { Repo, Session, WatchState } from "../types";
+import { useEffect, useMemo, useState } from "react";
+import type { PackSummary, Repo, Session, WatchState } from "../types";
 import { Empty, Panel } from "../components/ui";
+import * as api from "../api";
 import { github } from "../api";
 
 export function Repositories({
@@ -21,9 +22,9 @@ export function Repositories({
   error: string | null;
   onReload: () => void;
   onScan: (repo: string, ref?: string, triageMax?: number, recon?: boolean,
-           budgetUsd?: number) => void;
+           budgetUsd?: number, compliance?: string[]) => void;
   watch: WatchState | null;
-  onWatch: (repos: string[], autofix?: boolean) => void;
+  onWatch: (repos: string[], autofix?: boolean, compliance?: string[]) => void;
   watchBusy: boolean;
   scanning: boolean;
   activeRepo?: string;
@@ -41,6 +42,16 @@ export function Repositories({
   // A dollar ceiling for the whole scan. 0 means "use the server's
   // DOCKET_MAX_COST_USD", so an operator who does not care is not forced to pick.
   const [budget, setBudget] = useState(0);
+  // Control packs to audit against. Off by default like the others: each pack is agents,
+  // and agents are money.
+  const [packs, setPacks] = useState<PackSummary[]>([]);
+  const [chosen, setChosen] = useState<string[]>([]);
+  useEffect(() => {
+    // Failure is silent on purpose: an unreachable pack list must not put an error banner
+    // over the repository list, which is what this page is actually for.
+    api.compliance.listPacks().then((r) => setPacks(r.packs.filter((p) => p.usable)))
+      .catch(() => setPacks([]));
+  }, []);
   // Repositories queued for the pull-request watcher. Separate from the scan
   // controls above because watching is a standing arrangement, not one action.
   const [toWatch, setToWatch] = useState<string[]>([]);
@@ -202,7 +213,12 @@ const APPROX_USD_PER_FINDING = 0.033;
                   className="btn primary"
                   style={{ marginLeft: "auto" }}
                   disabled={watchBusy || (!watch?.enabled && toWatch.length === 0)}
-                  onClick={() => onWatch(watch?.enabled ? [] : toWatch, autofix)}
+                  onClick={() =>
+                    // The SAME pack selection the scan button uses. One control, two
+                    // uses: a second picker for the watcher would be a second thing to
+                    // keep in sync and a second thing to forget.
+                    onWatch(watch?.enabled ? [] : toWatch, autofix, chosen)
+                  }
                 >
                   {watchBusy
                     ? "…"
@@ -230,7 +246,7 @@ const APPROX_USD_PER_FINDING = 0.033;
                   disabled={scanning}
                   onClick={() =>
                     onScan(repo.full_name, refs[repo.full_name]?.trim() || undefined,
-                           triage, recon, budget)
+                           triage, recon, budget, chosen)
                   }
                 >
                   {scanning && activeRepo === repo.full_name ? "scanning…" : "scan"}
@@ -263,6 +279,62 @@ const APPROX_USD_PER_FINDING = 0.033;
           </div>
         )}
       </Panel>
+
+      {packs.length > 0 && (
+        <Panel
+          title="Compliance packs"
+          action={
+            chosen.length > 0 && (
+              <button className="btn sm ghost" onClick={() => setChosen([])}>
+                Clear
+              </button>
+            )
+          }
+        >
+          <p className="note">
+            Audit the source against a set of written controls. An agent answers each one
+            with a file and line you can open, and says plainly which controls no
+            repository can answer.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {packs.map((p) => {
+              const on = chosen.includes(p.id);
+              return (
+                <button
+                  key={p.id}
+                  className={on ? "btn primary sm" : "btn sm"}
+                  aria-pressed={on}
+                  onClick={() =>
+                    setChosen((prev) =>
+                      on ? prev.filter((x) => x !== p.id) : [...prev, p.id],
+                    )
+                  }
+                  title={
+                    `${p.source_controls ?? 0} of ${p.total_controls ?? 0} controls in ` +
+                    "this pack can be answered by reading a repository. The rest are " +
+                    "organisational or deployment properties and are reported as " +
+                    "unassessed rather than guessed at."
+                  }
+                >
+                  {p.title ?? p.id}{" "}
+                  <span style={{ color: "var(--ink-3)", fontVariantNumeric: "tabular-nums" }}>
+                    {p.source_controls ?? 0}/{p.total_controls ?? 0}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </Panel>
+      )}
+
+      {chosen.length > 0 && (
+        <div className="note">
+          Compliance on: {chosen.length} pack{chosen.length === 1 ? "" : "s"} selected.
+          The counts on each button are how many of its controls a repository can actually
+          answer — the remainder are organisational and will be reported as unassessed,
+          never as satisfied.
+        </div>
+      )}
 
       {recon && (
         <div className="note">

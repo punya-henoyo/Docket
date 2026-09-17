@@ -1,0 +1,143 @@
+{
+  "id": "twelve-factor",
+  "title": "The Twelve-Factor App",
+  "authority": "Heroku",
+  "version": "2017",
+  "origin": "builtin",
+  "source_url": "https://12factor.net/",
+  "notes": "Factor names are from the published methodology. The `requirement` text is docket's plain statement of each factor's obligation, not a quotation; `citation` locates the factor so the original is one click away. Eleven of the twelve are answerable by reading a repository. Factor VIII is a property of how the app is deployed and scaled, so it is marked runtime and is never handed to an agent. Factor III is the one that overlaps security directly: config in the environment means secrets are not in the repository.",
+  "controls": [
+    {
+      "id": "twelve-factor:I",
+      "title": "Codebase — one codebase tracked in revision control, many deploys",
+      "requirement": "The application must be a single codebase under revision control, deployed to multiple environments, rather than several diverged copies or a codebase shared by multiple applications.",
+      "observability": "source",
+      "severity": "low",
+      "citation": "The Twelve-Factor App, factor I (Codebase)",
+      "evidence_hint": "a single VCS root; vendored copies of a sibling service; environment-specific forks of the same module",
+      "cwe": [],
+      "rule_ids": []
+    },
+    {
+      "id": "twelve-factor:II",
+      "title": "Dependencies — explicitly declare and isolate",
+      "requirement": "All dependencies must be declared completely and exactly in a manifest, and resolved into an isolated environment, so a build never relies on packages that happen to exist on the host.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "The Twelve-Factor App, factor II (Dependencies)",
+      "evidence_hint": "requirements.txt / pyproject.toml / package.json present and pinned; a lockfile committed; unpinned or floating ranges; imports of packages that appear in no manifest",
+      "cwe": ["CWE-1104"],
+      "rule_ids": []
+    },
+    {
+      "id": "twelve-factor:III",
+      "title": "Config — store config in the environment",
+      "requirement": "Everything that varies between deploys — credentials, hostnames, endpoints, feature toggles — must be read from the environment at runtime and must not be committed to the repository.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "The Twelve-Factor App, factor III (Config)",
+      "evidence_hint": "hardcoded API keys, passwords, tokens or connection strings; a committed .env with real values; config read via os.environ / process.env with a safe default; .env listed in .gitignore",
+      "cwe": ["CWE-798", "CWE-540"],
+      "rule_ids": ["hardcoded-secret", "generic-api-key"]
+    },
+    {
+      "id": "twelve-factor:IV",
+      "title": "Backing services — treat as attached resources",
+      "requirement": "Databases, queues, caches and third-party services must be addressed by a URL or locator supplied in config, so one can be swapped for another without a code change.",
+      "observability": "source",
+      "severity": "low",
+      "citation": "The Twelve-Factor App, factor IV (Backing services)",
+      "evidence_hint": "DATABASE_URL-style config; hostnames or ports literal in code; a client constructed with an inline connection string",
+      "cwe": [],
+      "rule_ids": []
+    },
+    {
+      "id": "twelve-factor:V",
+      "title": "Build, release, run — strictly separate stages",
+      "requirement": "The build stage must produce an immutable artifact, the release stage must combine it with config, and the run stage must not mutate code. Releases must be identifiable and not editable in place.",
+      "observability": "source",
+      "severity": "low",
+      "citation": "The Twelve-Factor App, factor V (Build, release, run)",
+      "evidence_hint": "a Dockerfile or CI pipeline producing a tagged artifact; a start command that installs dependencies or pulls code at boot; runtime writes into the application directory",
+      "cwe": [],
+      "rule_ids": []
+    },
+    {
+      "id": "twelve-factor:VI",
+      "title": "Processes — execute as stateless processes",
+      "requirement": "Application processes must be stateless and share nothing; any data that must persist belongs in a backing service, not in process memory or the local filesystem between requests.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "The Twelve-Factor App, factor VI (Processes)",
+      "evidence_hint": "module-level mutable dicts used as caches or sessions; local-filesystem session or upload storage; sticky-session assumptions",
+      "cwe": [],
+      "rule_ids": []
+    },
+    {
+      "id": "twelve-factor:VII",
+      "title": "Port binding — export services via port binding",
+      "requirement": "The application must be self-contained and export its service by binding a port supplied by the environment, rather than depending on a runtime injection into an external web server.",
+      "observability": "source",
+      "severity": "low",
+      "citation": "The Twelve-Factor App, factor VII (Port binding)",
+      "evidence_hint": "a port read from PORT with a sane default; a hardcoded bind port; reliance on being dropped into a servlet container or Apache module",
+      "cwe": [],
+      "rule_ids": []
+    },
+    {
+      "id": "twelve-factor:VIII",
+      "title": "Concurrency — scale out via the process model",
+      "requirement": "The application must scale horizontally by running more processes of each type, with process types and their scaling declared rather than achieved by in-process threading tricks.",
+      "observability": "runtime",
+      "severity": "low",
+      "citation": "The Twelve-Factor App, factor VIII (Concurrency)",
+      "evidence_hint": "",
+      "cwe": [],
+      "rule_ids": []
+    },
+    {
+      "id": "twelve-factor:IX",
+      "title": "Disposability — fast startup and graceful shutdown",
+      "requirement": "Processes must start quickly and shut down gracefully on SIGTERM: stop accepting new work, finish or requeue what is in flight, and release resources. Jobs must be safe to retry.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "The Twelve-Factor App, factor IX (Disposability)",
+      "evidence_hint": "a SIGTERM handler or framework lifespan/shutdown hook; long blocking work started at import time; queue consumers that ack before the work completes",
+      "cwe": [],
+      "rule_ids": []
+    },
+    {
+      "id": "twelve-factor:X",
+      "title": "Dev/prod parity — keep environments similar",
+      "requirement": "Development, staging and production must stay as alike as possible in backing-service types and versions, so behaviour observed in one predicts the others.",
+      "observability": "source",
+      "severity": "low",
+      "citation": "The Twelve-Factor App, factor X (Dev/prod parity)",
+      "evidence_hint": "sqlite in development against postgres in production; an in-memory queue or cache substituted locally; a docker-compose that mirrors production services",
+      "cwe": [],
+      "rule_ids": []
+    },
+    {
+      "id": "twelve-factor:XI",
+      "title": "Logs — treat logs as event streams",
+      "requirement": "The application must write its log stream unbuffered to stdout and must not manage log files, rotation or routing itself. Logs must not contain secrets or credentials.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "The Twelve-Factor App, factor XI (Logs)",
+      "evidence_hint": "logging configured to a file path or a rotating handler; print/console.log of request bodies, tokens or passwords; a logger that serialises whole request objects",
+      "cwe": ["CWE-532"],
+      "rule_ids": ["information_disclosure"]
+    },
+    {
+      "id": "twelve-factor:XII",
+      "title": "Admin processes — run admin tasks as one-off processes",
+      "requirement": "Migrations, backfills and console tasks must run as one-off processes against the same codebase and config as the running app, and must not be reachable as ordinary application endpoints.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "The Twelve-Factor App, factor XII (Admin processes)",
+      "evidence_hint": "a migration or shell command exposed as an HTTP route; management commands that read a different config; a /debug or /admin/run endpoint invoking arbitrary tasks",
+      "cwe": ["CWE-489"],
+      "rule_ids": []
+    }
+  ]
+}

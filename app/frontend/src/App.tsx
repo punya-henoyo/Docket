@@ -11,10 +11,12 @@ import { Findings } from "./views/Findings";
 import { Repositories } from "./views/Repositories";
 import { Integrations } from "./views/Integrations";
 import { PullRequests } from "./views/PullRequests";
+import { Compliance } from "./views/Compliance";
 import { useHashRoute } from "./hooks/useHashRoute";
 
 type View =
-  | "overview" | "scan" | "pulls" | "surface" | "findings" | "repos" | "integrations";
+  | "overview" | "scan" | "pulls" | "surface" | "findings" | "compliance" | "repos"
+  | "integrations";
 
 // Ordered by who asks the question: posture first (a security lead), then the live
 // run, then the map, then the detail an engineer works from.
@@ -24,6 +26,9 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "pulls", label: "Pull requests" },
   { id: "surface", label: "Attack surface" },
   { id: "findings", label: "Findings" },
+  // After Findings, before the settings pages: a control result is a weaker claim than a
+  // reproduced finding, and the order says so.
+  { id: "compliance", label: "Compliance" },
   { id: "repos", label: "Repositories" },
   { id: "integrations", label: "Integrations" },
 ];
@@ -213,7 +218,7 @@ export default function App() {
 
   const runScan = useCallback(
     async (repo: string, ref?: string, triageMax = 0, recon = false,
-           budgetUsd = 0) => {
+           budgetUsd = 0, compliance: string[] = []) => {
       setScanError(null);
       setSelected(null);
       setCweFilter(null);
@@ -221,7 +226,8 @@ export default function App() {
       prevIds.current = new Set();
       setNewestId(undefined);
       try {
-        const { id } = await api.github.startRepoScan(repo, ref, triageMax, recon, budgetUsd);
+        const { id } = await api.github.startRepoScan(repo, ref, triageMax, recon,
+                                                     budgetUsd, compliance);
         rememberLive(id);
         setScan({
           id,
@@ -230,10 +236,15 @@ export default function App() {
           status: "queued",
           stages: {
             fetch: "pending", trivy: "pending", semgrep: "pending",
-            nuclei: "pending", recon: "pending", triage: "pending",
+            nuclei: "pending", recon: "pending", compliance: "pending",
+            triage: "pending",
           },
           recon,
           surface: null,
+          // [] not undefined, from the first render: the Compliance view tells "no pack
+          // was requested" from "a pack ran and assessed nothing", and an absent key
+          // would collapse the two while the scan is still queued.
+          compliance: [],
           findings: [],
           finding_count: 0,
           error: null,
@@ -270,13 +281,17 @@ export default function App() {
     }
   }, [liveId, go, rememberLive]);
 
-  const applyWatch = useCallback(async (repos: string[], autofix = false) => {
+  const applyWatch = useCallback(async (repos: string[], autofix = false,
+                                        compliance: string[] = []) => {
     setWatchBusy(true);
     setWatchError(null);
     try {
       setWatch(await api.github.setWatch(
         repos.length
-          ? { enabled: true, repos, interval_sec: 30, triage_max: 5, autofix }
+          ? { enabled: true, repos, interval_sec: 30, triage_max: 5, autofix,
+              // Omitted when empty, so a watch started without packs sends exactly the
+              // request it did before this feature existed.
+              ...(compliance.length ? { compliance } : {}) }
           : { enabled: false },
       ));
     } catch (err) {
@@ -443,6 +458,8 @@ export default function App() {
             verdictFilter={verdictFilter}
             onVerdictSelect={setVerdictFilter}
           />
+        ) : view === "compliance" ? (
+          <Compliance scan={scan} error={scanError} />
         ) : view === "repos" ? (
           <Repositories
             session={session}

@@ -37,6 +37,7 @@ from docket.interface.tui.backend.messages import set_emitter
 from docket.report.state import init_report_state, reset_report_state
 from docket.runtime.sandbox import Sandbox, rewrite_for_container
 from docket.tools.http_request.tools import do_http_request
+from docket.compliance.packs import load_packs
 from docket.tools.agents_graph.tools import create_agent, view_agent_graph, wait_for_agents
 from docket.tools.scanners.nuclei import run_nuclei
 from docket.tools.scanners.semgrep import run_semgrep
@@ -151,6 +152,24 @@ def apply_diff_scope(static, scope: set[str]) -> int:
     return suppressed
 
 
+def _total_spend(coordinator: Any) -> float:
+    """Everything this run spent, across every coordinator.
+
+    Falls back to the root coordinator when the ledger has nothing to say, so a run with
+    no model calls still reports the same 0.0 it always did.
+    """
+    try:
+        from docket.report.state import get_global_report_state
+
+        totals = get_global_report_state().usage.totals()
+        if totals.get("cost_available") and totals.get("cost_usd"):
+            return float(totals["cost_usd"])
+    except Exception:  # noqa: BLE001 — a cost number must never sink a finished scan
+        logger.debug("usage ledger unavailable; falling back to the root coordinator",
+                     exc_info=True)
+    return float(getattr(coordinator, "spent_usd", 0.0) or 0.0)
+
+
 @dataclass(slots=True)
 class ScanResult:
     success: bool
@@ -176,6 +195,11 @@ class ScanResult:
     # comes from a scanner re-run over the patched copy, never from the agent, and
     # service/delivery.py ships only the verified ones.
     patches: list = field(default_factory=list)
+    # compliance.models.PackResult per requested control pack. A separate list from
+    # `leads` and from the store for the same reason those are separate from each other:
+    # a control result is an agent's cited reading, not a reproduction, and nothing
+    # downstream may fold it into finding_count or the exit code.
+    compliance: list = field(default_factory=list)
 
 
 def run_scan(
@@ -230,6 +254,8 @@ def run_scan(
     # meant the caller had to run the whole scan once to learn the keys and again to act
     # on them, which is exactly the duplicated pass this replaced.
     triage_filter: Callable[[dict], bool] | None = None,
+    compliance: list[str] | None = None,
+    compliance_deep: int = 0,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -256,7 +282,12 @@ def run_scan(
     # fix_max — it is a fourth, and it is the one shape a PR check actually runs
     # (--static-only --no-sandbox --fix N), where Config.static_only()'s empty llm and
     # max_cost_usd=0.0 would refuse every fix agent before its first turn.
-    wants_agents = bool(triage_max or recon or static_triage or fix_max)
+    # `compliance` counts too, and it is the fifth path into this trap. A control pack is
+    # judged by an agent reading source, so `--static-only --compliance owasp-api-2023`
+    # would otherwise get Config.static_only()'s max_cost_usd=0.0 and refuse every
+    # compliance agent before its first turn — reporting every control as unassessed as
+    # though the repository had been read and nothing could be settled.
+    wants_agents = bool(triage_max or recon or static_triage or fix_max or compliance)
     cfg = config or (
         Config.static_only()
         if static_only and not wants_agents
@@ -281,6 +312,13 @@ def run_scan(
     if budget_usd is not None and budget_usd > 0:
         cfg = replace(cfg, max_cost_usd=float(budget_usd),
                       max_child_cost_usd=min(cfg.max_child_cost_usd, float(budget_usd)))
+    # Resolved BEFORE the sandbox starts and before a single agent turn. `--compliance
+    # owsap-api-2023` is a typo that must cost nothing: discovering it after the scanners
+    # have run means the operator pays for a scan that cannot answer what they asked.
+    # Same stance as load_diff_scope above — validate the request, then spend.
+    packs = load_packs(compliance or []) if compliance else []
+    compliance_results: list = []
+
     # Bound here so the name exists whether or not recon runs — root reads it much
     # later when building its task, and `if recon:` is otherwise the only binder.
     # Bound here so the name exists whether or not recon runs — root reads it much
@@ -420,6 +458,49 @@ def run_scan(
                     on_progress()
             elif on_stage:
                 on_stage("recon", "skipped")
+
+            # Compliance AFTER recon and BEFORE triage. After recon because the surface
+            # it produced — entry points, the auth model — answers the authorisation and
+            # authentication controls directly, and was already paid for. Before triage
+            # because a failed control is a good hint about which findings are worth
+            # judging, and because triage is the expensive phase: if the budget is going
+            # to run out, it should run out on the optional deep pass, not here.
+            if packs:
+                from docket.core.compliance import link_findings, run_compliance
+
+                if on_stage:
+                    on_stage("compliance", "running")
+                try:
+                    compliance_results = run_compliance(
+                        str(whitebox_path or target_url or "repository"),
+                        packs,
+                        run_dir=directory, config=cfg, sandbox=sandbox,
+                        source_root=str(whitebox_path) if whitebox_path else None,
+                        findings=[f.model_dump(mode="json") for f in store.findings()]
+                        if store is not None else [],
+                        surface=recon_surface,
+                        deep=compliance_deep,
+                        model_override=model_override, cancel=cancel,
+                        on_agent=on_agent, on_progress=on_progress,
+                    )
+                except ScanCancelled:
+                    raise
+                if store is not None:
+                    # Deterministic, computed here rather than claimed by the agent: a
+                    # failed control that a reproduced finding corroborates is more than
+                    # an opinion, and a PASS sitting next to one is a contradiction worth
+                    # surfacing. Matched by CWE and rule leaf, never by file.
+                    link_findings(compliance_results, packs, list(store.findings()))
+                if on_stage:
+                    # `done` only when something was actually assessed. A pack where every
+                    # control came back unknown is not an audit that found nothing — it is
+                    # an audit that did not happen, and the two must not look alike.
+                    assessed = sum(p.assessed for p in compliance_results)
+                    on_stage("compliance", "done" if assessed else "error")
+                if on_progress is not None:
+                    on_progress()
+            elif on_stage:
+                on_stage("compliance", "skipped")
 
             # Triage runs INSIDE this sandbox, after the scanners: the source is
             # already mounted at /work/source and tearing the container down just to
@@ -630,11 +711,34 @@ def run_scan(
     else:
         status = "completed"
 
+    # Asked for, but never reached: --no-sandbox (or a sandbox that failed to start) skips
+    # the whole block above, so a requested pack would come back as an EMPTY list — which
+    # reads downstream as "compliance was not requested". It was. run_compliance with no
+    # sandbox produces the honest rows instead: every control present, every one recorded
+    # as unassessed, with the reason stated. Costs nothing; it never builds an agent.
+    if packs and not compliance_results:
+        from docket.core.compliance import run_compliance
+
+        compliance_results = run_compliance(
+            str(whitebox_path or target_url or "repository"), packs,
+            run_dir=directory, config=cfg, sandbox=None)
+        if on_stage:
+            on_stage("compliance", "error")
+
     return ScanResult(
         success=bool(output.get("success", True)),
         summary=output.get("summary", ""),
         finding_count=len(findings),
-        cost_usd=round(coordinator.spent_usd, 6),
+        # From the USAGE LEDGER, not the root coordinator. Recon, triage and compliance
+        # each build their own AgentCoordinator (so each can be budget-gated on its own),
+        # and the root one therefore knows nothing about what they spent. Measured on a
+        # real console run: eight compliance agents and one recon agent burned $2.28 and
+        # report.json published `cost_usd: 0.0` — a scan that cost real money reported as
+        # free, which is precisely the kind of number this codebase must not get wrong.
+        # The ledger is global and counts every agent whatever spawned it.
+        # coordinator.spent_usd is still what ENFORCES the budget; this is only what is
+        # reported, so the gate's behaviour is unchanged.
+        cost_usd=round(_total_spend(coordinator), 6),
         agents_spawned=0 if static_only else len(coordinator.agents) + 1,  # +1 for root
         leads=leads,
         triage=triage_report,
@@ -642,4 +746,5 @@ def run_scan(
         stages=dict(stages),
         suppressed_outside_diff=suppressed_outside_diff,
         patches=patches,
+        compliance=compliance_results,
     )

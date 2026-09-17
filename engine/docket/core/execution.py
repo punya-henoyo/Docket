@@ -65,6 +65,12 @@ class ScanContext:
     # Repository root the triage role reads from. None for every other role — they have no
     # file tools at all, so there is nothing for them to point at.
     source_root: str | None = None
+    # The pack the compliance role is judging, carried here rather than baked into the
+    # prompt because `record_controls` has to check every returned control_id against it.
+    # Without the pack at the tool, an agent answering a control from some other pack —
+    # or inventing one — would be recorded as a real result under a real-looking id.
+    # None for every other role.
+    compliance_pack: Any | None = None
 
 
 # Errors that mean "this run is over", not "the network hiccuped". Retrying any of

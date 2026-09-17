@@ -23,7 +23,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.backend.routers import github, runs, service
+from app.backend.routers import compliance, github, runs, service
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
@@ -57,6 +57,9 @@ api.include_router(github.router)
 # The control plane: watched repos, policy, the PR-scan inbox, the poller. Included here,
 # BEFORE the static mount below, for the reason stated there.
 api.include_router(service.router)
+# Control packs: list, read, upload a policy, delete an uploaded one. Same placement
+# rule as the others — before the static mount.
+api.include_router(compliance.router)
 
 # Mounted LAST: a catch-all static mount at "/" would otherwise shadow every API route.
 # html=True serves index.html for unknown paths, which is what the hash router needs.

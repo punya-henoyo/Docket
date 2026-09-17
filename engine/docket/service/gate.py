@@ -31,6 +31,28 @@ So the floor is a hand-listed constant, reviewable in one screen, matched on the
 leaf, and it NEVER consults a model. A FALSE_POSITIVE verdict on a floor rule still fails
 the check; the verdict is published alongside so a human can override it deliberately,
 which is a decision a person makes and not one an agent makes on their behalf.
+
+COMPLIANCE RESULTS ARE ADVISORY. THEY DO NOT GATE.
+--------------------------------------------------
+`report["compliance"]` never enters GateResult.reasons, never changes `conclusion`, and
+never moves `exit_code`. A control result is an agent's cited reading of a written
+requirement — strictly weaker evidence than the triage verdict that is already barred
+from raising a finding to the floor, so it cannot be allowed to do more.
+
+Both fail-opens above hit compliance harder. Under a zero budget or on a fork PR every
+control comes back `unknown`, and there is no safe way to gate on that: treating unknown
+as blocking reds every such pull request for a reason nobody can act on, and treating it
+as passing puts a green check next to the word "SEBI" over an audit that never ran.
+
+The escalation you would actually want — a failed control corroborated by a reproduced
+finding — is ALREADY handled, by the finding. It hits the floor or the CONFIRMED path on
+its own, via strictly stronger evidence. Compliance adds no blocking signal that is not
+already present, so it adds none.
+
+What it may do: `stages["compliance"] == "error"` routes through the existing stage check
+to action_required/1, because that means the thing the operator asked for did not run —
+not a judgement about the code. And a cited `fail` may raise a NOTICE annotation, never a
+failure one; `demo()` asserts that so a later edit cannot quietly promote it.
 """
 from __future__ import annotations
 
@@ -78,6 +100,9 @@ TRIVY_CVSS_FLOOR = 9.0
 
 _FAIL_LEVEL = "failure"
 _WARN_LEVEL = "warning"
+# The ONLY level a compliance result may ever carry. A control verdict is a reading, not a
+# reproduction, and a reading must not paint a red marker on someone's diff.
+_NOTICE_LEVEL = "notice"
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +233,48 @@ def annotations_for(report: dict) -> list[dict]:
             "title": f"docket: {rule_leaf(finding.get('rule_id'))}"[:255],
             "message": f"{why} {detail}".strip()[:2000],
         })
+    out.extend(compliance_annotations(report))
+    return out
+
+
+def compliance_annotations(report: dict) -> list[dict]:
+    """NOTICE annotations for failed controls that cited a real line.
+
+    `_NOTICE_LEVEL` and nothing else, ever. These are an agent's reading of a requirement,
+    and a reading must not paint a red marker on a contributor's diff — that is reserved
+    for a reproduction or a floor rule. See the module docstring.
+
+    Only `fail`, and only with a file:line: a `pass` needs no annotation, and an `unknown`
+    annotated inline is noise on a line where nothing is known.
+    """
+    out: list[dict] = []
+    for pack in report.get("compliance") or []:
+        if not isinstance(pack, dict):
+            continue
+        title = str(pack.get("pack_title") or pack.get("pack_id") or "control")
+        for result in pack.get("results") or []:
+            if not isinstance(result, dict) or result.get("status") != "fail":
+                continue
+            for citation in (result.get("citations") or [])[:1]:
+                if not isinstance(citation, dict):
+                    continue
+                line = citation.get("line")
+                path = str(citation.get("file") or "").strip()
+                if not path or not isinstance(line, int) or line < 1:
+                    continue
+                proven = result.get("proven_findings") or []
+                lead = ("Not satisfied, and a reproduced finding corroborates it."
+                        if proven else "Not satisfied, on review of this code.")
+                out.append({
+                    "path": path,
+                    "start_line": line,
+                    "end_line": line,
+                    "annotation_level": _NOTICE_LEVEL,
+                    "title": f"docket compliance: {result.get('control_id', '?')}"[:255],
+                    "message": f"{title}. {lead} "
+                               f"{result.get('rationale', '')}".strip()[:2000],
+                })
+                break
     return out
 
 

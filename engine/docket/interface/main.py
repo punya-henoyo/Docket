@@ -24,6 +24,14 @@ def exit_code(store: FindingStore, scan_ok: bool) -> int:
     return EXIT_FINDINGS if len(store) > 0 else EXIT_CLEAN
 
 
+def _pack_ids(raw: str | None) -> list[str] | None:
+    """`--compliance a,b` -> ["a", "b"]. None when the flag was not passed at all, which
+    is a different thing from an empty list: run_scan gates the whole stage on it."""
+    if not raw:
+        return None
+    return [part.strip() for part in str(raw).split(",") if part.strip()] or None
+
+
 def cmd_doctor(args) -> int:
     report = check_environment(require_sandbox=False)
     print("docket environment check")
@@ -126,6 +134,11 @@ def cmd_scan(args) -> int:
             fix_max=args.fix,
             budget_usd=args.budget,
             recon=args.recon,
+            # Comma-separated on the command line, a list everywhere inside. Split here
+            # rather than in run_scan so the engine takes one shape and the CLI's comma
+            # convention stays a CLI concern.
+            compliance=_pack_ids(args.compliance),
+            compliance_deep=args.compliance_deep,
         )
     except KeyboardInterrupt:
         print("\ninterrupted — writing what was confirmed so far", file=sys.stderr)
@@ -155,7 +168,10 @@ def cmd_scan(args) -> int:
                    triage_requested=args.triage,
                    # Refusals included. Each row carries the agent's claim next to the
                    # scanner's verdict, so a patch that did not verify is visible as that.
-                   patches=result.patches)
+                   patches=result.patches,
+                   # One row per requested pack, always — including a pack where nothing
+                   # could be assessed, which is a different statement from not asking.
+                   compliance=result.compliance)
     paths = write_report(store, setup.run_dir, **kwargs)
     print(format_summary(build_report(store, **kwargs), paths=paths))
     return exit_code(store, result.success)

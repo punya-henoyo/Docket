@@ -1,0 +1,209 @@
+{
+  "id": "node-baseline",
+  "title": "Node.js security baseline",
+  "authority": "docket",
+  "version": "1",
+  "origin": "builtin",
+  "source_url": "https://owasp.org/www-project-nodejs-goat/",
+  "notes": "Docket's own curated baseline for Node and TypeScript services, drawn from the weakness classes OWASP, the Node.js security working group and the Express hardening guidance all agree on, restated as controls a reader can check. Not a published standard and it does not claim to be one: `authority` is docket. Every control here is answerable by reading a repository.",
+  "controls": [
+    {
+      "id": "node-baseline:secrets",
+      "title": "No credentials in source",
+      "requirement": "API keys, passwords, tokens and connection strings must come from the environment or a secret store, never from source or committed configuration.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "OWASP A07 / CWE-798",
+      "evidence_hint": "string literals for JWT_SECRET, API_KEY, PASSWORD, MONGO_URI; a committed .env with real values; config/*.json holding live credentials",
+      "cwe": ["CWE-798"],
+      "rule_ids": ["hardcoded-secret", "generic-api-key"]
+    },
+    {
+      "id": "node-baseline:lockfile",
+      "title": "Lockfile committed and dependencies pinned",
+      "requirement": "package-lock.json, yarn.lock or pnpm-lock.yaml must be committed, so an install resolves to the versions that were reviewed rather than to whatever the registry serves today.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "CWE-1104",
+      "evidence_hint": "a missing lockfile; dependencies specified as * or latest; a lockfile listed in .gitignore",
+      "cwe": ["CWE-1104"],
+      "rule_ids": []
+    },
+    {
+      "id": "node-baseline:install-scripts",
+      "title": "Install-time script execution considered",
+      "requirement": "Dependencies that run lifecycle scripts at install time execute code on every developer machine and build agent. The project must either avoid them or install with scripts disabled in CI.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "CWE-829",
+      "evidence_hint": "postinstall/preinstall/prepare scripts in package.json; CI installing with npm ci and no --ignore-scripts; dependencies fetched from a git URL or tarball",
+      "cwe": ["CWE-829"],
+      "rule_ids": []
+    },
+    {
+      "id": "node-baseline:eval",
+      "title": "No dynamic evaluation of untrusted input",
+      "requirement": "eval, new Function, vm.runInThisContext and setTimeout with a string body must not be reached with values derived from a request.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-95",
+      "evidence_hint": "eval( / new Function( / vm.run; setTimeout or setInterval called with a string; a template engine compiling request-supplied source",
+      "cwe": ["CWE-95", "CWE-94"],
+      "rule_ids": ["rce"]
+    },
+    {
+      "id": "node-baseline:command",
+      "title": "Child processes spawned with an argument list",
+      "requirement": "External commands must use execFile or spawn with an argument array. child_process.exec runs its argument through a shell, so any interpolated request value is command injection.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-78",
+      "evidence_hint": "child_process.exec / execSync with a template literal; shell: true passed to spawn; a command string built by concatenation",
+      "cwe": ["CWE-78"],
+      "rule_ids": ["command-injection"]
+    },
+    {
+      "id": "node-baseline:sql",
+      "title": "Parameterised database queries",
+      "requirement": "SQL must use bound parameters or a query builder's parameter API. Query text must never be assembled from request values by concatenation or template literal.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-89",
+      "evidence_hint": "db.query(`... ${value} ...`); knex.raw / sequelize.query with interpolation; string concatenation into a WHERE clause",
+      "cwe": ["CWE-89"],
+      "rule_ids": ["sql-injection", "formatted-sql-query"]
+    },
+    {
+      "id": "node-baseline:nosql",
+      "title": "NoSQL queries not built from request objects",
+      "requirement": "A request value must not be placed directly into a query document, because a JSON body can supply an operator object rather than a scalar. Values must be cast to the expected type, and $where must not be used with user input.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-943",
+      "evidence_hint": "find({ email: req.body.email }) with no cast; $where; mongoose queries taking req.query directly; missing express-mongo-sanitize or equivalent",
+      "cwe": ["CWE-943"],
+      "rule_ids": ["nosql_injection"]
+    },
+    {
+      "id": "node-baseline:prototype-pollution",
+      "title": "Merges of untrusted objects guarded",
+      "requirement": "Deep merge, clone and assignment of a request body into an existing object must reject __proto__, constructor and prototype keys, or use a null-prototype target.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-1321",
+      "evidence_hint": "Object.assign(target, req.body); lodash merge/defaultsDeep on request data; a hand-written recursive merge with no key check",
+      "cwe": ["CWE-1321"],
+      "rule_ids": ["prototype_pollution"]
+    },
+    {
+      "id": "node-baseline:jwt",
+      "title": "JWTs verified with a pinned algorithm",
+      "requirement": "Tokens must be verified, not decoded, with the accepted algorithms named explicitly and an expiry enforced. Accepting the algorithm from the token header allows `none` and key-confusion attacks.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "CWE-347",
+      "evidence_hint": "jwt.decode used where verification was intended; jwt.verify with no algorithms: []; tokens signed with no exp claim; a secret read from a literal",
+      "cwe": ["CWE-347", "CWE-287"],
+      "rule_ids": ["authentication_jwt"]
+    },
+    {
+      "id": "node-baseline:password-hash",
+      "title": "Passwords hashed with a slow KDF",
+      "requirement": "Stored passwords must use argon2, bcrypt or scrypt with a per-user salt and a sane work factor, and comparison must be constant-time.",
+      "observability": "source",
+      "severity": "critical",
+      "citation": "OWASP Password Storage Cheat Sheet; CWE-916",
+      "evidence_hint": "crypto.createHash('md5'|'sha1'|'sha256') applied to a password; bcrypt/argon2 usage and its cost parameter; === comparison of digests",
+      "cwe": ["CWE-916", "CWE-327"],
+      "rule_ids": ["weak_password_detection"]
+    },
+    {
+      "id": "node-baseline:random",
+      "title": "Cryptographic randomness for security values",
+      "requirement": "Session ids, tokens, reset codes and nonces must come from crypto.randomBytes or crypto.randomUUID. Math.random is predictable from observed output.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-338",
+      "evidence_hint": "Math.random() used to build a token, id, otp or salt; Date.now() as an id source",
+      "cwe": ["CWE-338", "CWE-330"],
+      "rule_ids": []
+    },
+    {
+      "id": "node-baseline:headers",
+      "title": "Security response headers set",
+      "requirement": "Responses must carry the standard hardening headers — content type options, frame options or a frame-ancestors policy, HSTS on TLS, and a content security policy for any HTML surface — and must not advertise the framework.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "OWASP Secure Headers Project",
+      "evidence_hint": "helmet() registered and not disabled piecemeal; app.disable('x-powered-by'); a Content-Security-Policy anywhere",
+      "cwe": ["CWE-693"],
+      "rule_ids": []
+    },
+    {
+      "id": "node-baseline:cors",
+      "title": "CORS not open with credentials",
+      "requirement": "A wildcard or request-reflected origin must not be combined with credentialed requests. Allowed origins must be an explicit list.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-942",
+      "evidence_hint": "cors() with no options; origin: true or origin: '*' together with credentials: true; an origin echoed back from req.headers.origin",
+      "cwe": ["CWE-942"],
+      "rule_ids": []
+    },
+    {
+      "id": "node-baseline:body-limit",
+      "title": "Request body size bounded",
+      "requirement": "Body parsers and upload handlers must set an explicit size limit, so a single request cannot exhaust memory.",
+      "observability": "source",
+      "severity": "medium",
+      "citation": "CWE-770",
+      "evidence_hint": "express.json() / urlencoded() with no limit option; multer with no limits; a raw body parser reading to end with no cap",
+      "cwe": ["CWE-770"],
+      "rule_ids": []
+    },
+    {
+      "id": "node-baseline:rate-limit",
+      "title": "Authentication endpoints rate limited",
+      "requirement": "Login, password reset, token issue and other credential endpoints must carry a per-account or per-address rate limit, so credential stuffing is bounded.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-307",
+      "evidence_hint": "express-rate-limit or equivalent middleware, and whether it is applied to the auth routes specifically rather than only globally",
+      "cwe": ["CWE-307"],
+      "rule_ids": []
+    },
+    {
+      "id": "node-baseline:path-traversal",
+      "title": "User-supplied paths contained",
+      "requirement": "A filename from a request must be resolved and then checked to be inside the intended directory. res.sendFile and fs calls must not receive a raw request value.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-22",
+      "evidence_hint": "res.sendFile(path.join(dir, req.params.file)); fs.readFile with a request value; a startsWith() containment check rather than path.relative",
+      "cwe": ["CWE-22"],
+      "rule_ids": ["path_traversal_lfi_rfi"]
+    },
+    {
+      "id": "node-baseline:errors",
+      "title": "Production mode and no stack traces to clients",
+      "requirement": "NODE_ENV must be production in a deployed configuration, and error responses must not carry stack traces, queries or configuration values to the client.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-209",
+      "evidence_hint": "an error handler sending err.stack or err.message verbatim; NODE_ENV unset in the Dockerfile or start script; express in development mode",
+      "cwe": ["CWE-209", "CWE-489"],
+      "rule_ids": ["information_disclosure"]
+    },
+    {
+      "id": "node-baseline:ssrf",
+      "title": "Outbound URLs from requests are constrained",
+      "requirement": "Where the service fetches a URL a client influenced, the destination must be validated against an allowlist and redirects must not be followed to unvalidated hosts.",
+      "observability": "source",
+      "severity": "high",
+      "citation": "CWE-918",
+      "evidence_hint": "fetch/axios/got/http.request with a URL from request data; webhook, import-from-url, screenshot or link-preview features; redirect: 'follow' with no host check",
+      "cwe": ["CWE-918"],
+      "rule_ids": ["ssrf"]
+    }
+  ]
+}
