@@ -1,67 +1,51 @@
 {
-  "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
   "bomFormat": "CycloneDX",
   "components": [
-    {
-      "bom-ref": "app/frontend/package-lock.json",
-      "name": "app/frontend/package-lock.json",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:Class",
-          "value": "lang-pkgs"
-        },
-        {
-          "name": "aquasecurity:trivy:Type",
-          "value": "npm"
-        }
-      ],
-      "type": "application"
-    },
-    {
-      "bom-ref": "pkg:npm/react-dom@19.2.8",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "name": "react-dom",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "react-dom@19.2.8"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "npm"
-        }
-      ],
-      "purl": "pkg:npm/react-dom@19.2.8",
-      "type": "library",
-      "version": "19.2.8"
-    },
     {
       "bom-ref": "pkg:npm/react@19.2.8",
       "licenses": [
         {
           "license": {
-            "id": "MIT"
+            "name": "MIT"
           }
         }
       ],
       "name": "react",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "react@19.2.8"
+          "name": "docket:origin",
+          "value": "console-bundle"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "npm"
+          "name": "docket:directness",
+          "value": "direct"
         }
       ],
       "purl": "pkg:npm/react@19.2.8",
+      "type": "library",
+      "version": "19.2.8"
+    },
+    {
+      "bom-ref": "pkg:npm/react-dom@19.2.8",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
+      ],
+      "name": "react-dom",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "console-bundle"
+        },
+        {
+          "name": "docket:directness",
+          "value": "direct"
+        }
+      ],
+      "purl": "pkg:npm/react-dom@19.2.8",
       "type": "library",
       "version": "19.2.8"
     },
@@ -70,19 +54,23 @@
       "licenses": [
         {
           "license": {
-            "id": "MIT"
+            "name": "MIT"
           }
         }
       ],
       "name": "scheduler",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "scheduler@0.27.0"
+          "name": "docket:origin",
+          "value": "console-bundle"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "npm"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "react-dom -> scheduler"
         }
       ],
       "purl": "pkg:npm/scheduler@0.27.0",
@@ -101,12 +89,16 @@
       "name": "aiohappyeyeballs",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "aiohappyeyeballs@2.7.1"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> aiohttp -> aiohappyeyeballs"
         }
       ],
       "purl": "pkg:pypi/aiohappyeyeballs@2.7.1",
@@ -125,12 +117,16 @@
       "name": "aiohttp",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "aiohttp@3.14.3"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> aiohttp"
         }
       ],
       "purl": "pkg:pypi/aiohttp@3.14.3",
@@ -149,41 +145,21 @@
       "name": "aiosignal",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "aiosignal@1.4.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> aiohttp -> aiosignal"
         }
       ],
       "purl": "pkg:pypi/aiosignal@1.4.0",
       "type": "library",
       "version": "1.4.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/annotated-doc@0.0.5",
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT"
-          }
-        }
-      ],
-      "name": "annotated-doc",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "annotated-doc@0.0.5"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/annotated-doc@0.0.5",
-      "type": "library",
-      "version": "0.0.5"
     },
     {
       "bom-ref": "pkg:pypi/annotated-types@0.8.0",
@@ -197,12 +173,16 @@
       "name": "annotated-types",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "annotated-types@0.8.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "pydantic -> annotated-types"
         }
       ],
       "purl": "pkg:pypi/annotated-types@0.8.0",
@@ -221,12 +201,16 @@
       "name": "anyio",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "anyio@4.14.2"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> anyio"
         }
       ],
       "purl": "pkg:pypi/anyio@4.14.2",
@@ -245,12 +229,16 @@
       "name": "attrs",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "attrs@26.1.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> jsonschema -> attrs"
         }
       ],
       "purl": "pkg:pypi/attrs@26.1.0",
@@ -269,12 +257,16 @@
       "name": "certifi",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "certifi@2026.7.22"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> requests -> certifi"
         }
       ],
       "purl": "pkg:pypi/certifi@2026.7.22",
@@ -293,12 +285,16 @@
       "name": "cffi",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "cffi@2.1.1"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> pyjwt[crypto] -> cryptography -> cffi"
         }
       ],
       "purl": "pkg:pypi/cffi@2.1.1",
@@ -317,12 +313,16 @@
       "name": "charset-normalizer",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "charset-normalizer@3.4.9"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> requests -> charset-normalizer"
         }
       ],
       "purl": "pkg:pypi/charset-normalizer@3.4.9",
@@ -341,12 +341,16 @@
       "name": "click",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "click@8.4.2"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> click"
         }
       ],
       "purl": "pkg:pypi/click@8.4.2",
@@ -355,15 +359,20 @@
     },
     {
       "bom-ref": "pkg:pypi/colorama@0.4.6",
+      "licenses": [],
       "name": "colorama",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "colorama@0.4.6"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> openai -> tqdm -> colorama"
         }
       ],
       "purl": "pkg:pypi/colorama@0.4.6",
@@ -382,12 +391,16 @@
       "name": "cryptography",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "cryptography@50.0.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> pyjwt[crypto] -> cryptography"
         }
       ],
       "purl": "pkg:pypi/cryptography@50.0.0",
@@ -406,65 +419,21 @@
       "name": "distro",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "distro@1.9.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> openai -> distro"
         }
       ],
       "purl": "pkg:pypi/distro@1.9.0",
       "type": "library",
       "version": "1.9.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/docket@0.1.0",
-      "licenses": [
-        {
-          "license": {
-            "name": "Apache-2.0"
-          }
-        }
-      ],
-      "name": "docket",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "docket@0.1.0"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/docket@0.1.0",
-      "type": "library",
-      "version": "0.1.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/fastapi@0.141.1",
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT"
-          }
-        }
-      ],
-      "name": "fastapi",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "fastapi@0.141.1"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/fastapi@0.141.1",
-      "type": "library",
-      "version": "0.141.1"
     },
     {
       "bom-ref": "pkg:pypi/fastuuid@0.14.0",
@@ -478,12 +447,16 @@
       "name": "fastuuid",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "fastuuid@0.14.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> fastuuid"
         }
       ],
       "purl": "pkg:pypi/fastuuid@0.14.0",
@@ -502,12 +475,16 @@
       "name": "filelock",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "filelock@3.32.2"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> tokenizers -> huggingface-hub -> filelock"
         }
       ],
       "purl": "pkg:pypi/filelock@3.32.2",
@@ -526,12 +503,16 @@
       "name": "frozenlist",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "frozenlist@1.8.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> aiohttp -> frozenlist"
         }
       ],
       "purl": "pkg:pypi/frozenlist@1.8.0",
@@ -550,12 +531,16 @@
       "name": "fsspec",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "fsspec@2026.7.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> tokenizers -> huggingface-hub -> fsspec"
         }
       ],
       "purl": "pkg:pypi/fsspec@2026.7.0",
@@ -574,12 +559,16 @@
       "name": "griffelib",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "griffelib@2.1.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> griffelib"
         }
       ],
       "purl": "pkg:pypi/griffelib@2.1.0",
@@ -598,12 +587,16 @@
       "name": "h11",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "h11@0.16.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> uvicorn -> h11"
         }
       ],
       "purl": "pkg:pypi/h11@0.16.0",
@@ -622,12 +615,16 @@
       "name": "hf-xet",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "hf-xet@1.6.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> tokenizers -> huggingface-hub -> hf-xet"
         }
       ],
       "purl": "pkg:pypi/hf-xet@1.6.0",
@@ -646,65 +643,21 @@
       "name": "httpcore",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "httpcore@1.0.9"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> httpx -> httpcore"
         }
       ],
       "purl": "pkg:pypi/httpcore@1.0.9",
       "type": "library",
       "version": "1.0.9"
-    },
-    {
-      "bom-ref": "pkg:pypi/httptools@0.8.0",
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT"
-          }
-        }
-      ],
-      "name": "httptools",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "httptools@0.8.0"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/httptools@0.8.0",
-      "type": "library",
-      "version": "0.8.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/httpx-sse@0.4.3",
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT"
-          }
-        }
-      ],
-      "name": "httpx-sse",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "httpx-sse@0.4.3"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/httpx-sse@0.4.3",
-      "type": "library",
-      "version": "0.4.3"
     },
     {
       "bom-ref": "pkg:pypi/httpx@0.28.1",
@@ -718,17 +671,49 @@
       "name": "httpx",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "httpx@0.28.1"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> httpx"
         }
       ],
       "purl": "pkg:pypi/httpx@0.28.1",
       "type": "library",
       "version": "0.28.1"
+    },
+    {
+      "bom-ref": "pkg:pypi/httpx-sse@0.4.3",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
+      ],
+      "name": "httpx-sse",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "core"
+        },
+        {
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> httpx-sse"
+        }
+      ],
+      "purl": "pkg:pypi/httpx-sse@0.4.3",
+      "type": "library",
+      "version": "0.4.3"
     },
     {
       "bom-ref": "pkg:pypi/huggingface-hub@1.27.0",
@@ -742,12 +727,16 @@
       "name": "huggingface-hub",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "huggingface-hub@1.27.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> tokenizers -> huggingface-hub"
         }
       ],
       "purl": "pkg:pypi/huggingface-hub@1.27.0",
@@ -766,12 +755,16 @@
       "name": "idna",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "idna@3.18"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> requests -> idna"
         }
       ],
       "purl": "pkg:pypi/idna@3.18",
@@ -790,12 +783,16 @@
       "name": "importlib-metadata",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "importlib-metadata@8.9.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> importlib-metadata"
         }
       ],
       "purl": "pkg:pypi/importlib-metadata@8.9.0",
@@ -814,12 +811,16 @@
       "name": "jinja2",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "jinja2@3.1.6"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> jinja2"
         }
       ],
       "purl": "pkg:pypi/jinja2@3.1.6",
@@ -838,41 +839,21 @@
       "name": "jiter",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "jiter@0.16.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> openai -> jiter"
         }
       ],
       "purl": "pkg:pypi/jiter@0.16.0",
       "type": "library",
       "version": "0.16.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/jsonschema-specifications@2025.9.1",
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT"
-          }
-        }
-      ],
-      "name": "jsonschema-specifications",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "jsonschema-specifications@2025.9.1"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/jsonschema-specifications@2025.9.1",
-      "type": "library",
-      "version": "2025.9.1"
     },
     {
       "bom-ref": "pkg:pypi/jsonschema@4.26.0",
@@ -886,17 +867,49 @@
       "name": "jsonschema",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "jsonschema@4.26.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> jsonschema"
         }
       ],
       "purl": "pkg:pypi/jsonschema@4.26.0",
       "type": "library",
       "version": "4.26.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/jsonschema-specifications@2025.9.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
+      ],
+      "name": "jsonschema-specifications",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "core"
+        },
+        {
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> jsonschema -> jsonschema-specifications"
+        }
+      ],
+      "purl": "pkg:pypi/jsonschema-specifications@2025.9.1",
+      "type": "library",
+      "version": "2025.9.1"
     },
     {
       "bom-ref": "pkg:pypi/linkify-it-py@2.1.0",
@@ -910,12 +923,16 @@
       "name": "linkify-it-py",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "linkify-it-py@2.1.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "textual -> markdown-it-py[linkify] -> linkify-it-py"
         }
       ],
       "purl": "pkg:pypi/linkify-it-py@2.1.0",
@@ -934,12 +951,16 @@
       "name": "litellm",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "litellm@1.96.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm"
         }
       ],
       "purl": "pkg:pypi/litellm@1.96.0",
@@ -958,12 +979,16 @@
       "name": "markdown-it-py",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "markdown-it-py@4.2.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "textual -> markdown-it-py[linkify]"
         }
       ],
       "purl": "pkg:pypi/markdown-it-py@4.2.0",
@@ -982,12 +1007,16 @@
       "name": "markupsafe",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "markupsafe@3.0.3"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> jinja2 -> markupsafe"
         }
       ],
       "purl": "pkg:pypi/markupsafe@3.0.3",
@@ -1006,12 +1035,16 @@
       "name": "mcp",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "mcp@1.29.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp"
         }
       ],
       "purl": "pkg:pypi/mcp@1.29.0",
@@ -1030,12 +1063,16 @@
       "name": "mdit-py-plugins",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "mdit-py-plugins@0.6.1"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "textual -> mdit-py-plugins"
         }
       ],
       "purl": "pkg:pypi/mdit-py-plugins@0.6.1",
@@ -1054,12 +1091,16 @@
       "name": "mdurl",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "mdurl@0.1.2"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "textual -> markdown-it-py[linkify] -> mdurl"
         }
       ],
       "purl": "pkg:pypi/mdurl@0.1.2",
@@ -1078,41 +1119,21 @@
       "name": "multidict",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "multidict@6.7.1"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> aiohttp -> multidict"
         }
       ],
       "purl": "pkg:pypi/multidict@6.7.1",
       "type": "library",
       "version": "6.7.1"
-    },
-    {
-      "bom-ref": "pkg:pypi/openai-agents@0.19.4",
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT"
-          }
-        }
-      ],
-      "name": "openai-agents",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "openai-agents@0.19.4"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/openai-agents@0.19.4",
-      "type": "library",
-      "version": "0.19.4"
     },
     {
       "bom-ref": "pkg:pypi/openai@2.53.0",
@@ -1126,17 +1147,45 @@
       "name": "openai",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "openai@2.53.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> openai"
         }
       ],
       "purl": "pkg:pypi/openai@2.53.0",
       "type": "library",
       "version": "2.53.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/openai-agents@0.19.4",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
+      ],
+      "name": "openai-agents",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "core"
+        },
+        {
+          "name": "docket:directness",
+          "value": "direct"
+        }
+      ],
+      "purl": "pkg:pypi/openai-agents@0.19.4",
+      "type": "library",
+      "version": "0.19.4"
     },
     {
       "bom-ref": "pkg:pypi/packaging@26.3",
@@ -1150,12 +1199,16 @@
       "name": "packaging",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "packaging@26.3"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> tokenizers -> huggingface-hub -> packaging"
         }
       ],
       "purl": "pkg:pypi/packaging@26.3",
@@ -1174,12 +1227,16 @@
       "name": "platformdirs",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "platformdirs@4.11.2"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "textual -> platformdirs"
         }
       ],
       "purl": "pkg:pypi/platformdirs@4.11.2",
@@ -1198,12 +1255,16 @@
       "name": "propcache",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "propcache@0.5.2"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> aiohttp -> propcache"
         }
       ],
       "purl": "pkg:pypi/propcache@0.5.2",
@@ -1222,17 +1283,45 @@
       "name": "pycparser",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "pycparser@3.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> pyjwt[crypto] -> cryptography -> cffi -> pycparser"
         }
       ],
       "purl": "pkg:pypi/pycparser@3.0",
       "type": "library",
       "version": "3.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/pydantic@2.13.4",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
+      ],
+      "name": "pydantic",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "core"
+        },
+        {
+          "name": "docket:directness",
+          "value": "direct"
+        }
+      ],
+      "purl": "pkg:pypi/pydantic@2.13.4",
+      "type": "library",
+      "version": "2.13.4"
     },
     {
       "bom-ref": "pkg:pypi/pydantic-core@2.46.4",
@@ -1246,12 +1335,16 @@
       "name": "pydantic-core",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "pydantic-core@2.46.4"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "pydantic -> pydantic-core"
         }
       ],
       "purl": "pkg:pypi/pydantic-core@2.46.4",
@@ -1270,41 +1363,21 @@
       "name": "pydantic-settings",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "pydantic-settings@2.15.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> pydantic-settings"
         }
       ],
       "purl": "pkg:pypi/pydantic-settings@2.15.0",
       "type": "library",
       "version": "2.15.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/pydantic@2.13.4",
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT"
-          }
-        }
-      ],
-      "name": "pydantic",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "pydantic@2.13.4"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/pydantic@2.13.4",
-      "type": "library",
-      "version": "2.13.4"
     },
     {
       "bom-ref": "pkg:pypi/pygments@2.20.0",
@@ -1318,12 +1391,16 @@
       "name": "pygments",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "pygments@2.20.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "textual -> pygments"
         }
       ],
       "purl": "pkg:pypi/pygments@2.20.0",
@@ -1342,41 +1419,21 @@
       "name": "pyjwt",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "pyjwt@2.13.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> pyjwt[crypto]"
         }
       ],
       "purl": "pkg:pypi/pyjwt@2.13.0",
       "type": "library",
       "version": "2.13.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/pypdf@6.18.1",
-      "licenses": [
-        {
-          "license": {
-            "name": "BSD-3-Clause"
-          }
-        }
-      ],
-      "name": "pypdf",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "pypdf@6.18.1"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/pypdf@6.18.1",
-      "type": "library",
-      "version": "6.18.1"
     },
     {
       "bom-ref": "pkg:pypi/python-dotenv@1.2.2",
@@ -1390,12 +1447,12 @@
       "name": "python-dotenv",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "python-dotenv@1.2.2"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "direct"
         }
       ],
       "purl": "pkg:pypi/python-dotenv@1.2.2",
@@ -1414,12 +1471,16 @@
       "name": "python-multipart",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "python-multipart@0.0.32"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> python-multipart"
         }
       ],
       "purl": "pkg:pypi/python-multipart@0.0.32",
@@ -1428,15 +1489,20 @@
     },
     {
       "bom-ref": "pkg:pypi/pywin32@312",
+      "licenses": [],
       "name": "pywin32",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "pywin32@312"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> pywin32"
         }
       ],
       "purl": "pkg:pypi/pywin32@312",
@@ -1455,12 +1521,16 @@
       "name": "pyyaml",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "pyyaml@6.0.3"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> tokenizers -> huggingface-hub -> pyyaml"
         }
       ],
       "purl": "pkg:pypi/pyyaml@6.0.3",
@@ -1479,12 +1549,16 @@
       "name": "referencing",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "referencing@0.37.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> jsonschema -> referencing"
         }
       ],
       "purl": "pkg:pypi/referencing@0.37.0",
@@ -1503,12 +1577,16 @@
       "name": "regex",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "regex@2026.7.19"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> tiktoken -> regex"
         }
       ],
       "purl": "pkg:pypi/regex@2026.7.19",
@@ -1527,12 +1605,16 @@
       "name": "requests",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "requests@2.34.2"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> requests"
         }
       ],
       "purl": "pkg:pypi/requests@2.34.2",
@@ -1551,12 +1633,16 @@
       "name": "rich",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "rich@15.0.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "textual -> rich"
         }
       ],
       "purl": "pkg:pypi/rich@15.0.0",
@@ -1575,12 +1661,16 @@
       "name": "rpds-py",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "rpds-py@2026.6.3"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> jsonschema -> rpds-py"
         }
       ],
       "purl": "pkg:pypi/rpds-py@2026.6.3",
@@ -1599,12 +1689,16 @@
       "name": "sniffio",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "sniffio@1.3.1"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> openai -> sniffio"
         }
       ],
       "purl": "pkg:pypi/sniffio@1.3.1",
@@ -1623,12 +1717,16 @@
       "name": "sse-starlette",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "sse-starlette@3.4.8"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> sse-starlette"
         }
       ],
       "purl": "pkg:pypi/sse-starlette@3.4.8",
@@ -1647,12 +1745,16 @@
       "name": "starlette",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "starlette@1.6.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> starlette"
         }
       ],
       "purl": "pkg:pypi/starlette@1.6.0",
@@ -1671,12 +1773,12 @@
       "name": "textual",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "textual@8.2.8"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "direct"
         }
       ],
       "purl": "pkg:pypi/textual@8.2.8",
@@ -1695,12 +1797,16 @@
       "name": "tiktoken",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "tiktoken@0.13.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> tiktoken"
         }
       ],
       "purl": "pkg:pypi/tiktoken@0.13.0",
@@ -1719,12 +1825,16 @@
       "name": "tokenizers",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "tokenizers@0.23.1"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "direct"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> tokenizers"
         }
       ],
       "purl": "pkg:pypi/tokenizers@0.23.1",
@@ -1743,12 +1853,16 @@
       "name": "tqdm",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "tqdm@4.70.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> openai -> tqdm"
         }
       ],
       "purl": "pkg:pypi/tqdm@4.70.0",
@@ -1767,12 +1881,16 @@
       "name": "typing-extensions",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "typing-extensions@4.16.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> typing-extensions"
         }
       ],
       "purl": "pkg:pypi/typing-extensions@4.16.0",
@@ -1791,12 +1909,16 @@
       "name": "typing-inspection",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "typing-inspection@0.4.3"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "pydantic -> typing-inspection"
         }
       ],
       "purl": "pkg:pypi/typing-inspection@0.4.3",
@@ -1815,12 +1937,16 @@
       "name": "uc-micro-py",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "uc-micro-py@2.0.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "textual -> markdown-it-py[linkify] -> linkify-it-py -> uc-micro-py"
         }
       ],
       "purl": "pkg:pypi/uc-micro-py@2.0.0",
@@ -1839,12 +1965,16 @@
       "name": "urllib3",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "urllib3@2.7.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> requests -> urllib3"
         }
       ],
       "purl": "pkg:pypi/urllib3@2.7.0",
@@ -1863,65 +1993,21 @@
       "name": "uvicorn",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "uvicorn@0.52.1"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "direct"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> mcp -> uvicorn"
         }
       ],
       "purl": "pkg:pypi/uvicorn@0.52.1",
       "type": "library",
       "version": "0.52.1"
-    },
-    {
-      "bom-ref": "pkg:pypi/uvloop@0.22.1",
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT"
-          }
-        }
-      ],
-      "name": "uvloop",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "uvloop@0.22.1"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/uvloop@0.22.1",
-      "type": "library",
-      "version": "0.22.1"
-    },
-    {
-      "bom-ref": "pkg:pypi/watchfiles@1.2.0",
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT"
-          }
-        }
-      ],
-      "name": "watchfiles",
-      "properties": [
-        {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "watchfiles@1.2.0"
-        },
-        {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
-        }
-      ],
-      "purl": "pkg:pypi/watchfiles@1.2.0",
-      "type": "library",
-      "version": "1.2.0"
     },
     {
       "bom-ref": "pkg:pypi/websockets@16.1.1",
@@ -1935,12 +2021,16 @@
       "name": "websockets",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "websockets@16.1.1"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> websockets"
         }
       ],
       "purl": "pkg:pypi/websockets@16.1.1",
@@ -1959,12 +2049,16 @@
       "name": "yarl",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "yarl@1.24.5"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> aiohttp -> yarl"
         }
       ],
       "purl": "pkg:pypi/yarl@1.24.5",
@@ -1983,12 +2077,16 @@
       "name": "zipp",
       "properties": [
         {
-          "name": "aquasecurity:trivy:PkgID",
-          "value": "zipp@4.1.0"
+          "name": "docket:origin",
+          "value": "core"
         },
         {
-          "name": "aquasecurity:trivy:PkgType",
-          "value": "uv"
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "openai-agents[litellm] -> litellm -> importlib-metadata -> zipp"
         }
       ],
       "purl": "pkg:pypi/zipp@4.1.0",
@@ -1996,586 +2094,406 @@
       "version": "4.1.0"
     },
     {
-      "bom-ref": "uv.lock",
-      "name": "uv.lock",
-      "properties": [
+      "bom-ref": "pkg:pypi/annotated-doc@0.0.5",
+      "licenses": [
         {
-          "name": "aquasecurity:trivy:Class",
-          "value": "lang-pkgs"
-        },
-        {
-          "name": "aquasecurity:trivy:Type",
-          "value": "uv"
+          "license": {
+            "name": "MIT"
+          }
         }
       ],
-      "type": "application"
-    }
-  ],
-  "dependencies": [
-    {
-      "dependsOn": [
-        "app/frontend/package-lock.json",
-        "uv.lock"
+      "name": "annotated-doc",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "extra:app"
+        },
+        {
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "fastapi -> annotated-doc"
+        }
       ],
-      "ref": "/src"
+      "purl": "pkg:pypi/annotated-doc@0.0.5",
+      "type": "library",
+      "version": "0.0.5"
     },
     {
-      "dependsOn": [
-        "pkg:npm/react-dom@19.2.8",
-        "pkg:npm/react@19.2.8"
+      "bom-ref": "pkg:pypi/fastapi@0.141.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
       ],
-      "ref": "app/frontend/package-lock.json"
-    },
-    {
-      "dependsOn": [
-        "pkg:npm/react@19.2.8",
-        "pkg:npm/scheduler@0.27.0"
+      "name": "fastapi",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "extra:app"
+        },
+        {
+          "name": "docket:directness",
+          "value": "direct"
+        }
       ],
-      "ref": "pkg:npm/react-dom@19.2.8"
+      "purl": "pkg:pypi/fastapi@0.141.1",
+      "type": "library",
+      "version": "0.141.1"
     },
     {
-      "dependsOn": [],
-      "ref": "pkg:npm/react@19.2.8"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:npm/scheduler@0.27.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/aiohappyeyeballs@2.7.1"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/aiohappyeyeballs@2.7.1",
-        "pkg:pypi/aiosignal@1.4.0",
-        "pkg:pypi/attrs@26.1.0",
-        "pkg:pypi/frozenlist@1.8.0",
-        "pkg:pypi/multidict@6.7.1",
-        "pkg:pypi/propcache@0.5.2",
-        "pkg:pypi/typing-extensions@4.16.0",
-        "pkg:pypi/yarl@1.24.5"
+      "bom-ref": "pkg:pypi/httptools@0.8.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
       ],
-      "ref": "pkg:pypi/aiohttp@3.14.3"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/frozenlist@1.8.0",
-        "pkg:pypi/typing-extensions@4.16.0"
+      "name": "httptools",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "extra:app"
+        },
+        {
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "uvicorn[standard] -> httptools"
+        }
       ],
-      "ref": "pkg:pypi/aiosignal@1.4.0"
+      "purl": "pkg:pypi/httptools@0.8.0",
+      "type": "library",
+      "version": "0.8.0"
     },
     {
-      "dependsOn": [],
-      "ref": "pkg:pypi/annotated-doc@0.0.5"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/annotated-types@0.8.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/idna@3.18",
-        "pkg:pypi/typing-extensions@4.16.0"
+      "bom-ref": "pkg:pypi/pypdf@6.18.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD-3-Clause"
+          }
+        }
       ],
-      "ref": "pkg:pypi/anyio@4.14.2"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/attrs@26.1.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/certifi@2026.7.22"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/pycparser@3.0"
+      "name": "pypdf",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "extra:app"
+        },
+        {
+          "name": "docket:directness",
+          "value": "direct"
+        }
       ],
-      "ref": "pkg:pypi/cffi@2.1.1"
+      "purl": "pkg:pypi/pypdf@6.18.1",
+      "type": "library",
+      "version": "6.18.1"
     },
     {
-      "dependsOn": [],
-      "ref": "pkg:pypi/charset-normalizer@3.4.9"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/colorama@0.4.6"
+      "bom-ref": "pkg:pypi/uvloop@0.22.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
       ],
-      "ref": "pkg:pypi/click@8.4.2"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/colorama@0.4.6"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/cffi@2.1.1"
+      "name": "uvloop",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "extra:app"
+        },
+        {
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "uvicorn[standard] -> uvloop"
+        }
       ],
-      "ref": "pkg:pypi/cryptography@50.0.0"
+      "purl": "pkg:pypi/uvloop@0.22.1",
+      "type": "library",
+      "version": "0.22.1"
     },
     {
-      "dependsOn": [],
-      "ref": "pkg:pypi/distro@1.9.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/fastapi@0.141.1",
-        "pkg:pypi/openai-agents@0.19.4",
-        "pkg:pypi/pydantic@2.13.4",
-        "pkg:pypi/pypdf@6.18.1",
-        "pkg:pypi/python-dotenv@1.2.2",
-        "pkg:pypi/textual@8.2.8",
-        "pkg:pypi/tokenizers@0.23.1",
-        "pkg:pypi/uvicorn@0.52.1"
+      "bom-ref": "pkg:pypi/watchfiles@1.2.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
       ],
-      "ref": "pkg:pypi/docket@0.1.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/annotated-doc@0.0.5",
-        "pkg:pypi/pydantic@2.13.4",
-        "pkg:pypi/starlette@1.6.0",
-        "pkg:pypi/typing-extensions@4.16.0",
-        "pkg:pypi/typing-inspection@0.4.3"
+      "name": "watchfiles",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "extra:app"
+        },
+        {
+          "name": "docket:directness",
+          "value": "transitive"
+        },
+        {
+          "name": "docket:required-by",
+          "value": "uvicorn[standard] -> watchfiles"
+        }
       ],
-      "ref": "pkg:pypi/fastapi@0.141.1"
+      "purl": "pkg:pypi/watchfiles@1.2.0",
+      "type": "library",
+      "version": "1.2.0"
     },
     {
-      "dependsOn": [],
-      "ref": "pkg:pypi/fastuuid@0.14.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/filelock@3.32.2"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/frozenlist@1.8.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/fsspec@2026.7.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/griffelib@2.1.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/h11@0.16.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/hf-xet@1.6.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/certifi@2026.7.22",
-        "pkg:pypi/h11@0.16.0"
+      "bom-ref": "container:mitmproxy@unpinned",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
       ],
-      "ref": "pkg:pypi/httpcore@1.0.9"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/httptools@0.8.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/httpx-sse@0.4.3"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/anyio@4.14.2",
-        "pkg:pypi/certifi@2026.7.22",
-        "pkg:pypi/httpcore@1.0.9",
-        "pkg:pypi/idna@3.18"
+      "name": "mitmproxy",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "sandbox-image"
+        },
+        {
+          "name": "docket:role",
+          "value": "intercepting proxy for agent HTTP traffic"
+        },
+        {
+          "name": "docket:pinned",
+          "value": "NO \u2014 containers/Dockerfile installs it unversioned, so the version shipped depends on when the image was built"
+        },
+        {
+          "name": "docket:linkage",
+          "value": "invoked as a subprocess in the container; not linked against, not modified, not redistributed"
+        }
       ],
-      "ref": "pkg:pypi/httpx@0.28.1"
+      "type": "application",
+      "version": "unpinned"
     },
     {
-      "dependsOn": [
-        "pkg:pypi/click@8.4.2",
-        "pkg:pypi/filelock@3.32.2",
-        "pkg:pypi/fsspec@2026.7.0",
-        "pkg:pypi/hf-xet@1.6.0",
-        "pkg:pypi/httpx@0.28.1",
-        "pkg:pypi/packaging@26.3",
-        "pkg:pypi/pyyaml@6.0.3",
-        "pkg:pypi/tqdm@4.70.0",
-        "pkg:pypi/typing-extensions@4.16.0"
+      "bom-ref": "container:nuclei@3.3.7",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
       ],
-      "ref": "pkg:pypi/huggingface-hub@1.27.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/idna@3.18"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/zipp@4.1.0"
+      "name": "nuclei",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "sandbox-image"
+        },
+        {
+          "name": "docket:role",
+          "value": "live-target vulnerability templates, when a target is given"
+        },
+        {
+          "name": "docket:pinned",
+          "value": "yes, in containers/Dockerfile"
+        },
+        {
+          "name": "docket:linkage",
+          "value": "invoked as a subprocess in the container; not linked against, not modified, not redistributed"
+        }
       ],
-      "ref": "pkg:pypi/importlib-metadata@8.9.0"
+      "type": "application",
+      "version": "3.3.7"
     },
     {
-      "dependsOn": [
-        "pkg:pypi/markupsafe@3.0.3"
+      "bom-ref": "container:playwright@unpinned",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache-2.0"
+          }
+        }
       ],
-      "ref": "pkg:pypi/jinja2@3.1.6"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/jiter@0.16.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/referencing@0.37.0"
+      "name": "playwright",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "sandbox-image"
+        },
+        {
+          "name": "docket:role",
+          "value": "browser automation; installs Chromium"
+        },
+        {
+          "name": "docket:pinned",
+          "value": "NO \u2014 containers/Dockerfile installs it unversioned, so the version shipped depends on when the image was built"
+        },
+        {
+          "name": "docket:linkage",
+          "value": "invoked as a subprocess in the container; not linked against, not modified, not redistributed"
+        }
       ],
-      "ref": "pkg:pypi/jsonschema-specifications@2025.9.1"
+      "type": "application",
+      "version": "unpinned"
     },
     {
-      "dependsOn": [
-        "pkg:pypi/attrs@26.1.0",
-        "pkg:pypi/jsonschema-specifications@2025.9.1",
-        "pkg:pypi/referencing@0.37.0",
-        "pkg:pypi/rpds-py@2026.6.3"
+      "bom-ref": "container:base",
+      "licenses": [
+        {
+          "license": {
+            "name": "multiple (Debian main)"
+          }
+        }
       ],
-      "ref": "pkg:pypi/jsonschema@4.26.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/uc-micro-py@2.0.0"
+      "name": "python:3.13-slim-bookworm",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "sandbox-image"
+        },
+        {
+          "name": "docket:role",
+          "value": "base image of containers/Dockerfile; every scanner runs in a container built from it"
+        }
       ],
-      "ref": "pkg:pypi/linkify-it-py@2.1.0"
+      "type": "operating-system",
+      "version": "debian-12-bookworm"
     },
     {
-      "dependsOn": [
-        "pkg:pypi/aiohttp@3.14.3",
-        "pkg:pypi/click@8.4.2",
-        "pkg:pypi/fastuuid@0.14.0",
-        "pkg:pypi/httpx@0.28.1",
-        "pkg:pypi/importlib-metadata@8.9.0",
-        "pkg:pypi/jinja2@3.1.6",
-        "pkg:pypi/jsonschema@4.26.0",
-        "pkg:pypi/openai@2.53.0",
-        "pkg:pypi/pydantic-settings@2.15.0",
-        "pkg:pypi/pydantic@2.13.4",
-        "pkg:pypi/python-dotenv@1.2.2",
-        "pkg:pypi/tiktoken@0.13.0",
-        "pkg:pypi/tokenizers@0.23.1"
+      "bom-ref": "container:semgrep@1.90.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "LGPL-2.1-only"
+          }
+        }
       ],
-      "ref": "pkg:pypi/litellm@1.96.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/linkify-it-py@2.1.0",
-        "pkg:pypi/mdurl@0.1.2"
+      "name": "semgrep",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "sandbox-image"
+        },
+        {
+          "name": "docket:role",
+          "value": "static analysis over mounted source"
+        },
+        {
+          "name": "docket:pinned",
+          "value": "yes, in containers/Dockerfile"
+        },
+        {
+          "name": "docket:linkage",
+          "value": "invoked as a subprocess in the container; not linked against, not modified, not redistributed"
+        }
       ],
-      "ref": "pkg:pypi/markdown-it-py@4.2.0"
+      "type": "application",
+      "version": "1.90.0"
     },
     {
-      "dependsOn": [],
-      "ref": "pkg:pypi/markupsafe@3.0.3"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/anyio@4.14.2",
-        "pkg:pypi/httpx-sse@0.4.3",
-        "pkg:pypi/httpx@0.28.1",
-        "pkg:pypi/jsonschema@4.26.0",
-        "pkg:pypi/pydantic-settings@2.15.0",
-        "pkg:pypi/pydantic@2.13.4",
-        "pkg:pypi/pyjwt@2.13.0",
-        "pkg:pypi/python-multipart@0.0.32",
-        "pkg:pypi/pywin32@312",
-        "pkg:pypi/sse-starlette@3.4.8",
-        "pkg:pypi/starlette@1.6.0",
-        "pkg:pypi/typing-extensions@4.16.0",
-        "pkg:pypi/typing-inspection@0.4.3",
-        "pkg:pypi/uvicorn@0.52.1"
+      "bom-ref": "container:trivy@0.73.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache-2.0"
+          }
+        }
       ],
-      "ref": "pkg:pypi/mcp@1.29.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/markdown-it-py@4.2.0"
+      "name": "trivy",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "sandbox-image"
+        },
+        {
+          "name": "docket:role",
+          "value": "dependency and CVE scanning; also the cross-check for this SBOM"
+        },
+        {
+          "name": "docket:pinned",
+          "value": "yes, in containers/Dockerfile"
+        },
+        {
+          "name": "docket:linkage",
+          "value": "invoked as a subprocess in the container; not linked against, not modified, not redistributed"
+        }
       ],
-      "ref": "pkg:pypi/mdit-py-plugins@0.6.1"
+      "type": "application",
+      "version": "0.73.0"
     },
     {
-      "dependsOn": [],
-      "ref": "pkg:pypi/mdurl@0.1.2"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/multidict@6.7.1"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/griffelib@2.1.0",
-        "pkg:pypi/litellm@1.96.0",
-        "pkg:pypi/mcp@1.29.0",
-        "pkg:pypi/openai@2.53.0",
-        "pkg:pypi/pydantic@2.13.4",
-        "pkg:pypi/requests@2.34.2",
-        "pkg:pypi/typing-extensions@4.16.0",
-        "pkg:pypi/websockets@16.1.1"
+      "bom-ref": "vendored:strix-skills",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache-2.0"
+          }
+        }
       ],
-      "ref": "pkg:pypi/openai-agents@0.19.4"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/anyio@4.14.2",
-        "pkg:pypi/distro@1.9.0",
-        "pkg:pypi/httpx@0.28.1",
-        "pkg:pypi/jiter@0.16.0",
-        "pkg:pypi/pydantic@2.13.4",
-        "pkg:pypi/sniffio@1.3.1",
-        "pkg:pypi/tqdm@4.70.0",
-        "pkg:pypi/typing-extensions@4.16.0"
+      "name": "strix vulnerability playbooks (derived)",
+      "properties": [
+        {
+          "name": "docket:origin",
+          "value": "vendored-content"
+        },
+        {
+          "name": "docket:source",
+          "value": "https://github.com/usestrix/strix"
+        },
+        {
+          "name": "docket:files",
+          "value": "50"
+        },
+        {
+          "name": "docket:location",
+          "value": "engine/docket/skills/{recon,triage}/"
+        },
+        {
+          "name": "docket:attribution",
+          "value": "every file carries the licence and the changes made"
+        },
+        {
+          "name": "docket:derivation",
+          "value": "scripts/build_skills.py --check verifies it"
+        }
       ],
-      "ref": "pkg:pypi/openai@2.53.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/packaging@26.3"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/platformdirs@4.11.2"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/propcache@0.5.2"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/pycparser@3.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/typing-extensions@4.16.0"
-      ],
-      "ref": "pkg:pypi/pydantic-core@2.46.4"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/pydantic@2.13.4",
-        "pkg:pypi/python-dotenv@1.2.2",
-        "pkg:pypi/typing-inspection@0.4.3"
-      ],
-      "ref": "pkg:pypi/pydantic-settings@2.15.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/annotated-types@0.8.0",
-        "pkg:pypi/pydantic-core@2.46.4",
-        "pkg:pypi/typing-extensions@4.16.0",
-        "pkg:pypi/typing-inspection@0.4.3"
-      ],
-      "ref": "pkg:pypi/pydantic@2.13.4"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/pygments@2.20.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/cryptography@50.0.0"
-      ],
-      "ref": "pkg:pypi/pyjwt@2.13.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/pypdf@6.18.1"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/python-dotenv@1.2.2"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/python-multipart@0.0.32"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/pywin32@312"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/pyyaml@6.0.3"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/attrs@26.1.0",
-        "pkg:pypi/rpds-py@2026.6.3",
-        "pkg:pypi/typing-extensions@4.16.0"
-      ],
-      "ref": "pkg:pypi/referencing@0.37.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/regex@2026.7.19"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/certifi@2026.7.22",
-        "pkg:pypi/charset-normalizer@3.4.9",
-        "pkg:pypi/idna@3.18",
-        "pkg:pypi/urllib3@2.7.0"
-      ],
-      "ref": "pkg:pypi/requests@2.34.2"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/markdown-it-py@4.2.0",
-        "pkg:pypi/pygments@2.20.0"
-      ],
-      "ref": "pkg:pypi/rich@15.0.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/rpds-py@2026.6.3"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/sniffio@1.3.1"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/anyio@4.14.2",
-        "pkg:pypi/starlette@1.6.0"
-      ],
-      "ref": "pkg:pypi/sse-starlette@3.4.8"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/anyio@4.14.2",
-        "pkg:pypi/typing-extensions@4.16.0"
-      ],
-      "ref": "pkg:pypi/starlette@1.6.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/markdown-it-py@4.2.0",
-        "pkg:pypi/mdit-py-plugins@0.6.1",
-        "pkg:pypi/platformdirs@4.11.2",
-        "pkg:pypi/pygments@2.20.0",
-        "pkg:pypi/rich@15.0.0",
-        "pkg:pypi/typing-extensions@4.16.0"
-      ],
-      "ref": "pkg:pypi/textual@8.2.8"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/regex@2026.7.19",
-        "pkg:pypi/requests@2.34.2"
-      ],
-      "ref": "pkg:pypi/tiktoken@0.13.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/huggingface-hub@1.27.0"
-      ],
-      "ref": "pkg:pypi/tokenizers@0.23.1"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/colorama@0.4.6"
-      ],
-      "ref": "pkg:pypi/tqdm@4.70.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/typing-extensions@4.16.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/typing-extensions@4.16.0"
-      ],
-      "ref": "pkg:pypi/typing-inspection@0.4.3"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/uc-micro-py@2.0.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/urllib3@2.7.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/click@8.4.2",
-        "pkg:pypi/h11@0.16.0",
-        "pkg:pypi/httptools@0.8.0",
-        "pkg:pypi/python-dotenv@1.2.2",
-        "pkg:pypi/pyyaml@6.0.3",
-        "pkg:pypi/uvloop@0.22.1",
-        "pkg:pypi/watchfiles@1.2.0",
-        "pkg:pypi/websockets@16.1.1"
-      ],
-      "ref": "pkg:pypi/uvicorn@0.52.1"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/uvloop@0.22.1"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/anyio@4.14.2"
-      ],
-      "ref": "pkg:pypi/watchfiles@1.2.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/websockets@16.1.1"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/idna@3.18",
-        "pkg:pypi/multidict@6.7.1",
-        "pkg:pypi/propcache@0.5.2"
-      ],
-      "ref": "pkg:pypi/yarl@1.24.5"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:pypi/zipp@4.1.0"
-    },
-    {
-      "dependsOn": [
-        "pkg:pypi/docket@0.1.0"
-      ],
-      "ref": "uv.lock"
+      "type": "data",
+      "version": "derived"
     }
   ],
   "metadata": {
     "component": {
-      "bom-ref": "/src",
-      "name": "/src",
-      "properties": [
+      "bom-ref": "pkg:pypi/docket@0.1.0",
+      "licenses": [
         {
-          "name": "aquasecurity:trivy:SchemaVersion",
-          "value": "2"
+          "license": {
+            "id": "Apache-2.0"
+          }
         }
       ],
-      "type": "application"
+      "name": "docket",
+      "purl": "pkg:pypi/docket@0.1.0",
+      "type": "application",
+      "version": "0.1.0"
     },
-    "tools": {
-      "components": [
-        {
-          "group": "aquasecurity",
-          "manufacturer": {
-            "name": "Aqua Security Software Ltd."
-          },
-          "name": "trivy",
-          "type": "application",
-          "version": "0.73.0"
-        }
-      ]
-    }
+    "tools": [
+      {
+        "name": "scripts/sbom.py",
+        "vendor": "docket",
+        "version": "2"
+      }
+    ]
   },
-  "specVersion": "1.7",
-  "version": 1,
-  "vulnerabilities": []
+  "specVersion": "1.6",
+  "version": 1
 }

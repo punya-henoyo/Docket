@@ -135,116 +135,169 @@ def ecosystem_of(component: dict) -> str:
         return "PyPI"
     if purl.startswith("pkg:npm"):
         return "npm"
-    return "—"
+    return "container / content"
+
+
+def prop(component: dict, name: str) -> str:
+    for entry in component.get("properties") or []:
+        if entry["name"] == name:
+            return entry["value"]
+    return ""
+
+
+def origin_of(component: dict) -> str:
+    return prop(component, "docket:origin") or "unknown"
+
+
+ORIGIN_NOTES = {
+    "core": "required by docket's declared runtime dependencies",
+    "extra:app": "only installed with the optional console extra",
+    "extra:tokenizer": "only installed with the optional tokenizer extra",
+    "console-bundle": "delivered to a browser; build tooling excluded",
+    "sandbox-image": "executed inside the scan container",
+    "vendored-content": "third-party material under an attribution obligation",
+}
 
 
 def build(document: dict, status: dict) -> str:
     components = document.get("components") or []
-    packages = [c for c in components if c.get("purl")]
-    lockfiles = [c for c in components if not c.get("purl")]
     generated = status.get("scanned_on", "unrecorded")
 
+    groups: dict[str, list[dict]] = {}
     licences: Counter[str] = Counter()
     unlicensed: list[dict] = []
-    ecosystems: Counter[str] = Counter()
-    for component in packages:
-        ecosystems[ecosystem_of(component)] += 1
+    for component in components:
+        groups.setdefault(origin_of(component), []).append(component)
         name = licence_of(component)
         if name:
             licences[name] += 1
         else:
             unlicensed.append(component)
+    unpinned = [c for c in components if prop(c, "docket:pinned").startswith("NO")]
 
     body: list[str] = [
         para("Docket — Software Bill of Materials", "Title"),
-        para(f"CycloneDX {document.get('specVersion', '?')} · "
-             f"{len(packages)} packages · prepared {generated}", "Small"),
+        para(f"CycloneDX {document.get('specVersion', '?')} · {len(components)} "
+             f"components · prepared {generated}", "Small"),
         para(),
         para("Purpose and scope", "Heading1"),
         para(
-            "This document lists every third-party software component that Docket is "
-            "built from, with its version and licence, and records the result of a "
-            "vulnerability scan of that component list. It is generated from the "
-            "repository's own lockfiles; it is not a hand-maintained list."
+            "This document inventories every third-party component that Docket is built "
+            "from or ships, with its version, its licence, and the reason it is present. "
+            "It is generated from the repository's own lockfiles, container definition "
+            "and attribution notices; it is not hand-maintained."
         ),
         para(
             "The machine-readable original is sbom/docket.cdx.json in the Docket "
             "repository, in CycloneDX format. This document is rendered from that file "
-            "and contains no information that is not in it. Both regenerate with "
-            "'make sbom' and 'make sbom-doc'."
+            "and contains nothing that is not in it. Both regenerate with 'make sbom' "
+            "and 'make sbom-doc', and 'make sbom-check' fails if the committed copy and "
+            "a fresh generation disagree — so this can be verified rather than trusted."
         ),
-        para("What is included", "Heading2"),
+        para("Why this is broader than a dependency scan", "Heading2"),
         para(
-            "Everything that ships as part of the product: Python packages resolved by "
-            "uv.lock, and the JavaScript packages that are delivered to a browser in the "
-            "console bundle."
+            "A scanner reading this repository's lockfiles sees the Python and "
+            "JavaScript packages and stops. Three further classes of component are part "
+            "of what Docket delivers and are derived here instead:"
         ),
-        para("What is excluded, and why", "Heading2"),
     ]
     for line in (
-        "JavaScript build tooling (vite, typescript and their dependencies). These "
-        "produce the console bundle and are not present in it, so they are not "
-        "components of the delivered software.",
-        "docket_runs/ — Docket's own scan output. It contains copies of source from "
-        "repositories Docket has analysed and is not part of the product.",
-        ".venv/ — a local installation of the same packages already listed from the "
-        "lockfile. Including it would double-count every entry.",
+        "What the sandbox ships. Every scan executes semgrep, nuclei, trivy, mitmproxy "
+        "and Chromium inside a container built from containers/Dockerfile. Their "
+        "versions are parsed from that file so they cannot drift from what is built.",
+        "Third-party content. Fifty agent playbooks are derived from the strix project "
+        "under the Apache License 2.0, recorded in NOTICE. No lockfile records prose, "
+        "and the obligation is the same as a code dependency's.",
+        "The reason each package is present. Every transitive package in the inventory "
+        "carries the shortest path back to a dependency Docket actually declared, "
+        "computed from the resolution graph in uv.lock.",
+    ):
+        body.append(para("•  " + line))
+    body.append(para("What is excluded", "Heading2"))
+    for line in (
+        "JavaScript build tooling. It produces the console bundle and is not present in "
+        "it, so it is not a component of the delivered software.",
+        "Docket's own scan output. It contains copies of source from repositories Docket "
+        "has analysed and is not part of this product.",
     ):
         body.append(para("•  " + line))
 
     body += [
-        para("Components", "Heading1"),
+        para("Components by origin", "Heading1"),
         table(
-            ["Ecosystem", "Packages"],
-            [[eco, str(count)] for eco, count in ecosystems.most_common()],
-            [3200, 1800],
+            ["Origin", "Count", "What it is"],
+            [[origin, str(len(items)), ORIGIN_NOTES.get(origin, "")]
+             for origin, items in sorted(groups.items(), key=lambda kv: -len(kv[1]))],
+            [1900, 800, 4500],
         ),
-    ]
-    if lockfiles:
-        body.append(para(
-            f"The source document additionally contains {len(lockfiles)} entries "
-            f"describing the lockfiles that were parsed "
-            f"({', '.join(str(c.get('name')) for c in lockfiles)}). These are not "
-            f"software components and are excluded from every count in this document.",
-            "Small",
-        ))
-
-    body += [
         para("Licences", "Heading1"),
-        para(f"{len(packages) - len(unlicensed)} of {len(packages)} packages declare a "
-             f"licence."),
-        table(
-            ["Licence", "Packages"],
-            [[name, str(count)] for name, count in licences.most_common()],
-            [3200, 1800],
-        ),
+        para(f"{len(components) - len(unlicensed)} of {len(components)} components "
+             f"declare a licence."),
+        table(["Licence", "Components"],
+              [[name, str(count)] for name, count in licences.most_common()],
+              [3200, 1800]),
         para(
-            "Licence identifiers are read from each package's own published metadata. "
-            "Unambiguous spelling variants are normalised to their SPDX identifier — for "
-            "example 'MIT License' is recorded as 'MIT'. Ambiguous values are left "
-            "exactly as the package declared them: 'BSD License' does not state whether "
-            "it is the 2-clause or 3-clause variant, and Docket does not choose one on "
-            "the publisher's behalf.",
+            "Identifiers are read from each package's own published metadata. "
+            "Unambiguous spelling variants are normalised to their SPDX identifier, so "
+            "'MIT License' is recorded as 'MIT'. Ambiguous values are left exactly as "
+            "declared: 'BSD License' does not state whether it is the 2-clause or "
+            "3-clause variant, and Docket does not choose one on the publisher's behalf.",
             "Small",
+        ),
+        para("Copyleft", "Heading2"),
+        para(
+            "semgrep is licensed under the GNU Lesser General Public License, version "
+            "2.1. It is the only component in this inventory under a copyleft licence, "
+            "and a dependency scan of the repository would not surface it, because it is "
+            "installed into the sandbox container rather than declared in the Python "
+            "lockfile. Docket invokes semgrep as a separate process inside that "
+            "container: it does not link against it, modify it, or redistribute it. That "
+            "distinction governs the obligation, and it is stated here so that a reviewer "
+            "does not have to establish it independently."
         ),
     ]
 
     if unlicensed:
         body += [
-            para(f"Packages with no licence recorded ({len(unlicensed)})", "Heading2"),
+            para(f"Components with no licence recorded ({len(unlicensed)})", "Heading2"),
             para(
-                "These packages publish no licence identifier that could be read on the "
-                "machine that generated this document, typically because they are "
+                "These publish no licence identifier that could be read on the machine "
+                "that generated this document, typically because they are "
                 "platform-specific or optional and were therefore not installed. They "
                 "are left blank rather than assigned a likely licence. Anyone relying on "
                 "this document for licence compliance should establish these by hand."
             ),
             table(
-                ["Package", "Version", "Ecosystem"],
-                [[str(c.get("name")), str(c.get("version", "")), ecosystem_of(c)]
+                ["Component", "Version", "Origin"],
+                [[str(c.get("name")), str(c.get("version", "")), origin_of(c)]
                  for c in sorted(unlicensed, key=lambda c: str(c.get("name")))],
-                [3000, 1500, 1500],
+                [3000, 1500, 1800],
                 mono_columns={0},
+            ),
+        ]
+
+    if unpinned:
+        body += [
+            para("Build reproducibility", "Heading1"),
+            para(
+                f"{len(unpinned)} component(s) are installed into the sandbox container "
+                "without a pinned version. Two builds of the same container definition "
+                "on different dates can therefore contain different code, and this "
+                "inventory cannot state which version a particular image holds."
+            ),
+            table(
+                ["Component", "Status"],
+                [[str(c.get("name")), "installed unversioned in containers/Dockerfile"]
+                 for c in unpinned],
+                [2400, 4800],
+                mono_columns={0},
+            ),
+            para(
+                "This is recorded rather than resolved by printing whichever version "
+                "happens to be installed today, because doing so would imply a guarantee "
+                "the build does not make. It is the same condition Docket's own control "
+                "packs look for when auditing a customer's repository.",
+                "Small",
             ),
         ]
 
@@ -253,31 +306,31 @@ def build(document: dict, status: dict) -> str:
         total = status.get("total", 0)
         if total == 0:
             body.append(para(
-                f"No known vulnerabilities were reported against the components listed "
-                f"in this document, as of {generated}, by "
+                f"No known vulnerabilities were reported against the Python and "
+                f"JavaScript components listed in this document, as of {generated}, by "
                 f"{status.get('scanner', 'the scanner')}."
             ))
         else:
-            by_sev = status.get("by_severity") or {}
             body += [
                 para(f"{total} known vulnerabilities were reported as of {generated} by "
                      f"{status.get('scanner', 'the scanner')}."),
                 table(["Severity", "Count"],
-                      [[k, str(v)] for k, v in sorted(by_sev.items())], [3200, 1800]),
+                      [[k, str(v)] for k, v in sorted(
+                          (status.get("by_severity") or {}).items())],
+                      [3200, 1800]),
             ]
         body.append(para(
             "This is a statement about what had been published and recorded in the "
             "scanner's vulnerability database on that date. It is not a statement that "
-            "the software is free of defects, and it does not remain true over time: a "
-            "vulnerability disclosed after that date would not appear. Re-run the scan "
-            "to obtain a current result.",
+            "the software is free of defects; it does not remain true over time, since a "
+            "vulnerability disclosed afterwards would not appear; and it does not cover "
+            "the container components listed above, which are scanned as images rather "
+            "than as packages. Re-run the scan for a current result.",
             "Small",
         ))
     else:
-        body.append(para(
-            "Not assessed when this document was generated. "
-            f"Reason: {status.get('reason', 'not recorded')}."
-        ))
+        body.append(para("Not assessed when this document was generated. Reason: "
+                         f"{status.get('reason', 'not recorded')}."))
 
     body += [
         para("Licence of Docket itself", "Heading1"),
@@ -286,32 +339,24 @@ def build(document: dict, status: dict) -> str:
             "LICENSE at the root of the repository, and attribution for third-party "
             "material incorporated into it is in NOTICE."
         ),
-        para("How this document was produced", "Heading1"),
-        para(
-            "The component list is produced by Trivy reading the repository's lockfiles, "
-            "and is emitted as CycloneDX. Licence identifiers are then read from the "
-            "installed Python distributions, because a lockfile records versions but not "
-            "licences. The vulnerability result is produced by scanning the resulting "
-            "CycloneDX document."
-        ),
-        para(
-            "The output is byte-reproducible: regenerating it on an unchanged repository "
-            "produces an identical file, and 'make sbom-check' fails if the committed "
-            "copy does not match a fresh generation. This is what allows the document to "
-            "be checked rather than trusted.",
-            "Small",
-        ),
         para("Full inventory", "Heading1"),
-        para(f"All {len(packages)} packages, alphabetically."),
-        table(
-            ["Package", "Version", "Ecosystem", "Licence"],
-            [[str(c.get("name")), str(c.get("version", "")), ecosystem_of(c),
-              licence_of(c) or "not recorded"]
-             for c in sorted(packages, key=lambda c: str(c.get("name")).lower())],
-            [2900, 1300, 1200, 2600],
-            mono_columns={0},
-        ),
+        para(f"All {len(components)} components, grouped by origin. 'Required by' gives "
+             f"the dependency chain back to a declared dependency, or the component's "
+             f"role where it is not a package."),
     ]
+    for origin, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        body += [
+            para(f"{origin} ({len(items)})", "Heading2"),
+            table(
+                ["Component", "Version", "Licence", "Required by / role"],
+                [[str(c.get("name")), str(c.get("version", "")),
+                  licence_of(c) or "not recorded",
+                  (prop(c, "docket:required-by") or prop(c, "docket:role"))[:110]]
+                 for c in sorted(items, key=lambda c: str(c.get("name")).lower())],
+                [2100, 1100, 1700, 4300],
+                mono_columns={0},
+            ),
+        ]
 
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -336,7 +381,7 @@ def main() -> int:
         archive.writestr("word/styles.xml", _STYLES)
         archive.writestr("word/document.xml", xml)
     print(f"wrote {OUT.relative_to(REPO)} "
-          f"({len([c for c in document.get('components') or [] if c.get('purl')])} packages)")
+          f"({len(document.get('components') or [])} components)")
     return 0
 
 

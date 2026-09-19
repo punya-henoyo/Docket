@@ -1,4 +1,4 @@
-.PHONY: help install check test test-fast image clean lint console sbom sbom-check sbom-doc
+.PHONY: help install check test test-fast image clean lint console sbom sbom-check sbom-doc sbom-verify-image
 
 help:
 	@echo "install    install dependencies (uv sync)"
@@ -105,6 +105,11 @@ sbom:
 # alongside `make test`, or in the release step.
 sbom-check:
 	uv run python scripts/sbom.py --check
+
+# Re-reads the sandbox tools' licences out of the BUILT image and fails on drift, so the
+# hand-listed SANDBOX_LICENCES cannot rot silently. Needs Docker + `make image`.
+sbom-verify-image:
+	uv run python scripts/sbom.py --verify-image
 
 # Reads only the COMMITTED sbom/docket.cdx.json, so it needs no Docker and no image:
 # anyone who cannot rebuild the SBOM can still rebuild the document from the repository.
