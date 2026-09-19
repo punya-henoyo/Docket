@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "Autonomous pentesting agent: multi-agent exploitation with proof-of-concept evidence"
 readme = "README.md"
 requires-python = ">=3.12"
+# Declared in metadata, not only in the LICENSE file at the repo root. Without it docket
+# is the one component in its OWN SBOM with a blank licence, which is exactly the gap
+# an auditor asks about first. Found by running scripts/sbom.py against this repo.
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "openai-agents[litellm]>=0.19,<0.20",
     "pydantic>=2",

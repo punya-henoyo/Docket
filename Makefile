@@ -1,4 +1,4 @@
-.PHONY: help install check test test-fast image clean lint console
+.PHONY: help install check test test-fast image clean lint console sbom sbom-check
 
 help:
 	@echo "install    install dependencies (uv sync)"
@@ -8,6 +8,7 @@ help:
 	@echo "test-fast  run only tests that don't need Docker"
 	@echo "image      build the sandbox container image"
 	@echo "lint       ruff check + format --check (if ruff is installed)"
+	@echo "sbom       regenerate sbom/ (CycloneDX + summary; needs Docker + make image)"
 	@echo "clean      remove run artifacts and caches"
 
 install:
@@ -92,6 +93,17 @@ lint:
 	else \
 	  echo "ruff not installed — skipping (uv tool install ruff)"; \
 	fi
+
+# The component list comes from the trivy in docket's own sandbox image, so this needs
+# Docker and `make image`. Licences are filled in from the installed distributions, which
+# lockfiles do not carry — see scripts/sbom.py.
+sbom:
+	uv run python scripts/sbom.py
+
+# Not in `check`: it needs Docker, and `check` is the fast no-Docker signal. Run it
+# alongside `make test`, or in the release step.
+sbom-check:
+	uv run python scripts/sbom.py --check
 
 clean:
 	rm -rf docket_runs frontend/dist
