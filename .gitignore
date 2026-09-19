@@ -25,3 +25,8 @@ app/frontend/dist/
 node_modules/
 frontend/dist/
 graphify-out/
+
+# Microsoft Office lock files. Word writes ~$<name> beside any document you
+# open; it carries the editing user's name and is not part of the repository.
+# One reached a commit via `git add -A` after sbom/docket-sbom.docx was opened.
+~$*
