@@ -1,4 +1,4 @@
-.PHONY: help install check test test-fast image clean lint console sbom sbom-check
+.PHONY: help install check test test-fast image clean lint console sbom sbom-check sbom-doc
 
 help:
 	@echo "install    install dependencies (uv sync)"
@@ -9,6 +9,7 @@ help:
 	@echo "image      build the sandbox container image"
 	@echo "lint       ruff check + format --check (if ruff is installed)"
 	@echo "sbom       regenerate sbom/ (CycloneDX + summary; needs Docker + make image)"
+	@echo "sbom-doc   render sbom/docket-sbom.docx for external review (no Docker)"
 	@echo "clean      remove run artifacts and caches"
 
 install:
@@ -104,6 +105,13 @@ sbom:
 # alongside `make test`, or in the release step.
 sbom-check:
 	uv run python scripts/sbom.py --check
+
+# Reads only the COMMITTED sbom/docket.cdx.json, so it needs no Docker and no image:
+# anyone who cannot rebuild the SBOM can still rebuild the document from the repository.
+# A .docx is a zip of XML, the same shape compliance/ingest.py already reads, so this
+# costs no dependency.
+sbom-doc:
+	uv run python scripts/sbom_docx.py
 
 clean:
 	rm -rf docket_runs frontend/dist

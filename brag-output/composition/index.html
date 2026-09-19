@@ -3,34 +3,229 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=1920, height=1080" />
+    <title>docket — brag</title>
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
     <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
+      /* ── Henoyo Design System v1, straight from app/frontend/BRAND.md ───────── */
+      @font-face {
+        font-family: "Source Serif 4";
+        font-style: normal;
+        font-weight: 200 900;
+        font-display: block;
+        src: url("assets/fonts/SourceSerif4.woff2") format("woff2");
       }
-      html,
-      body {
-        margin: 0;
+      @font-face {
+        font-family: "Source Serif 4";
+        font-style: italic;
+        font-weight: 200 900;
+        font-display: block;
+        src: url("assets/fonts/SourceSerif4-Italic.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "Inter";
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: block;
+        src: url("assets/fonts/Inter.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "JetBrains Mono";
+        font-style: normal;
+        font-weight: 100 800;
+        font-display: block;
+        src: url("assets/fonts/JetBrainsMono.woff2") format("woff2");
+      }
+
+      :root {
+        --page: #f8f6f1;   /* paper-50  — cream, never white */
+        --card: #fffefb;   /* paper-0 */
+        --raised: #f0ede5; /* paper-100 */
+        --ink: #1a1f1c;    /* ink-900 */
+        --ink-2: #5a625b;  /* text-secondary */
+        --line: #e3dfd4;   /* paper-200 */
+        --line-2: #c9c4b5; /* paper-300 */
+        --brand: #3b6047;        /* verdant-600 — the only brand hue */
+        --brand-bright: #3b6047; /* verdant-600 — BRAND.md names verdant-bright (#4FA776)
+                                    here, but at 164px on cream it reads 2.73:1 and
+                                    fails the contrast audit; -600 is the same hue. */
+        --chip: #e9efeb;         /* verdant-50 */
+        --crit: #c0261b;
+        --high: #c2410c;
+        --sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+        --serif: "Source Serif 4", Georgia, serif;
+        --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+      }
+
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
         width: 1920px;
         height: 1080px;
         overflow: hidden;
-        background: #0a0a0a;
+        background: var(--page);
       }
       #root {
+        position: relative;
         width: 100%;
         height: 100%;
+        overflow: hidden;
+        font-family: var(--sans);
+        color: var(--ink);
+      }
+
+      /* Untimed full-bleed cream. Every scene crossfades over this, so the paper
+         never blinks between cuts. Needs its own positioning: the runtime only
+         auto-lays-out elements that carry data-start. */
+      #paper { position: absolute; inset: 0; background: var(--page); }
+
+      .scene { display: block; }
+      .inner {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 0 160px;
+      }
+      .inner.center { align-items: center; text-align: center; }
+
+      .eyebrow {
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 20px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink-2);
+      }
+
+      /* ── Scene 1 — the refusal ─────────────────────────────────────────────── */
+      #s1-eyebrow { margin-bottom: 40px; }
+      #s1-refusal {
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 62px;
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        color: var(--crit);
+      }
+      #s1-note {
+        margin-top: 36px;
+        font-size: 34px;
+        line-height: 1.45;
+        max-width: 1180px;
+        color: var(--ink-2);
+      }
+
+      /* ── The wordmark ──────────────────────────────────────────────────────── */
+      .wordmark {
+        font-family: var(--serif);
+        font-style: italic;
+        font-weight: 500;
+        color: var(--ink);
+        letter-spacing: -0.01em;
+      }
+      .wordmark .dot { color: var(--brand-bright); font-style: normal; }
+      #s2-wordmark { font-size: 184px; line-height: 1; }
+      #s2-tagline {
+        margin-top: 44px;
+        font-size: 34px;
+        letter-spacing: 0.02em;
+        color: var(--ink-2);
+      }
+
+      /* ── Scene 3 — the console's Scan view ─────────────────────────────────── */
+      #s3-inner { justify-content: center; align-items: center; }
+      #s3-card {
+        width: 1400px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 40px 56px 32px;
+      }
+      #s3-head {
         display: flex;
         align-items: center;
-        justify-content: center;
-        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        gap: 24px;
+        padding-bottom: 28px;
+        border-bottom: 1px solid var(--line);
       }
-      #title {
-        color: #f4f4f5;
-        font-size: 72px;
-        font-weight: 600;
-        letter-spacing: -0.03em;
+      #s3-status {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: var(--mono);
+        font-size: 20px;
+        color: var(--brand);
+      }
+      #s3-status .dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        background: var(--brand);
+        display: inline-block;
+      }
+      #s3-chips { display: flex; gap: 12px; margin-left: auto; }
+      .chip {
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 19px;
+        color: var(--brand);
+        background: var(--chip);
+        border-radius: 999px;
+        padding: 7px 18px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 150px 1fr;
+        gap: 32px;
+        align-items: start;
+        padding: 26px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .sev {
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 17px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 5px 0;
+      }
+      .sev.critical { color: var(--crit); }
+      .sev.high { color: var(--high); }
+      .req {
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 33px;
+        line-height: 1.25;
+        color: var(--ink);
+      }
+      .res {
+        margin-top: 10px;
+        font-family: var(--mono);
+        font-size: 29px;
+        line-height: 1.3;
+        color: var(--ink-2);
+      }
+      #s3-foot {
+        margin-top: 26px;
+        text-align: right;
+        font-family: var(--mono);
+        font-size: 22px;
+        color: var(--ink-2);
+      }
+
+      /* ── Scene 4 — outro ───────────────────────────────────────────────────── */
+      #s4-inner { display: grid; place-items: center; }
+      #s4-line, #s4-wordmark { grid-area: 1 / 1; width: 100%; }
+      #s4-line {
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: 68px;
+        line-height: 1.2;
+        text-align: center;
+        color: var(--ink);
+      }
+      #s4-wordmark {
+        text-align: center;
+        font-size: 164px;
+        line-height: 1;
       }
     </style>
   </head>
@@ -39,15 +234,160 @@
       id="root"
       data-composition-id="main"
       data-start="0"
-      data-duration="10"
+      data-duration="24.2"
       data-width="1920"
       data-height="1080"
     >
-      <h1 id="title" class="clip" data-start="0" data-duration="10" data-track-index="0">Title</h1>
+      <div id="paper"></div>
+
+      <!-- ── Scene 1 — the refusal — 0.0 → 4.8, out by 5.3 ───────────────────── -->
+      <section id="s1" class="clip scene" data-start="0" data-duration="5.3" data-track-index="0">
+        <div id="s1-inner" class="inner">
+          <div id="s1-eyebrow" class="eyebrow">Tool response</div>
+          <div id="s1-refusal">finding refused — no reproduced evidence.</div>
+          <div id="s1-note">A description of what you believe happens is not evidence.</div>
+        </div>
+      </section>
+
+      <!-- ── Scene 2 — the wordmark — 4.8 → 8.6, out by 9.1 ──────────────────── -->
+      <section id="s2" class="clip scene" data-start="4.8" data-duration="4.3" data-track-index="1">
+        <div id="s2-inner" class="inner center">
+          <div id="s2-wordmark" class="wordmark">docket<span class="dot">.</span></div>
+          <div id="s2-tagline">Only files what it has already exploited.</div>
+        </div>
+      </section>
+
+      <!-- ── Scene 3 — the scan — 8.6 → 19.1, out by 19.6 ────────────────────── -->
+      <section id="s3" class="clip scene" data-start="8.6" data-duration="11" data-track-index="2">
+        <div id="s3-inner" class="inner">
+          <div id="s3-card">
+            <div id="s3-head">
+              <div class="eyebrow">Scan</div>
+              <div id="s3-status"><span class="dot"></span>scanning</div>
+              <div id="s3-chips">
+                <span class="chip" id="s3-chip-1">cmdi</span>
+                <span class="chip" id="s3-chip-2">sqli</span>
+                <span class="chip" id="s3-chip-3">xss</span>
+                <span class="chip" id="s3-chip-4">recon</span>
+              </div>
+            </div>
+
+            <div class="row" id="s3-row-1">
+              <div class="sev critical">critical</div>
+              <div>
+                <div class="req">?file=test.csv; sleep 5</div>
+                <div class="res">&rarr; "Response time: ~5016ms"</div>
+              </div>
+            </div>
+            <div class="row" id="s3-row-2">
+              <div class="sev critical">critical</div>
+              <div>
+                <div class="req">username=admin' --</div>
+                <div class="res">&rarr; "Welcome"</div>
+              </div>
+            </div>
+            <div class="row" id="s3-row-3">
+              <div class="sev high">high</div>
+              <div>
+                <div class="req">dialog_message='host.docker.internal'</div>
+                <div class="res">&rarr; browser dialog fired</div>
+              </div>
+            </div>
+
+            <div id="s3-foot">4 agents · $0.108 · 3 findings · all reproduced</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Scene 4 — outro — 19.1 → 24.2 ───────────────────────────────────── -->
+      <section id="s4" class="clip scene" data-start="19.1" data-duration="5.15" data-track-index="3">
+        <div id="s4-inner" class="inner center">
+          <div id="s4-line">Nothing is entered without evidence.</div>
+          <div id="s4-wordmark" class="wordmark">docket<span class="dot">.</span></div>
+        </div>
+      </section>
+
+      <!-- ── Audio ───────────────────────────────────────────────────────────── -->
+      <audio
+        id="music"
+        src="assets/music/happy-beats-business-moves-vol-12-by-ende-dot-app.mp3"
+        data-start="0"
+        data-duration="24.2"
+        data-track-index="10"
+        data-automation='{"version":1,"lanes":[{"target":"volume","points":[{"t":0,"v":0},{"t":0.8,"v":0.2},{"t":22.6,"v":0.2},{"t":24.2,"v":0}]}]}'
+      ></audio>
+      <audio id="sfx-refusal" src="assets/sfx/impact/impactSoft_medium_001.ogg"
+             data-start="0.52" data-duration="0.18" data-track-index="11" data-volume="0.5"></audio>
+      <audio id="sfx-row-1" src="assets/sfx/interface/bong_001.ogg"
+             data-start="10.93" data-duration="0.12" data-track-index="12" data-volume="0.3"></audio>
+      <audio id="sfx-row-2" src="assets/sfx/interface/bong_001.ogg"
+             data-start="13.11" data-duration="0.12" data-track-index="13" data-volume="0.3"></audio>
+      <audio id="sfx-row-3" src="assets/sfx/interface/bong_001.ogg"
+             data-start="15.29" data-duration="0.12" data-track-index="14" data-volume="0.3"></audio>
+      <audio id="sfx-wordmark" src="assets/sfx/impact/impactSoft_medium_000.ogg"
+             data-start="22.33" data-duration="0.12" data-track-index="15" data-volume="0.26"></audio>
     </div>
+
     <script>
+      // One paused timeline for the whole composition. All times are absolute
+      // composition seconds, so the beat locks below read against the cue preset
+      // in assets/music/cues/ without any per-scene arithmetic.
       const tl = gsap.timeline({ paused: true });
-      // Example: tl.fromTo("#title", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.6 }, 0);
+
+      // ── Scene 1 — the refusal ───────────────────────────────────────────────
+      tl.fromTo("#s1-eyebrow", { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "none" }, 0.15)
+        // The one abrupt move in the video. Refusing should feel abrupt.
+        // beat-grid: 0.56s
+        .fromTo("#s1-refusal", { opacity: 0, y: 16 },
+                { opacity: 1, y: 0, duration: 0.24, ease: "power4.out" }, 0.56)
+        .fromTo("#s1-note", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 1.35)
+        .to("#s1-inner", { opacity: 0, duration: 0.5, ease: "power1.inOut" }, 4.8);
+
+      // ── Scene 2 — the wordmark ──────────────────────────────────────────────
+      tl.fromTo("#s2-inner", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power1.inOut" }, 4.8)
+        // It resolves rather than arrives: opacity plus a 1.5% settle, nothing more.
+        .fromTo("#s2-wordmark", { opacity: 0, scale: 0.985 },
+                { opacity: 1, scale: 1, duration: 0.7, ease: "power2.out" }, 5.3)
+        // beat-grid: 6.00s
+        .fromTo("#s2-tagline", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 6.0)
+        .to("#s2-inner", { opacity: 0, duration: 0.5, ease: "power1.inOut" }, 8.6);
+
+      // ── Scene 3 — the scan ──────────────────────────────────────────────────
+      tl.fromTo("#s3-inner", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power1.inOut" }, 8.6)
+        .fromTo("#s3-card", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 9.1)
+        // beat-grid: chips at 9.56 / 9.83 / 10.10 / 10.37 (half-beat spacing at 109.96 BPM).
+        // Pills, not prose — they settle by 10.65 and stay on screen for 8.5s.
+        .fromTo("#s3-chips .chip", { opacity: 0, scale: 0.92 },
+                { opacity: 1, scale: 1, duration: 0.26, ease: "power2.out", stagger: 0.27 }, 9.56)
+        // The three proofs. Deliberately every fourth beat (~2.18s apart), not the
+        // raw 0.55s grid: these are lines the viewer has to read.
+        // beat-locked: 10.93s (strongCue 0.97)
+        .fromTo("#s3-row-1 > *", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 10.93)
+        // beat-locked: 13.11s (strongCue 0.98)
+        .fromTo("#s3-row-2 > *", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 13.11)
+        // beat-grid: 15.29s
+        .fromTo("#s3-row-3 > *", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 15.29)
+        // beat-grid: 17.47s (strongCue 0.99)
+        .fromTo("#s3-foot", { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "none" }, 17.47)
+        .to("#s3-inner", { opacity: 0, duration: 0.5, ease: "power1.inOut" }, 19.1);
+
+      // ── Scene 4 — outro ─────────────────────────────────────────────────────
+      tl.fromTo("#s4-inner", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power1.inOut" }, 19.1)
+        // beat-grid: 19.66s (strongCue 0.96)
+        .fromTo("#s4-line", { opacity: 0, y: 12 },
+                { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 19.66)
+        .to("#s4-line", { opacity: 0, duration: 0.46, ease: "power1.inOut" }, 21.84)
+        // beat-locked: 22.37 → 22.93s (strongCue 1.00) — the wordmark lands alone
+        // on the strongest hit in the window, and the bed is already fading under it.
+        .fromTo("#s4-wordmark", { opacity: 0, scale: 0.985 },
+                { opacity: 1, scale: 1, duration: 0.56, ease: "power2.out" }, 22.37);
+
       window.__timelines["main"] = tl;
       tl.seek(0);
     </script>

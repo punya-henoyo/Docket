@@ -1,0 +1,6 @@
+Introducing docket: autonomous pentesting agents that file a vulnerability only once they have
+reproduced it. No "likely" severity, no confidence score — a finding is a reproduction or it does
+not exist, and the type system enforces that against docket's own agents.
+
+One run against the bundled fixture: 4 agents, $0.108, 3 findings, every payload the model's own
+choice and every one of them proven.

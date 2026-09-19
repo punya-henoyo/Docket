@@ -36,6 +36,14 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+def _today() -> str:
+    """Date only. A timestamp would guarantee a diff on every run and make --check
+    permanently red, which is how a check gets ignored."""
+    from datetime import date
+
+    return date.today().isoformat()
+
+
 REPO = Path(__file__).resolve().parent.parent
 OUT_DIR = REPO / "sbom"
 CDX = OUT_DIR / "docket.cdx.json"
@@ -92,6 +100,42 @@ _LICENCE_ALIASES = {
 
 def normalise_licence(value: str) -> str:
     return _LICENCE_ALIASES.get(value.strip(), value.strip())
+
+
+def vulnerability_status(cdx: Path) -> dict:
+    """Scan the SBOM we just produced and record the result, with its date.
+
+    Written to a file rather than into the document, because the DOCX generator must run
+    with no Docker: a reader who cannot rebuild the SBOM should still be able to rebuild
+    the document from the committed JSON.
+
+    The result is deliberately recorded as "as of this date, against this database" and
+    never as "is secure". A vulnerability scan is a point-in-time statement about what was
+    PUBLISHED by then; an SBOM that says "0 vulnerabilities" with no date is a claim that
+    silently rots.
+    """
+    command = [
+        "docker", "run", "--rm", "-v", f"{cdx.parent}:/s:ro", IMAGE,
+        "trivy", "sbom", "--quiet", "--format", "json", f"/s/{cdx.name}",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            return {"assessed": False, "reason": result.stderr.strip()[:200]}
+        report = json.loads(result.stdout or "{}")
+    except Exception as exc:  # noqa: BLE001 — a missing scan must not lose the SBOM
+        return {"assessed": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    by_severity: Counter[str] = Counter()
+    for target in report.get("Results") or []:
+        for vuln in target.get("Vulnerabilities") or []:
+            by_severity[str(vuln.get("Severity", "UNKNOWN")).upper()] += 1
+    return {
+        "assessed": True,
+        "scanner": "trivy",
+        "total": sum(by_severity.values()),
+        "by_severity": dict(by_severity),
+    }
 
 
 def installed_licenses() -> dict[str, str]:
@@ -367,6 +411,11 @@ def main() -> int:
 
     CDX.write_text(body)
     SUMMARY.write_text(summary)
+    # Written AFTER the SBOM, because it scans the file we just wrote. Carries a date, so
+    # a document built from it can say "as of" rather than making a timeless claim.
+    status = vulnerability_status(CDX)
+    status["scanned_on"] = _today()
+    (OUT_DIR / "scan-status.json").write_text(json.dumps(status, indent=2) + "\n")
     total = len(document.get("components") or [])
     print(f"wrote {CDX.relative_to(REPO)} ({total} components)")
     print(f"wrote {SUMMARY.relative_to(REPO)}")
