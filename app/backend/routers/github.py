@@ -249,6 +249,77 @@ def start_repo_scan(request: RepoScanRequest) -> dict:
     return {"id": scan_id, "status": "queued"}
 
 
+class WatchRequest(BaseModel):
+    """Mirrors what connect.py's `_set_watch` accepts, field for field.
+
+    SIXTH instance of the twin-server divergence, and the widest: /api/watch, /api/fixes
+    and /api/scans/active existed ONLY on the stdlib server, while the frontend calls all
+    three unconditionally. Served by `app/run.py`, the Pull requests view, the fixes panel
+    and live-scan detection were all dead, with the same silent shape as the AI-phase
+    flags that pydantic used to drop.
+    """
+
+    enabled: bool = False
+    repos: list[str] = Field(default_factory=list)
+    interval_sec: int = Field(default=30, ge=10)
+    triage_max: int = Field(default=5, ge=0)
+    autofix: bool = False
+    compliance: list[str] = Field(default_factory=list)
+    compliance_deep: int = Field(default=0, ge=0)
+
+
+@router.get("/api/watch")
+def get_watch() -> dict:
+    """The watcher's state. Same snapshot the stdlib server serves."""
+    return connect.watch_state()
+
+
+@router.post("/api/watch")
+def set_watch(request: WatchRequest) -> dict:
+    """Start or stop the pull-request watcher."""
+    if connect.SESSION.token is None:
+        raise HTTPException(401, "not connected to GitHub")
+    if not request.enabled:
+        return connect.stop_watching()
+    repos = [r for r in request.repos if r]
+    bad = [r for r in repos if not connect._FULL_NAME.match(r)]
+    if bad:
+        raise HTTPException(400, f"not a repository name: {bad[0]}")
+    if not repos:
+        raise HTTPException(400, "pick at least one repository to watch")
+    packs = [p.strip() for p in request.compliance if p.strip()]
+    if packs:
+        # Refused here, before the watcher starts, for the same reason the stdlib server
+        # does it: otherwise a typo'd pack id is rediscovered inside the watcher thread
+        # once per pull request, forever.
+        from docket.compliance.packs import PackError, load_packs
+
+        try:
+            load_packs(packs)
+        except PackError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    with connect.SESSION.lock:
+        connect.SESSION.watch["triage_max"] = request.triage_max
+        connect.SESSION.watch["autofix"] = request.autofix
+        connect.SESSION.watch["compliance"] = packs
+        connect.SESSION.watch["compliance_deep"] = request.compliance_deep
+    return connect.start_watching(repos, request.interval_sec)
+
+
+@router.get("/api/fixes")
+def get_fixes() -> dict:
+    """Durable "fixes shipped", read from GitHub rather than the watcher's memory so it
+    survives a restart."""
+    return {"fixes": connect.list_fix_prs()}
+
+
+@router.get("/api/scans/active")
+def get_active_scans() -> dict:
+    """In-flight scans. The console polls this on boot to re-attach to a run that was
+    already going when the page was reloaded."""
+    return {"scans": connect.active_scans()}
+
+
 @router.post("/api/scan/cancel", status_code=202)
 def cancel_scan(request: CancelRequest) -> dict:
     """Ask the running scan to stop at its next checkpoint.

@@ -2254,7 +2254,7 @@
       "version": "1.2.0"
     },
     {
-      "bom-ref": "container:mitmproxy@unpinned",
+      "bom-ref": "container:mitmproxy@12.2.3",
       "licenses": [
         {
           "license": {
@@ -2274,7 +2274,7 @@
         },
         {
           "name": "docket:pinned",
-          "value": "NO \u2014 containers/Dockerfile installs it unversioned, so the version shipped depends on when the image was built"
+          "value": "yes, in containers/Dockerfile"
         },
         {
           "name": "docket:linkage",
@@ -2282,7 +2282,7 @@
         }
       ],
       "type": "application",
-      "version": "unpinned"
+      "version": "12.2.3"
     },
     {
       "bom-ref": "container:nuclei@3.3.7",
@@ -2316,7 +2316,7 @@
       "version": "3.3.7"
     },
     {
-      "bom-ref": "container:playwright@unpinned",
+      "bom-ref": "container:playwright@1.62.0",
       "licenses": [
         {
           "license": {
@@ -2336,7 +2336,7 @@
         },
         {
           "name": "docket:pinned",
-          "value": "NO \u2014 containers/Dockerfile installs it unversioned, so the version shipped depends on when the image was built"
+          "value": "yes, in containers/Dockerfile"
         },
         {
           "name": "docket:linkage",
@@ -2344,7 +2344,7 @@
         }
       ],
       "type": "application",
-      "version": "unpinned"
+      "version": "1.62.0"
     },
     {
       "bom-ref": "container:base",

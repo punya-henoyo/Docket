@@ -140,6 +140,38 @@ def build_image(image: str = DEFAULT_IMAGE, *, force: bool = False) -> bool:
     return True
 
 
+# Generous enough that a real scan never hits them, low enough that one container
+# cannot take a whole VM down with it. A 4 vCPU / 16 GB host keeps 2 cores and 8 GB for
+# itself, the console, and the Docker daemon.
+DEFAULT_MEMORY = "8g"
+DEFAULT_CPUS = "4"
+
+
+def _resource_limits() -> list[str]:
+    """`docker run` flags capping the container, or nothing when disabled.
+
+    Read from the environment on every start rather than at import: the deployed console
+    is a long-lived process (deploy/docket.service), and an operator who raises the cap
+    should not have to restart it to have that take effect.
+    """
+    import os
+
+    flags: list[str] = []
+    memory = os.environ.get("DOCKET_SANDBOX_MEMORY", DEFAULT_MEMORY).strip()
+    cpus = os.environ.get("DOCKET_SANDBOX_CPUS", DEFAULT_CPUS).strip()
+    # "0" is the documented escape hatch, not a limit of zero — docker would refuse that
+    # and the scan would die on a setting meant to relax it.
+    if memory and memory != "0":
+        flags += ["--memory", memory,
+                  # Without this the kernel lets the container spill into swap instead of
+                  # being killed, and the "limit" becomes a thrash ceiling rather than a
+                  # real one. Equal values mean no swap beyond the memory cap.
+                  "--memory-swap", memory]
+    if cpus and cpus != "0":
+        flags += ["--cpus", cpus]
+    return flags
+
+
 class Sandbox:
     """One container per scan run. Fresh each time, so no cross-run state bleed
     (stale cookies, a browser tab left open, a previous run's proxy flows)."""
@@ -170,6 +202,17 @@ class Sandbox:
         _docker(
             "run", "-d",
             "--name", self.name,
+            # RESOURCE CEILINGS. Without them semgrep takes the whole host: measured at
+            # 712% CPU and ~1 GB RSS on a 180k-line repository, and semgrep's memory
+            # scales with file size, so a large monorepo can OOM the box. On a 16 GB VM
+            # that kills the console process too — the scan fails AND the operator loses
+            # the UI that would have told them why.
+            #
+            # Defaults are deliberately generous rather than tight: the failure this
+            # prevents is "the machine died", not "the scan was slow". Override per host
+            # with DOCKET_SANDBOX_MEMORY / DOCKET_SANDBOX_CPUS; set either to "0" to
+            # restore the old unbounded behaviour.
+            *_resource_limits(),
             "--add-host", f"{HOST_ALIAS}:host-gateway",
             # Let Docker pick the host port (and bind it to loopback only) so two runs
             # can coexist instead of fighting over a hardcoded one.

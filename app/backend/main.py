@@ -67,7 +67,102 @@ if FRONTEND_DIST.is_dir():
     api.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="console")
 
 
+def frontend_endpoints() -> set[str]:
+    """Every /api path the console's client actually calls, read from its source.
+
+    Derived rather than hand-listed, because a hand-listed copy is a THIRD place to
+    forget — and forgetting is the entire failure mode this guards.
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[2] / "app" / "frontend" / "src" / "api"
+    found: set[str] = set()
+    for source in root.glob("*.ts"):
+        for raw in re.findall(r'"(/api/[^"`]*)"|`(/api/[^`]*)`', source.read_text()):
+            path = (raw[0] or raw[1]).split("?")[0]
+            # Template holes become a single segment: `/api/scan/${id}` -> `/api/scan`.
+            # A template hole can be glued to the previous segment by a dot
+            # (`/api/download/${name}.${fmt}`), so strip the dot form first.
+            path = re.sub(r"\.\$\{[^}]*\}", "", path)
+            path = re.sub(r"/\$\{[^}]*\}", "", path).rstrip("/")
+            if path:
+                found.add(path)
+    return found
+
+
+def check_twin_server_parity() -> list[str]:
+    """Endpoints the frontend calls that one of the two servers does not answer.
+
+    THE RECURRING BUG. docket ships two servers for one console — this FastAPI app and
+    the stdlib handler in interface/connect.py — and they have drifted six times:
+    /auth/callback, /api/download, the AI-phase flags, /api/scan/cancel, the scan-detail
+    payload, and finally /api/watch + /api/fixes + /api/scans/active, which existed only
+    on the stdlib side while the frontend called all three unconditionally. Served by
+    app/run.py, the Pull requests view was simply dead.
+
+    Every one was found by a human noticing. This finds the next one.
+    """
+    import re
+
+    # From the OpenAPI schema, not api.routes: this FastAPI version wraps included
+    # routers in _IncludedRouter objects that carry no `.path`, so walking api.routes
+    # finds four docs endpoints and nothing else — a check that would have reported every
+    # single endpoint missing and been switched off within a day.
+    fastapi_paths = {
+        re.sub(r"/\{[^}]*\}", "", path).rstrip("/")
+        for path in api.openapi().get("paths", {})
+    }
+    connect_source = (Path(__file__).resolve().parents[2] / "engine" / "docket" /
+                      "interface" / "connect.py").read_text()
+
+    problems: list[str] = []
+    for endpoint in sorted(frontend_endpoints()):
+        if endpoint not in fastapi_paths:
+            problems.append(f"{endpoint}: called by the console, MISSING from FastAPI")
+        # The stdlib server dispatches on string literals, so presence of the literal is
+        # the signal available without running it.
+        if f'"{endpoint}"' not in connect_source and f'"{endpoint}/' not in connect_source:
+            problems.append(f"{endpoint}: called by the console, MISSING from connect.py")
+    return problems
+
+
+def demo_parity() -> None:
+    """The check that would have caught all six divergences. Must be able to fail."""
+    problems = check_twin_server_parity()
+    assert not problems, "twin-server divergence:\n  " + "\n  ".join(problems)
+    endpoints = frontend_endpoints()
+    # Sanity: if the extraction silently returned nothing, the assertion above passes
+    # vacuously and the guard is decorative.
+    assert len(endpoints) >= 8, endpoints
+    assert "/api/watch" in endpoints and "/api/session" in endpoints, endpoints
+    # And it must actually fail on a missing route, or it proves nothing.
+    import re as _re
+
+    fastapi_paths = {_re.sub(r"/\{[^}]*\}", "", p).rstrip("/")
+                     for p in api.openapi().get("paths", {})}
+    assert "/api/watch" in fastapi_paths, "the parity check is looking in the wrong place"
+
+
 def demo() -> None:
+    # HERMETIC. The assertions below describe a console nobody has connected yet, but the
+    # lifespan calls restore_session(), so on any machine with a saved GitHub token this
+    # failed — `connected` came back True and the demo asserted False. It was a latent
+    # flake for as long as this module was absent from `make check`; adding it turned that
+    # into a build failure on the maintainer's own laptop. A self-check whose result
+    # depends on the developer's saved credentials tests the developer, not the code.
+    import os as _os
+
+    _saved_session_flag = _os.environ.get("DOCKET_NO_SESSION_FILE")
+    _os.environ["DOCKET_NO_SESSION_FILE"] = "1"
+    try:
+        _demo_body()
+    finally:
+        _os.environ.pop("DOCKET_NO_SESSION_FILE", None)
+        if _saved_session_flag is not None:
+            _os.environ["DOCKET_NO_SESSION_FILE"] = _saved_session_flag
+
+
+def _demo_body() -> None:
     from fastapi.testclient import TestClient
 
     with TestClient(api) as client:
@@ -142,6 +237,7 @@ def demo() -> None:
         # Run-name traversal must not escape the runs root.
         for bad in ("../../etc", "..%2f..%2fetc"):
             assert client.get(f"/api/runs/{bad}").status_code in (400, 404)
+    demo_parity()
     print("app.backend.main: ok")
 
 

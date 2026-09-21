@@ -165,16 +165,11 @@ class Policy(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Read by interface/connect.repo_autofix: per-repo autofix beats the watcher-wide
+    # switch, so "off for this customer's repository" is sayable.
     autofix_mode: AutofixMode | None = None
-    # A fix PR that rewrites 40 files is not a fix, it is a refactor nobody asked for.
-    max_files_changed: int | None = Field(default=None, ge=1, le=200)
-    # Whether a patch must be PROVEN before it may be opened as a PR. delivery.py already
-    # refuses to branch for anything but status == verified_fixed; this is the per-repo
-    # switch for the softer modes.
-    require_verified_validation: bool | None = None
-    # Finding classes this repo gates on. None inherits; [] is an operator saying none.
-    enabled_classes: list[str] | None = None
-    # ge=0 because 0 is a real, meaningful setting: judge nothing.
+    # ge=0 because 0 is a real, meaningful setting: judge nothing. Read by
+    # interface/connect.repo_triage_max.
     triage_max: int | None = Field(default=None, ge=0)
     # Control packs to audit this repo's pull requests against, by id. None inherits;
     # [] is an operator saying "audit nothing", which is a different answer.
@@ -776,7 +771,7 @@ def demo() -> None:
             for bad in ({"policy": {"triage_max": -1}},
                         {"policy": {"budget_usd": 0}},        # 0 means unset, not free
                         {"policy": {"autofix_mode": "yolo"}},
-                        {"policy": {"max_files_changed": 0}},
+                        {"policy": {"compliance_deep": -1}},
                         # The silent-drop bug, now loud: an unknown field is a 422 naming
                         # it rather than a setting that appears to save and does nothing.
                         {"policy": {"autofix_mod": "off"}},
@@ -816,15 +811,21 @@ def demo() -> None:
             saved = client.put("/api/service/repos/acme/api", json={
                 "enabled": True,
                 "policy": {"autofix_mode": "open_pr", "triage_max": 0,
-                            "require_verified_validation": True, "budget_usd": 2.5,
-                            "enabled_classes": []},
+                            "budget_usd": 2.5, "compliance_packs": []},
             })
             assert saved.status_code == 200, saved.text
             policy = saved.json()["policy"]
             assert set(policy) == set(Policy().model_dump()), policy
             assert policy["autofix_mode"] == "open_pr" and policy["triage_max"] == 0
-            assert policy["enabled_classes"] == [], "[] is 'none', not 'inherit'"
-            assert policy["max_files_changed"] is None, "an unset member must inherit"
+            assert policy["compliance_packs"] == [], "[] is 'audit nothing', not 'inherit'"
+            assert policy["label"] is None, "an unset member must inherit"
+            # Every field here is READ by something. The three that were not —
+            # max_files_changed, require_verified_validation, enabled_classes — were
+            # deleted rather than left to imply a behaviour that did not exist.
+            from docket.interface.connect import repo_autofix, repo_compliance, repo_triage_max
+
+            for reader in (repo_autofix, repo_triage_max, repo_compliance):
+                assert callable(reader), reader
             # A disabled repo must still be LISTED, or switching one off looks like a
             # delete and the operator switches it on again somewhere else.
             assert client.put("/api/service/repos/acme/api",

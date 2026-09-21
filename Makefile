@@ -51,7 +51,7 @@ check:
 	  docket.core.pull_request docket.core.pr_watcher docket.core.pr_service \
 	  docket.core.remediation docket.report.diff docket.report.pr_report \
 	  docket.interface.session_store \
-	  app.backend.routers.service app.backend.routers.compliance \
+	  app.backend.routers.service app.backend.routers.compliance app.backend.main \
 	  docket.service.store docket.service.poll docket.service.delivery docket.service.validate docket.service.fix \
 	  docket.tools.output_store docket.tools.shell.tools docket.tools.http_request.tools \
 	  docket.tools.reporting.tool docket.tools.notes.tools docket.tools.todo.tools \

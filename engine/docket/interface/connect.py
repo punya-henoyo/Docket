@@ -768,54 +768,82 @@ def _post_for_pr(ref: Any, verdict: dict[str, Any]) -> dict[str, str]:
     )
 
 
-def repo_compliance(repo: str) -> tuple[list[str], int] | None:
-    """The per-repo control-pack override from the service store, or None.
+def repo_policy(repo: str) -> dict[str, Any]:
+    """The per-repo policy blob from service.db, or {} when there is none.
 
-    This is `Policy.compliance_packs`' only consumer. Two mechanisms exist for watcher
-    settings and they are not the same thing: `SESSION.watch` holds one standing choice
-    for every watched repository (what the console sets today), while `watched_repos.policy`
-    in service.db holds a per-repo one (what PUT /api/service/repos writes). A repo with a
-    policy overrides the session-wide default; a repo without one inherits it.
+    `Policy` (app/backend/routers/service.py) is written by PUT /api/service/repos and,
+    until this existed, was read by NOTHING — seven declared settings that looked
+    configurable and did nothing. This is the reader. Fields with no behaviour behind them
+    were deleted from the model rather than left to imply one.
 
-    Returns None — not an empty list — when there is no override, because `[]` is an
-    operator saying "audit nothing for this repo" and must not be confused with "nothing
-    was configured". Degrades to None on ANY failure: a missing database, a locked one, a
-    malformed blob. A pull-request scan must never fail because a settings lookup did.
+    Degrades to {} on ANY failure: a missing database, a locked one, a malformed blob. A
+    pull-request scan must never fail because a settings lookup did.
     """
     try:
         from docket.service.store import Store, db_path
 
         path = db_path()
         if not path.exists():
-            return None
+            return {}
         store = Store(path)
         try:
             for row in store.watched():
-                if row.get("full_name") != repo:
-                    continue
-                policy = row.get("policy") or {}
-                if not isinstance(policy, dict):
-                    return None
-                packs = policy.get("compliance_packs")
-                if packs is None:
-                    return None
-                if not isinstance(packs, list):
-                    # A bare string here iterates CHARACTER BY CHARACTER: "twelve-factor"
-                    # becomes thirteen pack ids named "t", "w", "e"... load_packs then
-                    # raises on the first one and takes the pull-request scan down with
-                    # it. The blob is a schemaless JSON column, so this is reachable by
-                    # anyone who PUTs a policy by hand.
-                    logger.warning("ignoring a non-list compliance_packs policy for %s", repo)
-                    return None
-                deep = policy.get("compliance_deep")
-                return ([str(p) for p in packs if str(p).strip()],
-                        int(deep) if isinstance(deep, int) and deep >= 0 else 0)
+                if row.get("full_name") == repo:
+                    policy = row.get("policy")
+                    return policy if isinstance(policy, dict) else {}
         finally:
             store.close()
     except Exception:  # noqa: BLE001 — a settings lookup must not sink a scan
-        logger.debug("could not read the per-repo compliance policy for %s", repo,
-                     exc_info=True)
-    return None
+        logger.debug("could not read the policy for %s", repo, exc_info=True)
+    return {}
+
+
+def repo_autofix(repo: str) -> bool | None:
+    """Per-repo autofix override, or None to inherit the watcher-wide setting.
+
+    TRI-STATE, and the middle value is the point: "off" for a customer's repository is a
+    different statement from "not configured", and opening pull requests on someone
+    else's code because a default leaked is not a mistake you get to make twice.
+    """
+    mode = repo_policy(repo).get("autofix_mode")
+    if mode is None or not isinstance(mode, str):
+        return None
+    return mode in ("suggest", "open_pr")
+
+
+def repo_triage_max(repo: str) -> int | None:
+    """Per-repo triage cap, or None to inherit. 0 is a real answer: judge nothing."""
+    value = repo_policy(repo).get("triage_max")
+    return value if isinstance(value, int) and value >= 0 else None
+
+
+def repo_compliance(repo: str) -> tuple[list[str], int] | None:
+    """The per-repo control-pack override, or None to inherit.
+
+    Two mechanisms exist for watcher settings and they are not the same thing:
+    `SESSION.watch` holds one standing choice for every watched repository (what the
+    console sets today), while `watched_repos.policy` holds a per-repo one (what
+    PUT /api/service/repos writes). A repo with a policy overrides the session-wide
+    default; a repo without one inherits it.
+
+    Returns None — not an empty list — when there is no override, because `[]` is an
+    operator saying "audit nothing for THIS repo" and must not be confused with "nothing
+    was configured".
+    """
+    policy = repo_policy(repo)
+    packs = policy.get("compliance_packs")
+    if packs is None:
+        return None
+    if not isinstance(packs, list):
+        # A bare string iterates CHARACTER BY CHARACTER: "twelve-factor" becomes thirteen
+        # pack ids named "t", "w", "e"... load_packs raises on the first and takes the
+        # pull-request scan down with it. The blob is a schemaless JSON column, so this is
+        # reachable by anyone who PUTs a policy by hand.
+        logger.warning("ignoring a non-list compliance_packs policy for %s", repo)
+        return None
+    deep = policy.get("compliance_deep")
+    return ([str(p) for p in packs if str(p).strip()],
+            int(deep) if isinstance(deep, int) and deep >= 0 else 0)
 
 
 def _watch_loop() -> None:
@@ -873,14 +901,16 @@ def _watch_loop() -> None:
             list(SESSION.watch.get("compliance") or []),
             int(SESSION.watch.get("compliance_deep") or 0),
         )
+        per_repo_triage = repo_triage_max(ref.repo)
+        triage_for_repo = (per_repo_triage if per_repo_triage is not None
+                           else int(SESSION.watch.get("triage_max") or 5))
         try:
             outcome = scan_pull_request(
                 ref, token=SESSION.token or "", fetch_files=changed_files,
                 scan=partial(_scan_for_pr, progress=(ref.repo, ref.number)),
                 baselines=baselines, post=_post_for_pr,
-                triage_max=int(SESSION.watch.get("triage_max") or 5),
-                # Per-repo policy wins; otherwise the standing choice set with the watch,
-                # which is the same shape triage_max and autofix already use.
+                # Per-repo policy wins; otherwise the standing choice set with the watch.
+                triage_max=triage_for_repo,
                 compliance=packs_for_repo[0],
                 compliance_deep=packs_for_repo[1],
             )
@@ -894,8 +924,13 @@ def _watch_loop() -> None:
                         "ref": ref, "verdict": outcome.verdict}
             # Only on a blocking verdict. Opening a fix PR for a check that passed is
             # noise, and the whole point of blocking is that something needs doing.
-            if (outcome.ok and outcome.verdict.get("exit_code") == 2
-                    and SESSION.watch.get("autofix")):
+            # Per-repo autofix wins over the watcher-wide switch. Opening pull requests
+            # on a customer's repository because a global default leaked is not a mistake
+            # you get to make twice, so "off for this repo" has to be sayable.
+            per_repo_autofix = repo_autofix(ref.repo)
+            autofix_on = (per_repo_autofix if per_repo_autofix is not None
+                          else bool(SESSION.watch.get("autofix")))
+            if (outcome.ok and outcome.verdict.get("exit_code") == 2 and autofix_on):
                 note_step(ref.repo, ref.number, "fix", "running")
                 fix = attempt_autofix(ref, outcome.verdict)
                 note_step(ref.repo, ref.number, "fix",
@@ -1829,6 +1864,61 @@ def load_run(run_name: str) -> tuple[int, dict[str, Any]]:
     }
 
 
+CONSOLE_PASSWORD_ENV = "DOCKET_CONSOLE_PASSWORD"
+CONSOLE_USER_ENV = "DOCKET_CONSOLE_USER"
+
+
+def console_credentials() -> tuple[str, str] | None:
+    """(user, password) when console auth is configured, else None.
+
+    OPT-IN, and the default is unchanged: with nothing set the console behaves exactly as
+    it always has — bound to 127.0.0.1, reachable only by whoever is on the box or
+    tunnelled into it. That is a real boundary for one operator on a laptop, and it is the
+    one every existing deployment already relies on.
+
+    It stops being a boundary the moment anyone wants to SHOW the console to somebody
+    else. Every route here starts scans, rewrites the watcher, opens pull requests on a
+    customer's repository and reads every finding, with no notion of who is asking. Set
+    this before the console is reachable by anything but a tunnel.
+
+    Basic auth sends the password on every request, so this belongs behind TLS or an SSH
+    tunnel — it closes "anyone who can reach the port", not "anyone who can read the
+    wire".
+
+    Read per request rather than cached at import: the deployed console is a long-lived
+    systemd unit, and an operator who sets a password should not have to restart it.
+    """
+    import os
+
+    password = os.environ.get(CONSOLE_PASSWORD_ENV, "").strip()
+    if not password:
+        return None
+    return os.environ.get(CONSOLE_USER_ENV, "docket").strip() or "docket", password
+
+
+def check_basic_auth(header: str | None, expected: tuple[str, str]) -> bool:
+    """Constant-time check of an `Authorization: Basic` header.
+
+    compare_digest on BOTH fields, and both are always evaluated: comparing the user with
+    `==` would leak whether it was right, and returning early on a bad user leaks the same
+    thing through timing.
+    """
+    import base64
+    import binascii
+    import secrets as _secrets
+
+    if not header or not header.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header.split(" ", 1)[1], validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, IndexError):
+        return False
+    user, _, password = decoded.partition(":")
+    ok_user = _secrets.compare_digest(user, expected[0])
+    ok_password = _secrets.compare_digest(password, expected[1])
+    return ok_user and ok_password
+
+
 def make_handler() -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -1852,7 +1942,32 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
 
         # -- routes ----------------------------------------------------------------
 
+        def _authorised(self) -> bool:
+            """False means this request has already been answered with a 401.
+
+            Applied to EVERY verb and every path, the static bundle included: a console
+            whose API is locked but whose UI is not still tells an anonymous visitor which
+            repositories exist, and half a boundary is not one.
+            """
+            expected = console_credentials()
+            if expected is None:
+                return True
+            if check_basic_auth(self.headers.get("Authorization"), expected):
+                return True
+            body = b"authentication required\n"
+            self.send_response(401)
+            # The browser turns this header into its own prompt, which is why this needs
+            # no login page, no cookie and no session store.
+            self.send_header("WWW-Authenticate", 'Basic realm="docket console"')
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return False
+
         def do_GET(self) -> None:  # noqa: N802 — stdlib naming
+            if not self._authorised():
+                return
             parsed = urllib.parse.urlparse(self.path)
             path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
 
@@ -1932,6 +2047,8 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self._static("/index.html")
 
         def do_DELETE(self) -> None:  # noqa: N802 — stdlib naming
+            if not self._authorised():
+                return
             """One route today. Present because deleting an uploaded pack IS a delete, and
             a POST spelled /delete would be the kind of thing nobody removes later."""
             path = urllib.parse.urlparse(self.path).path
@@ -1974,6 +2091,8 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             self._json(*upload_pack(body, filename, config=config, run_dir=RUNS_DIR))
 
         def do_POST(self) -> None:  # noqa: N802 — stdlib naming
+            if not self._authorised():
+                return
             post_path = urllib.parse.urlparse(self.path).path
             if post_path == "/api/scan/cancel":
                 self._cancel_scan()
@@ -2398,6 +2517,15 @@ def serve(port: int = 8765) -> int:
     server = start_server(port)
     actual = server.server_address[1]
     print(f"docket console: http://127.0.0.1:{actual}")
+    if console_credentials() is None:
+        # Said out loud because the protection is invisible: the console looks identical
+        # whether it is safe or not, and the day it stops being loopback-only is the day
+        # nobody remembers this.
+        print(f"note: no console password set — this port has NO authentication and every")
+        print(f"      route on it starts scans and opens pull requests. Safe while it stays")
+        print(f"      on 127.0.0.1; set {CONSOLE_PASSWORD_ENV} before exposing or sharing it.")
+    else:
+        print("console authentication: on (HTTP Basic — keep it behind TLS or a tunnel)")
     if oauth_config() is None:
         print("warning: DOCKET_GITHUB_CLIENT_ID / DOCKET_GITHUB_CLIENT_SECRET are unset —")
         print("         the console loads but Connect GitHub will refuse. Register a GitHub App")
@@ -3085,6 +3213,48 @@ def demo() -> None:
     assert finding_key(one.model_dump(mode="json")) == \
            finding_key(two.model_dump(mode="json")), \
            "finding_key must be stable across scans, or triage_only filters to nothing"
+
+    # --- console authentication -------------------------------------------------------
+    import os as _os
+
+    _saved = _os.environ.pop(CONSOLE_PASSWORD_ENV, None)
+    try:
+        # Unset means unchanged behaviour: no auth, exactly as every existing deployment
+        # already runs. This must stay true or a `docket connect` upgrade locks people out.
+        assert console_credentials() is None
+        _os.environ[CONSOLE_PASSWORD_ENV] = "  "        # whitespace is not a password
+        assert console_credentials() is None
+        _os.environ[CONSOLE_PASSWORD_ENV] = "s3cret"
+        assert console_credentials() == ("docket", "s3cret")
+        _os.environ[CONSOLE_USER_ENV] = "alice"
+        expected = console_credentials()
+        assert expected == ("alice", "s3cret"), expected
+
+        import base64 as _b64
+
+        def header(user: str, password: str) -> str:
+            return "Basic " + _b64.b64encode(f"{user}:{password}".encode()).decode()
+
+        assert check_basic_auth(header("alice", "s3cret"), expected) is True
+        # Each half must fail on its own: a check that passed on the password alone would
+        # make the username decorative.
+        assert check_basic_auth(header("alice", "wrong"), expected) is False
+        assert check_basic_auth(header("bob", "s3cret"), expected) is False
+        assert check_basic_auth(None, expected) is False
+        assert check_basic_auth("", expected) is False
+        # Malformed input reaches this from the network, so none of it may raise.
+        for junk in ("Basic", "Basic !!!not base64!!!", "Bearer s3cret",
+                     "Basic " + _b64.b64encode(b"no-colon").decode(),
+                     "Basic " + _b64.b64encode(b"\xff\xfe").decode()):
+            assert check_basic_auth(junk, expected) is False, junk
+        # Case-insensitive scheme, because clients differ on it.
+        assert check_basic_auth(header("alice", "s3cret").replace("Basic", "basic"),
+                                expected) is True
+    finally:
+        _os.environ.pop(CONSOLE_USER_ENV, None)
+        _os.environ.pop(CONSOLE_PASSWORD_ENV, None)
+        if _saved is not None:
+            _os.environ[CONSOLE_PASSWORD_ENV] = _saved
 
     print("interface.connect: ok")
 

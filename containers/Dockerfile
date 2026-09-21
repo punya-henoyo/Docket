@@ -85,14 +85,18 @@ RUN pip install semgrep==1.90.0 setuptools==75.8.0
 # commercial GUI-first proxies that ship their own SDK client. Note this target is plain
 # HTTP, so there is no TLS to intercept and no CA-cert bootstrap step at all - a real
 # chunk of usual proxy setup that simply evaporates here.
-RUN pip install mitmproxy
+# PINNED, like nuclei/trivy/semgrep above. Unversioned, two builds of this file on
+# different days ship different code and the SBOM cannot say what a given image holds —
+# which is the same condition docket's own python-baseline:pinned-deps and
+# twelve-factor:II controls flag in a customer's repository. Found by scripts/sbom.py.
+RUN pip install mitmproxy==12.2.3
 
 # Playwright + Chromium. This is what makes an XSS finding a PROOF rather than an
 # inference: the agent navigates to a reflected alert() payload and captures the real
 # dialog the DOM raises, instead of grepping for its own payload in the HTML.
 # --with-deps lets playwright apt-install Chromium's shared libraries itself, so there
 # is no hand-maintained library list to rot.
-RUN pip install playwright \
+RUN pip install playwright==1.62.0 \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 

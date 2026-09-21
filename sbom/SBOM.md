@@ -1,6 +1,6 @@
 # Docket — Software Bill of Materials
 
-`sbom/docket.cdx.json` · CycloneDX 1.6 · 89 components · generated 2026-09-19
+`sbom/docket.cdx.json` · CycloneDX 1.6 · 89 components · generated 2026-09-21
 
 Regenerate with `make sbom`. `make sbom-check` fails if the committed copy and a
 fresh generation disagree, so this can be checked rather than trusted.
@@ -75,22 +75,9 @@ generating this, so there was no local metadata to read.
 - `colorama 0.4.6` (core)
 - `pywin32 312` (core)
 
-## Build reproducibility gap
-
-2 component(s) are installed into the sandbox container WITHOUT a pinned version, so two builds of the same Dockerfile on different days can ship different code and this inventory cannot state what a given image actually contains:
-
-- `mitmproxy` — `containers/Dockerfile` installs it unversioned
-- `playwright` — `containers/Dockerfile` installs it unversioned
-
-This is the same condition docket's own `python-baseline:pinned-deps` and
-`twelve-factor:II` controls look for in a customer's repository. Recorded
-here rather than smoothed over with whatever version happens to be installed
-today, because printing a version would imply a guarantee the build does not
-make. Fix by pinning them the way nuclei, trivy and semgrep already are.
-
 ## Known vulnerabilities
 
-**No known vulnerabilities** were reported against the Python and npm components as of 2026-09-19 by trivy.
+**No known vulnerabilities** were reported against the Python and npm components as of 2026-09-21 by trivy.
 
 A point-in-time statement about what had been published by that date. It is
 not a claim that the software is free of defects, it does not stay true, and
@@ -206,9 +193,9 @@ Everything else in the inventory is transitive or shipped in the container.
 | `pypdf` | 6.18.1 | extra:app | BSD-3-Clause |  |
 | `uvloop` | 0.22.1 | extra:app | MIT | uvicorn[standard] -> uvloop |
 | `watchfiles` | 1.2.0 | extra:app | MIT | uvicorn[standard] -> watchfiles |
-| `mitmproxy` | unpinned | sandbox-image | MIT | intercepting proxy for agent HTTP traffic |
+| `mitmproxy` | 12.2.3 | sandbox-image | MIT | intercepting proxy for agent HTTP traffic |
 | `nuclei` | 3.3.7 | sandbox-image | MIT | live-target vulnerability templates, when a target is given |
-| `playwright` | unpinned | sandbox-image | Apache-2.0 | browser automation; installs Chromium |
+| `playwright` | 1.62.0 | sandbox-image | Apache-2.0 | browser automation; installs Chromium |
 | `python:3.13-slim-bookworm` | debian-12-bookworm | sandbox-image | multiple (Debian main) | base image of containers/Dockerfile; every scanner runs in a container built from it |
 | `semgrep` | 1.90.0 | sandbox-image | LGPL-2.1-only | static analysis over mounted source |
 | `trivy` | 0.73.0 | sandbox-image | Apache-2.0 | dependency and CVE scanning; also the cross-check for this SBOM |
