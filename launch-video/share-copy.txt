@@ -1,0 +1,9 @@
+Most scanners hand you a queue of maybes, and somebody spends their afternoon deciding which ones
+are real. The triage costs more than the scan.
+
+docket files a vulnerability only once it has reproduced it — the literal request it sent, the
+literal response it got back — and the refusal is enforced by the type system against its own
+agents. No "likely" severity. No confidence score. No percentage, and no score field to compute
+one from.
+
+A finding is a reproduction or it does not exist. 2:32.

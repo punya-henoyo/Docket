@@ -240,7 +240,20 @@ def scan_tree(root: str | Path, *, timeout_sec: int = 600) -> ScanOutcome:
         tail = (done.stderr or "").strip().splitlines()[-1:] or ["no diagnostics"]
         return ScanOutcome(error=(f"semgrep produced no JSON (exit {done.returncode}): "
                                   f"{tail[0][:200]}"))
-    return parse_scan_json(done.stdout, root)
+    outcome = parse_scan_json(done.stdout, root)
+    if outcome.error is None and outcome.files_scanned == 0:
+        # "Every failure is returned as `error`, never as an empty result" — this was the
+        # hole in that promise. semgrep exits 0 having scanned NOTHING when its built-in
+        # ignore rules cover the tree (a path under tests/ is the one that bit), and the
+        # empty result then flows on as a clean baseline: the positive control fails, the
+        # patch is called validation_inconclusive, and the evidence says "the target is
+        # absent from the pristine scan" rather than "nothing was scanned at all". A
+        # correct fix and an unscannable tree were indistinguishable.
+        return ScanOutcome(error=(
+            f"semgrep scanned 0 files under {root} and reported no error. Its built-in "
+            "ignore rules exclude some paths (anything under a tests/ directory, for "
+            "one), so this is NOT a clean scan — nothing was analysed."))
+    return outcome
 
 
 

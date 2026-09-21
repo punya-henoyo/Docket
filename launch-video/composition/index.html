@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>docket — launch</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      /* ── Henoyo Design System v1 — app/frontend/BRAND.md ──────────────────── */
+      @font-face { font-family:"Source Serif 4"; font-style:normal; font-weight:200 900;
+                   font-display:block; src:url("assets/fonts/SourceSerif4.woff2") format("woff2"); }
+      @font-face { font-family:"Source Serif 4"; font-style:italic; font-weight:200 900;
+                   font-display:block; src:url("assets/fonts/SourceSerif4-Italic.woff2") format("woff2"); }
+      @font-face { font-family:"Inter"; font-style:normal; font-weight:100 900;
+                   font-display:block; src:url("assets/fonts/Inter.woff2") format("woff2"); }
+      @font-face { font-family:"JetBrains Mono"; font-style:normal; font-weight:100 800;
+                   font-display:block; src:url("assets/fonts/JetBrainsMono.woff2") format("woff2"); }
+
+      :root {
+        --page:#f8f6f1; --card:#fffefb; --raised:#f0ede5;
+        --ink:#1a1f1c; --ink-2:#5a625b;
+        --line:#e3dfd4; --line-2:#c9c4b5;
+        --brand:#3b6047; --chip:#e9efeb;
+        --on-ink:#fffefb;      /* paper-0 on a dark canvas */
+        --on-ink-2:#a8bfaf;    /* verdant-200 — BRAND.md: muted text on ink */
+        --glow:#6bc78f;        /* verdant-glow — BRAND.md: the period, on dark */
+        --crit:#c0261b; --high:#c2410c;
+        --sans:"Inter",ui-sans-serif,system-ui,sans-serif;
+        --serif:"Source Serif 4",Georgia,serif;
+        --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+      }
+
+      * { margin:0; padding:0; box-sizing:border-box; }
+      html, body { width:1920px; height:1080px; overflow:hidden; background:var(--page); }
+      #root { position:relative; width:100%; height:100%; overflow:hidden;
+              font-family:var(--sans); color:var(--ink); }
+
+      /* Untimed cream underlay so the paper never blinks between crossfades. */
+      #paper { position:absolute; inset:0; background:var(--page); }
+
+      .inner { position:absolute; inset:0; display:flex; flex-direction:column;
+               justify-content:center; padding:0 160px; }
+      .inner.center { align-items:center; text-align:center; }
+      /* The three thesis scenes invert. The panel IS the .inner, so one opacity
+         tween fades the canvas and its content together. */
+      .inner.ink { background:var(--ink); color:var(--on-ink); }
+
+      .eyebrow { font-family:var(--mono); font-weight:500; font-size:20px;
+                 letter-spacing:.1em; text-transform:uppercase; color:var(--ink-2); }
+      .lead   { font-family:var(--serif); font-weight:400; line-height:1.22; }
+      .sub    { font-size:32px; line-height:1.45; color:var(--ink-2); }
+      .ink .sub { color:var(--on-ink-2); }
+
+      .wordmark { font-family:var(--serif); font-style:italic; font-weight:500;
+                  letter-spacing:-.01em; line-height:1; }
+      .wordmark .dot { font-style:normal; color:var(--glow); }
+
+      /* ── 1 · the queue of maybes ──────────────────────────────────────────── */
+      #s1-eyebrow { margin-bottom:38px; }
+      .maybe { display:grid; grid-template-columns:1fr 340px; gap:40px; align-items:baseline;
+               max-width:1180px; padding:11px 0; border-bottom:1px solid var(--line); }
+      .maybe .what { font-size:33px; color:var(--ink-2); }
+      .maybe .hedge { font-family:var(--mono); font-size:26px; color:var(--ink-2); text-align:right; }
+      #s1-punch { margin-top:46px; }
+      #s1-punch .lead { font-size:56px; }
+      #s1-punch .sub { margin-top:16px; max-width:1180px; }
+
+      /* ── 2 · the cost line ────────────────────────────────────────────────── */
+      #s2-line { font-family:var(--serif); font-weight:400; font-size:80px; line-height:1.2;
+                 max-width:1500px; }
+
+      /* ── 3 · the refusal ──────────────────────────────────────────────────── */
+      #s3-eyebrow { margin-bottom:40px; }
+      #s3-refusal { font-family:var(--mono); font-weight:500; font-size:62px; line-height:1.15;
+                    letter-spacing:-.01em; color:var(--crit); }
+      #s3-note { margin-top:36px; max-width:1180px; font-size:34px; line-height:1.45;
+                 color:var(--ink-2); }
+
+      /* ── 4 · the type constraint ──────────────────────────────────────────── */
+      #s4-head { font-size:60px; max-width:1420px; }
+      #s4-card { margin-top:40px; width:940px; background:var(--card);
+                 border:1px solid var(--line); border-radius:10px; padding:10px 40px; }
+      .constraint { display:grid; grid-template-columns:290px 1fr; gap:32px; padding:22px 0;
+                    font-family:var(--mono); font-size:31px; }
+      .constraint + .constraint { border-top:1px solid var(--line); }
+      .constraint .val { color:var(--brand); }
+      #s4-note { margin-top:38px; }
+
+      /* ── 5 · the name ─────────────────────────────────────────────────────── */
+      #s5-wordmark { font-size:200px; }
+      #s5-line { margin-top:46px; font-size:36px; color:var(--on-ink-2); }
+
+      /* ── 6 · delegation ───────────────────────────────────────────────────── */
+      #s6-head { font-size:60px; }
+      #s6-tree { margin-top:44px; font-family:var(--mono); font-size:30px; line-height:1.85;
+                 text-align:left; color:var(--ink); white-space:pre; }
+      #s6-note { margin-top:42px; }
+
+      /* ── 7 · root cannot invent ───────────────────────────────────────────── */
+      #s7-line { font-size:62px; max-width:1500px; }
+      #s7-note { margin-top:32px; max-width:1300px; }
+      #s7-note code { font-family:var(--mono); font-size:29px; color:var(--brand);
+                      background:var(--chip); border-radius:4px; padding:3px 10px; }
+
+      /* ── 8 · the scan ─────────────────────────────────────────────────────── */
+      #s8-inner { align-items:center; }
+      #s8-card { width:1480px; background:var(--card); border:1px solid var(--line);
+                 border-radius:10px; padding:40px 56px 32px; }
+      #s8-head { display:flex; align-items:center; gap:24px; padding-bottom:28px;
+                 border-bottom:1px solid var(--line); }
+      #s8-status { display:flex; align-items:center; gap:10px; font-family:var(--mono);
+                   font-size:21px; color:var(--brand); }
+      #s8-status .dot { width:10px; height:10px; border-radius:50%; background:var(--brand); }
+      #s8-chips { display:flex; gap:12px; margin-left:auto; }
+      .chip { font-family:var(--mono); font-weight:500; font-size:19px; color:var(--brand);
+              background:var(--chip); border-radius:999px; padding:7px 18px; }
+      .row { display:grid; grid-template-columns:150px 1fr; gap:32px; align-items:start;
+             padding:26px 0; border-bottom:1px solid var(--line); }
+      .sev { font-family:var(--mono); font-weight:500; font-size:17px; letter-spacing:.08em;
+             text-transform:uppercase; padding:5px 0; }
+      .sev.critical { color:var(--crit); }
+      .sev.high { color:var(--high); }
+      .req { font-family:var(--mono); font-weight:500; font-size:34px; line-height:1.25; }
+      .res { margin-top:10px; font-family:var(--mono); font-size:30px; line-height:1.3;
+             color:var(--ink-2); }
+      #s8-foot { margin-top:26px; text-align:right; font-family:var(--mono); font-size:22px;
+                 color:var(--ink-2); }
+
+      /* ── 9 · reachable ────────────────────────────────────────────────────── */
+      #s9-tags { display:flex; gap:20px; margin-bottom:56px; }
+      .verdict { font-family:var(--mono); font-weight:500; font-size:24px; letter-spacing:.08em;
+                 border-radius:999px; padding:12px 28px; border:1.5px solid currentColor; }
+      .verdict.reach { color:var(--crit); }
+      .verdict.noreach { color:var(--brand); }
+      .verdict.unc { color:var(--ink-2); }
+      #s9-head { font-size:58px; max-width:1500px; }
+      #s9-note { margin-top:30px; }
+
+      /* ── 10 · two lists ───────────────────────────────────────────────────── */
+      #s10-cols { display:grid; grid-template-columns:600px 600px; gap:80px; margin-bottom:56px;
+                  text-align:left; }
+      .listcard { background:var(--card); border:1px solid var(--line); border-radius:10px;
+                  padding:34px 36px; height:100%; }
+      .listcard h3 { font-family:var(--mono); font-weight:500; font-size:27px; color:var(--brand);
+                     margin-bottom:22px; }
+      .listcard p { font-size:27px; line-height:1.5; color:var(--ink-2); padding:9px 0; }
+      .listcard p + p { border-top:1px solid var(--line); }
+      #s10-head { font-size:58px; }
+      #s10-note { margin-top:28px; }
+
+      /* ── 11 · compliance ──────────────────────────────────────────────────── */
+      #s11-card { width:1340px; background:var(--card); border:1px solid var(--line);
+                  border-radius:10px; padding:52px 56px; text-align:left; }
+      #s11-l1 { font-family:var(--serif); font-weight:600; font-size:50px; line-height:1.2; }
+      #s11-l2 { margin-top:22px; font-size:30px; color:var(--ink-2); }
+      #s11-l3 { margin-top:34px; padding-top:30px; border-top:1px solid var(--line);
+                font-size:27px; font-style:italic; color:var(--ink-2); }
+
+      /* ── 12 · no score field ──────────────────────────────────────────────── */
+      #s12-line { font-size:52px; max-width:1520px; }
+      #s12-note { margin-top:32px; }
+
+      /* ── 13 · the close ───────────────────────────────────────────────────── */
+      #s13-stack { display:grid; place-items:center; width:100%; }
+      #s13-say, #s13-wordmark { grid-area:1 / 1; width:100%; }
+      #s13-line { font-family:var(--serif); font-weight:400; font-size:60px; line-height:1.3;
+                  max-width:1080px; margin:0 auto; }
+      #s13-sub { margin-top:34px; font-size:32px; color:var(--on-ink-2); }
+      #s13-wordmark { font-size:200px; text-align:center; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="152"
+         data-width="1920" data-height="1080">
+      <div id="paper"></div>
+
+      <!-- 1 · the queue of maybes — 0.0 → 12.6 -->
+      <section id="s1" class="clip" data-start="0" data-duration="13.2" data-track-index="0">
+        <div id="s1-inner" class="inner">
+          <div id="s1-eyebrow" class="eyebrow">Most scanners</div>
+          <div id="s1-list">
+            <div class="maybe"><span class="what">possible SQL injection</span><span class="hedge">confidence 0.72</span></div>
+            <div class="maybe"><span class="what">possible reflected XSS</span><span class="hedge">likely</span></div>
+            <div class="maybe"><span class="what">possible path traversal</span><span class="hedge">confidence 0.55</span></div>
+            <div class="maybe"><span class="what">possible SSRF</span><span class="hedge">likely</span></div>
+            <div class="maybe"><span class="what">possible command injection</span><span class="hedge">confidence 0.48</span></div>
+            <div class="maybe"><span class="what">possible IDOR</span><span class="hedge">uncertain</span></div>
+          </div>
+          <div id="s1-punch">
+            <div class="lead">Both hand you a queue of maybes.</div>
+            <div class="sub">Somebody spends their afternoon deciding which ones are real.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2 · the cost line — 12.0 → 19.0 — INK -->
+      <section id="s2" class="clip" data-start="12" data-duration="7.6" data-track-index="1">
+        <div id="s2-inner" class="inner center ink">
+          <div id="s2-line">The triage costs more than the scan.</div>
+        </div>
+      </section>
+
+      <!-- 3 · the refusal — 18.4 → 28.6 -->
+      <section id="s3" class="clip" data-start="18.4" data-duration="10.8" data-track-index="2">
+        <div id="s3-inner" class="inner">
+          <div id="s3-eyebrow" class="eyebrow">Tool response</div>
+          <div id="s3-refusal">finding refused — no reproduced evidence.</div>
+          <div id="s3-note">A description of what you believe happens is not evidence.</div>
+        </div>
+      </section>
+
+      <!-- 4 · enforced by the type system — 28.0 → 39.2 -->
+      <section id="s4" class="clip" data-start="28" data-duration="11.8" data-track-index="3">
+        <div id="s4-inner" class="inner">
+          <div id="s4-head" class="lead">Enforced by the type system, not by convention.</div>
+          <div id="s4-card">
+            <div class="constraint" id="s4-c1"><span>PoC.request</span><span class="val">validated non-empty</span></div>
+            <div class="constraint" id="s4-c2"><span>PoC.response</span><span class="val">validated non-empty</span></div>
+          </div>
+          <div id="s4-note" class="sub">A Finding carrying no evidence cannot be instantiated.</div>
+        </div>
+      </section>
+
+      <!-- 5 · the name — 38.6 → 48.0 — INK -->
+      <section id="s5" class="clip" data-start="38.6" data-duration="10" data-track-index="4">
+        <div id="s5-inner" class="inner center ink">
+          <div id="s5-wordmark" class="wordmark">docket<span class="dot">.</span></div>
+          <div id="s5-line">A finding is a reproduction or it does not exist.</div>
+        </div>
+      </section>
+
+      <!-- 6 · one class, one route, one specialist — 47.4 → 61.6 -->
+      <section id="s6" class="clip" data-start="47.4" data-duration="14.8" data-track-index="5">
+        <div id="s6-inner" class="inner center">
+          <div id="s6-head" class="lead">One class, one route, one specialist.</div>
+          <div id="s6-tree"><div id="s6-b1">root ──┬── sqli   → POST /login    shell + sqlmap</div><div id="s6-b2">       ├── cmdi   → GET  /export   timing side-channel</div><div id="s6-b3">       └── xss    → GET  /search   real Chromium</div></div>
+          <div id="s6-note" class="sub">They work in parallel, each with a deliberately narrow tool set.</div>
+        </div>
+      </section>
+
+      <!-- 7 · root cannot invent — 61.0 → 69.6 -->
+      <section id="s7" class="clip" data-start="61" data-duration="9.2" data-track-index="6">
+        <div id="s7-inner" class="inner center">
+          <div id="s7-line" class="lead">Root aggregates only what its children proved.</div>
+          <div id="s7-note" class="sub">It cannot invent a finding on their behalf, because <code>finding</code> is not one of its tools.</div>
+        </div>
+      </section>
+
+      <!-- 8 · the scan — 69.0 → 88.6 -->
+      <section id="s8" class="clip" data-start="69" data-duration="20.2" data-track-index="7">
+        <div id="s8-inner" class="inner">
+          <div id="s8-card">
+            <div id="s8-head">
+              <div class="eyebrow">Scan</div>
+              <div id="s8-status"><span class="dot"></span>scanning</div>
+              <div id="s8-chips">
+                <span class="chip">cmdi</span><span class="chip">sqli</span>
+                <span class="chip">xss</span><span class="chip">recon</span>
+              </div>
+            </div>
+            <div class="row" id="s8-row-1">
+              <div class="sev critical">critical</div>
+              <div><div class="req">?file=test.csv; sleep 5</div>
+                   <div class="res">&rarr; "Response time: ~5016ms"</div></div>
+            </div>
+            <div class="row" id="s8-row-2">
+              <div class="sev critical">critical</div>
+              <div><div class="req">username=admin' --</div>
+                   <div class="res">&rarr; "Welcome"</div></div>
+            </div>
+            <div class="row" id="s8-row-3">
+              <div class="sev high">high</div>
+              <div><div class="req">dialog_message='host.docker.internal'</div>
+                   <div class="res">&rarr; browser dialog fired</div></div>
+            </div>
+            <div id="s8-foot">4 agents · $0.108 · 3 findings · all reproduced</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 9 · reachable, not the raw count — 88.0 → 101.2 -->
+      <section id="s9" class="clip" data-start="88" data-duration="13.8" data-track-index="8">
+        <div id="s9-inner" class="inner center">
+          <div id="s9-tags">
+            <span class="verdict reach" id="s9-t1">REACHABLE</span>
+            <span class="verdict noreach" id="s9-t2">NOT REACHABLE</span>
+            <span class="verdict unc" id="s9-t3">UNCERTAIN</span>
+          </div>
+          <div id="s9-head" class="lead">The headline number is reachable, not the raw count.</div>
+          <div id="s9-note" class="sub">A scanner's volume says nothing about risk.</div>
+        </div>
+      </section>
+
+      <!-- 10 · two lists — 100.6 → 112.8 -->
+      <section id="s10" class="clip" data-start="100.6" data-duration="12.8" data-track-index="9">
+        <div id="s10-inner" class="inner center">
+          <div id="s10-cols">
+            <div class="listcard" id="s10-c1">
+              <h3>findings</h3>
+              <p>a reproduction</p>
+              <p>request and response, validated</p>
+              <p>drives the exit code</p>
+            </div>
+            <div class="listcard" id="s10-c2">
+              <h3>flagged_not_proven</h3>
+              <p>a candidate</p>
+              <p>no evidence, and never will have any</p>
+              <p>cannot turn a clean scan red</p>
+            </div>
+          </div>
+          <div id="s10-head" class="lead">A candidate is never a finding.</div>
+          <div id="s10-note" class="sub">Two lists, so nothing downstream can present one as the other.</div>
+        </div>
+      </section>
+
+      <!-- 11 · compliance, without the percentage — 112.2 → 125.4 -->
+      <section id="s11" class="clip" data-start="112.2" data-duration="13.8" data-track-index="10">
+        <div id="s11-inner" class="inner center">
+          <div id="s11-card">
+            <div id="s11-l1">SEBI CSCRF — 11 of 13 decided controls satisfied</div>
+            <div id="s11-l2">43 controls in this pack · 29 not answerable from code</div>
+            <div id="s11-l3">Evidence-based review of source code. Not an attestation of compliance.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 12 · there is no score field — 124.8 → 135.0 -->
+      <section id="s12" class="clip" data-start="124.8" data-duration="10.8" data-track-index="11">
+        <div id="s12-inner" class="inner center">
+          <div id="s12-line" class="lead">There is no percentage, and no score field to compute one from.</div>
+          <div id="s12-note" class="sub">Pass-rate and coverage move in opposite directions.</div>
+        </div>
+      </section>
+
+      <!-- 13 · the close — 134.4 → 152.0 — INK -->
+      <section id="s13" class="clip" data-start="134.4" data-duration="17.7" data-track-index="12">
+        <div id="s13-inner" class="inner center ink">
+          <div id="s13-stack">
+            <div id="s13-say">
+              <div id="s13-line">A docket is a register where nothing is entered without evidence.</div>
+              <div id="s13-sub" class="sub">That is the whole design.</div>
+            </div>
+            <div id="s13-wordmark" class="wordmark">docket<span class="dot">.</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── audio ─────────────────────────────────────────────────────────── -->
+      <audio id="music" src="assets/music/happy-beats-business-moves-vol-1-by-ende-dot-app.mp3"
+             data-start="0" data-duration="152" data-track-index="20"
+             data-automation='{"version":1,"lanes":[{"target":"volume","points":[{"t":0,"v":0},{"t":1.5,"v":0.22},{"t":149.5,"v":0.22},{"t":152,"v":0}]}]}'></audio>
+      <audio id="sfx-ink-1" src="assets/sfx/impact/impactSoft_medium_003.ogg"
+             data-start="12" data-duration="0.14" data-track-index="21" data-volume="0.3"></audio>
+      <audio id="sfx-refusal" src="assets/sfx/impact/impactSoft_medium_001.ogg"
+             data-start="18.98" data-duration="0.18" data-track-index="22" data-volume="0.5"></audio>
+      <audio id="sfx-ink-2" src="assets/sfx/impact/impactSoft_medium_003.ogg"
+             data-start="38.6" data-duration="0.14" data-track-index="23" data-volume="0.26"></audio>
+      <audio id="sfx-row-1" src="assets/sfx/interface/bong_001.ogg"
+             data-start="72.02" data-duration="0.12" data-track-index="24" data-volume="0.3"></audio>
+      <audio id="sfx-row-2" src="assets/sfx/interface/bong_001.ogg"
+             data-start="77.02" data-duration="0.12" data-track-index="25" data-volume="0.3"></audio>
+      <audio id="sfx-row-3" src="assets/sfx/interface/bong_001.ogg"
+             data-start="82.02" data-duration="0.12" data-track-index="26" data-volume="0.3"></audio>
+      <audio id="sfx-ink-3" src="assets/sfx/impact/impactSoft_medium_003.ogg"
+             data-start="134.4" data-duration="0.14" data-track-index="27" data-volume="0.26"></audio>
+      <audio id="sfx-close" src="assets/sfx/impact/impactSoft_medium_000.ogg"
+             data-start="147.4" data-duration="0.12" data-track-index="28" data-volume="0.26"></audio>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      const RISE = { ease: "power2.out" };
+
+      // Scene crossfades. [id, content start, content end]. The 0.6s tail of one
+      // scene is the 0.6s head of the next, so the cream underlay never blinks.
+      // s13 has no fade-out: it holds the wordmark to the last frame.
+      [["s1", 0, 12.6], ["s2", 12, 19], ["s3", 18.4, 28.6], ["s4", 28, 39.2],
+       ["s5", 38.6, 48], ["s6", 47.4, 61.6], ["s7", 61, 69.6], ["s8", 69, 88.6],
+       ["s9", 88, 101.2], ["s10", 100.6, 112.8], ["s11", 112.2, 125.4],
+       ["s12", 124.8, 135], ["s13", 134.4, null]
+      ].forEach(([id, inAt, outAt]) => {
+        tl.fromTo("#" + id + "-inner", { opacity: 0 },
+                  { opacity: 1, duration: id === "s1" ? 0.4 : 0.6, ease: "power1.inOut" }, inAt);
+        if (outAt !== null) {
+          tl.to("#" + id + "-inner", { opacity: 0, duration: 0.6, ease: "power1.inOut" }, outAt);
+        }
+      });
+
+      // ── 1 · the queue of maybes ─────────────────────────────────────────────
+      // beat-grid: rows on the 0.5s pulse. They are a pile, not lines to study —
+      // the shape of the list is the argument, so they arrive quickly.
+      tl.fromTo("#s1-eyebrow", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 0.3)
+        .fromTo("#s1-list .maybe", { opacity: 0, y: 8 },
+                { opacity: 1, y: 0, duration: 0.38, stagger: 0.5, ...RISE }, 1.52)
+        .fromTo("#s1-punch", { opacity: 0, y: 12 },
+                { opacity: 1, y: 0, duration: 0.55, ...RISE }, 5.52);
+
+      // ── 2 · the cost line ───────────────────────────────────────────────────
+      tl.fromTo("#s2-line", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.7, ...RISE }, 12.6);
+
+      // ── 3 · the refusal ─────────────────────────────────────────────────────
+      // beat-locked: 19.02s (strongCue 1.00). The one abrupt move in 152 seconds.
+      tl.fromTo("#s3-eyebrow", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 18.6)
+        .fromTo("#s3-refusal", { opacity: 0, y: 16 },
+                { opacity: 1, y: 0, duration: 0.24, ease: "power4.out" }, 19.02)
+        .fromTo("#s3-note", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.48, ...RISE }, 20.52);
+
+      // ── 4 · the type constraint ─────────────────────────────────────────────
+      tl.fromTo("#s4-head", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.6, ...RISE }, 28.7)
+        .fromTo("#s4-card", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 30.52)
+        // beat-grid: 31.02 / 31.52
+        .fromTo("#s4-c1", { opacity: 0, x: -10 }, { opacity: 1, x: 0, duration: 0.4, ...RISE }, 31.02)
+        .fromTo("#s4-c2", { opacity: 0, x: -10 }, { opacity: 1, x: 0, duration: 0.4, ...RISE }, 31.52)
+        .fromTo("#s4-note", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.55, ...RISE }, 33.02);
+
+      // ── 5 · the name ────────────────────────────────────────────────────────
+      tl.fromTo("#s5-wordmark", { opacity: 0, scale: 0.985 },
+                { opacity: 1, scale: 1, duration: 0.8, ...RISE }, 39.2)
+        .fromTo("#s5-line", { opacity: 0, y: 12 },
+                { opacity: 1, y: 0, duration: 0.6, ...RISE }, 41.02);
+
+      // ── 6 · delegation ──────────────────────────────────────────────────────
+      tl.fromTo("#s6-head", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.6, ...RISE }, 48.1)
+        // beat-grid: 51.02 / 52.02 / 53.02 — every SECOND beat, so each branch clears its read.
+        .fromTo("#s6-b1", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.45, ...RISE }, 51.02)
+        .fromTo("#s6-b2", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.45, ...RISE }, 52.02)
+        .fromTo("#s6-b3", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.45, ...RISE }, 53.02)
+        .fromTo("#s6-note", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.55, ...RISE }, 55.02);
+
+      // ── 7 · root cannot invent ──────────────────────────────────────────────
+      tl.fromTo("#s7-line", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.65, ...RISE }, 61.6)
+        .fromTo("#s7-note", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.55, ...RISE }, 63.52);
+
+      // ── 8 · the scan ────────────────────────────────────────────────────────
+      // The row rules are static, so before the entries land the card reads as an
+      // empty ruled register rather than a blank box.
+      tl.fromTo("#s8-card", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.5, ...RISE }, 69.6)
+        // beat-grid: chips on the half-beat, 70.52 → 71.27
+        .fromTo("#s8-chips .chip", { opacity: 0, scale: 0.92 },
+                { opacity: 1, scale: 1, duration: 0.26, stagger: 0.25, ...RISE }, 70.52)
+        // beat-locked: 72.02s (strongCue 1.00). Rows 5.0s apart — two mono lines each
+        // is a real read in a silent cut, not a glance.
+        .fromTo("#s8-row-1 > *", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.45, ...RISE }, 72.02)
+        .fromTo("#s8-row-2 > *", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.45, ...RISE }, 77.02)
+        .fromTo("#s8-row-3 > *", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.45, ...RISE }, 82.02)
+        .fromTo("#s8-foot", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 86.02);
+
+      // ── 9 · reachable ───────────────────────────────────────────────────────
+      // beat-grid: 89.02 / 89.52 / 90.02
+      tl.fromTo("#s9-tags .verdict", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.4, stagger: 0.5, ...RISE }, 89.02)
+        .fromTo("#s9-head", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.65, ...RISE }, 91.52)
+        .fromTo("#s9-note", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.55, ...RISE }, 94.02);
+
+      // ── 10 · two lists ──────────────────────────────────────────────────────
+      tl.fromTo("#s10-c1", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.6, ...RISE }, 101.52)
+        .fromTo("#s10-c2", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.6, ...RISE }, 101.52)
+        .fromTo("#s10-head", { opacity: 0, y: 12 },
+                { opacity: 1, y: 0, duration: 0.6, ...RISE }, 105.02)
+        .fromTo("#s10-note", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.55, ...RISE }, 107.02);
+
+      // ── 11 · compliance ─────────────────────────────────────────────────────
+      tl.fromTo("#s11-card", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.55, ...RISE }, 112.8)
+        .fromTo("#s11-l1", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.55, ...RISE }, 113.02)
+        .fromTo("#s11-l2", { opacity: 0 }, { opacity: 1, duration: 0.45 }, 114.52)
+        .fromTo("#s11-l3", { opacity: 0 }, { opacity: 1, duration: 0.45 }, 116.52);
+
+      // ── 12 · no score field ─────────────────────────────────────────────────
+      tl.fromTo("#s12-line", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.65, ...RISE }, 125.52)
+        .fromTo("#s12-note", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.55, ...RISE }, 128.52);
+
+      // ── 13 · the close ──────────────────────────────────────────────────────
+      // beat-locked: the wordmark lands settled on 148.02 (strongCue 1.00) and holds
+      // alone for four seconds while the bed fades out under it.
+      tl.fromTo("#s13-line", { opacity: 0, y: 14 },
+                { opacity: 1, y: 0, duration: 0.75, ...RISE }, 135.52)
+        .fromTo("#s13-sub", { opacity: 0, y: 10 },
+                { opacity: 1, y: 0, duration: 0.6, ...RISE }, 139.02)
+        .to("#s13-say", { opacity: 0, duration: 0.8, ease: "power1.inOut" }, 145.8)
+        .fromTo("#s13-wordmark", { opacity: 0, scale: 0.985 },
+                { opacity: 1, scale: 1, duration: 0.52, ...RISE }, 147.5);
+
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

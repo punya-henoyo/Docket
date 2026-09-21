@@ -129,6 +129,9 @@ def cmd_scan(args) -> int:
         return run_scan_with_tui(setup, config, max_turns=args.max_steps)
 
     store = FindingStore()
+    # Filled by run_scan's on_surface callback below. A dict rather than a nonlocal so the
+    # lambda can write to it without the closure gymnastics.
+    surface: dict = {}
     reporter = None if args.non_interactive else ProgressReporter()
     kwargs = dict(run_name=setup.run_name, target=setup.target or "(static-only)")
     try:
@@ -171,6 +174,13 @@ def cmd_scan(args) -> int:
             fix_max=args.fix,
             budget_usd=args.budget,
             recon=args.recon,
+            # The CLI DISCARDED this. run_scan produced a surface, used its candidates as
+            # findings, and then threw the map away: report.json["surface"] came back {}
+            # on every `docket scan --recon`, so `docket view` and the brief showed no
+            # entry points and no auth model for a phase that had just been paid for.
+            # connect.py has always captured it; main.py never did. Same CLI-vs-console
+            # divergence as the twin-server one, one layer down.
+            on_surface=lambda mapped: surface.update(mapped or {}),
             # Comma-separated on the command line, a list everywhere inside. Split here
             # rather than in run_scan so the engine takes one shape and the CLI's comma
             # convention stays a CLI concern.
@@ -206,6 +216,9 @@ def cmd_scan(args) -> int:
                    # Refusals included. Each row carries the agent's claim next to the
                    # scanner's verdict, so a patch that did not verify is visible as that.
                    patches=result.patches,
+                   # The attack surface recon mapped. Without this the entry points and
+                   # auth model exist only in the agent's transcript.
+                   surface=surface or None,
                    # One row per requested pack, always — including a pack where nothing
                    # could be assessed, which is a different statement from not asking.
                    compliance=result.compliance)

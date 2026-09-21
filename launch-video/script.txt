@@ -1,0 +1,79 @@
+docket — launch video · on-screen script, in order
+152.0s · silent · every line verbatim from README.md, BRAND.md or the console source
+
+--- 1 · the queue of maybes ---------------------------------------------- 0.0
+MOST SCANNERS
+  possible SQL injection            confidence 0.72
+  possible reflected XSS            likely
+  possible path traversal           confidence 0.55
+  possible SSRF                     likely
+  possible command injection        confidence 0.48
+  possible IDOR                     uncertain
+Both hand you a queue of maybes.
+Somebody spends their afternoon deciding which ones are real.
+
+--- 2 · the cost ------------------------------------------------- [ink] 12.0
+The triage costs more than the scan.
+
+--- 3 · the refusal ------------------------------------------------------ 18.4
+TOOL RESPONSE
+finding refused — no reproduced evidence.
+A description of what you believe happens is not evidence.
+
+--- 4 · the constraint --------------------------------------------------- 28.0
+Enforced by the type system, not by convention.
+  PoC.request     validated non-empty
+  PoC.response    validated non-empty
+A Finding carrying no evidence cannot be instantiated.
+
+--- 5 · the name -------------------------------------------------- [ink] 38.6
+docket.
+A finding is a reproduction or it does not exist.
+
+--- 6 · delegation ------------------------------------------------------- 47.4
+One class, one route, one specialist.
+  root ──┬── sqli   → POST /login    shell + sqlmap
+         ├── cmdi   → GET  /export   timing side-channel
+         └── xss    → GET  /search   real Chromium
+They work in parallel, each with a deliberately narrow tool set.
+
+--- 7 · root cannot invent ----------------------------------------------- 61.0
+Root aggregates only what its children proved.
+It cannot invent a finding on their behalf, because `finding` is not one of its tools.
+
+--- 8 · the scan --------------------------------------------------------- 69.0
+SCAN · scanning · cmdi sqli xss recon
+  critical   ?file=test.csv; sleep 5
+             → "Response time: ~5016ms"
+  critical   username=admin' --
+             → "Welcome"
+  high       dialog_message='host.docker.internal'
+             → browser dialog fired
+4 agents · $0.108 · 3 findings · all reproduced
+
+--- 9 · reachable -------------------------------------------------------- 88.0
+REACHABLE · NOT REACHABLE · UNCERTAIN
+The headline number is reachable, not the raw count.
+A scanner's volume says nothing about risk.
+
+--- 10 · two lists ------------------------------------------------------ 100.6
+findings                            flagged_not_proven
+  a reproduction                      a candidate
+  request and response, validated     no evidence, and never will have any
+  drives the exit code                cannot turn a clean scan red
+A candidate is never a finding.
+Two lists, so nothing downstream can present one as the other.
+
+--- 11 · compliance ----------------------------------------------------- 112.2
+SEBI CSCRF — 11 of 13 decided controls satisfied
+43 controls in this pack · 29 not answerable from code
+Evidence-based review of source code. Not an attestation of compliance.
+
+--- 12 · no score field ------------------------------------------------- 124.8
+There is no percentage, and no score field to compute one from.
+Pass-rate and coverage move in opposite directions.
+
+--- 13 · the close ------------------------------------------------ [ink] 134.4
+A docket is a register where nothing is entered without evidence.
+That is the whole design.
+docket.
