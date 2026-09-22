@@ -441,6 +441,11 @@ def _scan_for_pr(*, repo: str, sha: str, paths: list[str], triage_max: int,
         stage("fetch", "done")
         result = run_scan(
             target_url=None, whitebox_path=str(source), run_name=run_name,
+            # The repository, not the temp directory it was fetched into. Without this
+            # every scan gets a fresh scope and the verdict cache never hits — and a PR
+            # scan is the case that benefits most, because the same repo is scanned again
+            # on every push.
+            scan_scope=repo,
             use_sandbox=True, store=store, static_only=True,
             triage_max=triage_max, recon=recon, scope_paths=paths,
             compliance=compliance or None, compliance_deep=compliance_deep,
@@ -1455,6 +1460,8 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
         result = run_scan(
             target_url=None,
             whitebox_path=str(source),
+            # Same reason: `source` is a fresh temp directory per scan.
+            scan_scope=full_name,
             on_finding=publish,
             run_name=run_name,
             use_sandbox=True,

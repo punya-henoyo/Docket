@@ -256,6 +256,14 @@ def run_scan(
     triage_filter: Callable[[dict], bool] | None = None,
     compliance: list[str] | None = None,
     compliance_deep: int = 0,
+    # Stable identity of WHAT is being scanned, for the triage verdict cache. Defaults to
+    # the source path, which is right for `--source /home/me/repo` from the CLI.
+    #
+    # The console MUST pass its own: it fetches each scan into a fresh temp directory
+    # (/var/folders/.../docket-pr-xxxx), so defaulting there would give every scan of the
+    # same repository a different scope and the cache would never hit once — the feature
+    # would look wired and do nothing.
+    scan_scope: str | None = None,
 ) -> ScanResult:
     """`model_override`, if given, is threaded through every agent (root and any
     child it spawns) instead of building a real LitellmModel — the hook tests use to
@@ -534,6 +542,12 @@ def run_scan(
 
                 verdicts = triage_findings(
                     candidates,
+                    # Scopes the verdict cache. dedupe_key is (rule, method, path,
+                    # parameter, source_file) and carries no repository, so two repos with
+                    # an app.py:36 SQL injection produce the SAME key — without this one
+                    # would inherit the other's judgement, across customers.
+                    scope=(scan_scope
+                           or str(whitebox_path or target_url or "repository")),
                     run_dir=directory, config=cfg, sandbox=sandbox,
                     max_findings=triage_max, model_override=model_override,
                     source_root=str(whitebox_path) if whitebox_path else None,

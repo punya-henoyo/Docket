@@ -13,6 +13,7 @@ untouched and reported as skipped rather than silently dropped.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,8 @@ from docket.report.models import Severity
 _ORDER = {s.value: i for i, s in enumerate(Severity)}
 
 DEFAULT_MAX_FINDINGS = 15
+
+logger = logging.getLogger(__name__)
 
 # Loose on purpose. Cost is the real bound — per-agent (max_child_cost_usd) and
 # scan-wide (max_cost_usd), both checked before every model turn — and turns are a
@@ -84,6 +87,8 @@ def triage_findings(
     sandbox: Any,
     max_findings: int = DEFAULT_MAX_FINDINGS,
     max_turns: int = DEFAULT_MAX_TURNS,
+    scope: str = "",
+    cache: Any = None,
     on_verdict: Callable[[str, dict[str, Any]], None] | None = None,
     on_agent: Callable[[dict[str, Any]], None] | None = None,
     model_override: Callable[[str], Any] | None = None,
@@ -96,6 +101,17 @@ def triage_findings(
     if sandbox is None or not findings:
         return {}
 
+    # The cache turns `max_findings` from "how many can you afford" into "how many are
+    # NEW". A cached verdict costs nothing and consumes no slot, so a rescan spends its
+    # budget on the findings nobody has judged yet instead of re-buying yesterday's
+    # answers. Opened here rather than passed in so every caller gets it by default; an
+    # unusable one degrades to today's behaviour and never raises.
+    from docket.core.verdict_cache import VerdictCache, fingerprint
+
+    owned = cache is None
+    if owned:
+        cache = VerdictCache()
+
     coordinator = AgentCoordinator(
         max_agents=1,  # sequential: concurrent agents make the budget gate racy
         budget_usd=config.max_cost_usd,
@@ -103,7 +119,26 @@ def triage_findings(
     )
     verdicts: dict[str, dict[str, Any]] = {}
 
-    for index, finding in enumerate(order_for_triage(findings)[:max_findings]):
+    # Cached verdicts first, and OUTSIDE the max_findings window: reusing one costs
+    # nothing, so capping it would throw away free answers to stay under a budget it does
+    # not spend. What remains is the genuinely unjudged work, and THAT is what the cap
+    # applies to.
+    pending: list[dict[str, Any]] = []
+    for finding in order_for_triage(findings):
+        key = str(finding.get("dedupe_key") or "")
+        hit = cache.get(scope, key, fingerprint(finding)) if key else None
+        if hit is None:
+            pending.append(finding)
+            continue
+        finding_id = str(finding.get("id") or key)
+        verdicts[finding_id] = hit
+        if on_verdict is not None:
+            on_verdict(finding_id, hit)
+    if cache.hits:
+        logger.info("triage: reused %d cached verdict(s); %d finding(s) still to judge",
+                    cache.hits, len(pending))
+
+    for index, finding in enumerate(pending[:max_findings]):
         # Before each agent, because each one costs real money. A stop requested at
         # finding 12 of 50 must not pay for the other 38.
         if cancel.cancelled:
@@ -154,6 +189,13 @@ def triage_findings(
         verdict = _verdict_from(output)
         if verdict is not None:
             verdicts[finding_id] = verdict
+            # Stored as soon as it lands, not at the end. A run that is cancelled or runs
+            # out of budget at finding 12 of 50 has still PAID for those twelve, and the
+            # next scan should not buy them again. `put` drops the synthesised ones —
+            # caching "nobody looked" would turn one shortfall into a permanent skip.
+            key = str(finding.get("dedupe_key") or "")
+            if key:
+                cache.put(scope, key, fingerprint(finding), verdict)
             if on_verdict is not None:
                 on_verdict(finding_id, verdict)
         if on_agent is not None:
@@ -161,6 +203,8 @@ def triage_findings(
                       "status": "done" if verdict else "error",
                       "outcome": (verdict or {}).get("verdict")})
 
+    if owned:
+        cache.close()
     return verdicts
 
 

@@ -38,7 +38,7 @@ check:
 	  docket.static.triage docket.tools.source_read.tools docket.tools.source_write.tools \
 	  docket.agents.prompts.triage_static docket.agents.prompts.fix \
 	  docket.agents.prompts.specialist \
-	  docket.core.triage docket.core.recon \
+	  docket.core.triage docket.core.recon docket.core.verdict_cache \
 	  docket.compliance.models docket.compliance.packs docket.compliance.ingest \
 	  docket.compliance.service \
 	  docket.core.compliance \
@@ -82,7 +82,7 @@ test-fast:
 	                  tests/test_diff_scope.py tests/test_scm.py \
 	                  tests/test_service_store.py tests/test_source_write.py \
 	                  tests/test_validate.py tests/test_fix.py \
-	                  tests/test_compliance.py ; do \
+	                  tests/test_compliance.py tests/test_verdict_cache.py ; do \
 	  uv run python $$f >/dev/null 2>&1 && echo "ok   $$f" || { echo "FAIL $$f"; exit 1; }; \
 	done
 
