@@ -37,6 +37,7 @@ check:
 	  docket.static.models docket.static.engines docket.static.correlate \
 	  docket.static.triage docket.tools.source_read.tools docket.tools.source_write.tools \
 	  docket.agents.prompts.triage_static docket.agents.prompts.fix \
+	  docket.agents.prompts.specialist \
 	  docket.core.triage docket.core.recon \
 	  docket.compliance.models docket.compliance.packs docket.compliance.ingest \
 	  docket.compliance.service \

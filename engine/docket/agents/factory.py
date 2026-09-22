@@ -120,13 +120,18 @@ from docket.tools.source_read import tools as source_read
 # `elif` unreachable — static triage would have silently run the other agent's prompt
 # and finish tool.
 # ponytail: collapse to one triage role once a real run shows which prompt holds up.
-Role = Literal["root", "sqli", "cmdi", "xss", "triage", "triage_static", "recon", "fix",
-               "compliance", "compliance_compile"]
+Role = Literal["root", "sqli", "cmdi", "xss", "idor", "ssrf", "triage", "triage_static",
+               "recon", "fix", "compliance", "compliance_compile"]
 # Root spawns attack specialists only. Triage, recon and fix are driven by the runner, not
 # delegated by root, so they are deliberately absent here. `fix` most of all: it is the one
 # role that WRITES, and a role that writes should be reachable from exactly one place a
 # human can read, not from a model's judgement about when a patch would be nice.
-SpecialistRole = Literal["sqli", "cmdi", "xss"]
+# idor and ssrf join the three injection classes because they were the two the rest of
+# the codebase was ALREADY built for and no agent could reach: tools/reporting/tool.py
+# has mapped them to CWE-639 and CWE-918 since the beginning, and skills/ carries a
+# playbook for each. Everything existed except the role. They are also the two OWASP API
+# categories a buyer asks about after injection — API1 and API7.
+SpecialistRole = Literal["sqli", "cmdi", "xss", "idor", "ssrf"]
 
 _FINISH_TOOL_NAMES = {"finish_scan", "agent_finish", "triage_verdict", "record_surface",
                       "fix_report", "record_controls", "record_pack"}
@@ -490,7 +495,7 @@ def build_agent(
                       load_skill_tool, list_skills_tool]
         finish_tool = fix_report
         name = "docket-fix"
-    elif role in ("sqli", "cmdi", "xss"):
+    elif role in ("sqli", "cmdi", "xss", "idor", "ssrf"):
         instructions = SPECIALIST_SYSTEM_PROMPT
         finish_tool = agent_finish
         name = f"docket-{role}"
@@ -500,6 +505,14 @@ def build_agent(
         # and xss needs a browser, so handing either a shell would widen the blast
         # radius for nothing.
         if role == "sqli":
+            base_tools.append(shell)
+        # SSRF proof without an external collaborator is a DIFFERENTIAL argument — three
+        # URLs, three different failures, timed. A shell makes that measurable from inside
+        # the container (resolve a name, time a connect) instead of inferred from HTTP
+        # latency alone, which is noisy over a container boundary. idor gets none: its
+        # proof is two authenticated requests, and a shell would only widen the blast
+        # radius for a bug that needs no local execution at all.
+        if role == "ssrf":
             base_tools.append(shell)
         # Only the XSS specialist gets a browser — it's the one role whose proof
         # requires a real DOM executing the payload.
@@ -669,6 +682,25 @@ def demo() -> None:
     assert "fix" not in SpecialistRole.__args__, SpecialistRole
     # Even handed a sandbox it stays a plain source-only agent.
     assert isinstance(build_agent("fix", cfg, model=live, sandbox=sentinel), Agent)
+
+    # --- idor and ssrf: the two specialists that were mapped everywhere but unreachable
+    idor = {t.name for t in build_agent("idor", cfg, model=live, sandbox=sentinel).tools}
+    ssrf = {t.name for t in build_agent("ssrf", cfg, model=live, sandbox=sentinel).tools}
+    for tools in (idor, ssrf):
+        assert "http_request" in tools, tools   # both prove it by sending requests
+        assert "finding" in tools, tools        # and both must be able to file one
+        assert "agent_finish" in tools, tools
+        assert "browser" not in tools, tools    # neither needs a DOM; xss owns that
+    # ssrf gets a shell: its proof without an external collaborator is a differential
+    # argument — three URLs, three failures, timed — and that is measurable from inside
+    # the container rather than inferred from HTTP latency across a container boundary.
+    assert "shell" in ssrf, ssrf
+    # idor does not. Its proof is two authenticated requests; local execution would only
+    # widen the blast radius for a bug that needs none.
+    assert "shell" not in idor, idor
+    # Both must be spawnable BY ROOT, which is the whole point — they were mapped in
+    # reporting/tool.py and skills/ from the beginning with no role to reach them.
+    assert {"idor", "ssrf"} <= set(SpecialistRole.__args__), SpecialistRole
 
     # --- the `compliance` role: read-only, and specifically OFFLINE -------------------
     comp = {t.name for t in build_agent("compliance", cfg, model=live, sandbox=sentinel).tools}
