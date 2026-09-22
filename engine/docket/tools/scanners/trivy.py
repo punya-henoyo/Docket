@@ -99,7 +99,62 @@ def parse_trivy_json(text: str) -> list[Finding]:
                 discovered_by="trivy",
                 cvss=_cvss(vuln),
             ))
+        findings.extend(_secrets(result, target))
     return findings
+
+
+# A leaked credential is not a dependency advisory and does not get one's shape: there is
+# no package, no version, no CVSS and nothing to upgrade. It is a line in a file.
+_SECRET_SEVERITY = {
+    "CRITICAL": Severity.CRITICAL, "HIGH": Severity.HIGH, "MEDIUM": Severity.MEDIUM,
+    "LOW": Severity.LOW, "UNKNOWN": Severity.INFO,
+}
+
+
+def _secrets(result: dict, target: str) -> list[Finding]:
+    """Hardcoded credentials trivy matched.
+
+    WHY THIS IS WORTH A SEPARATE SCANNER when semgrep already has secret rules: measured
+    on a file holding an AWS key pair, a GitHub PAT, a Slack bot token and an RSA private
+    key, semgrep p/default found TWO (the AWS pair) and trivy found FOUR — it caught the
+    GitHub PAT and the Slack token semgrep has no rule for. A leaked GitHub token in a
+    repository is close to the worst single finding there is, and docket was not looking
+    for one. `p/secrets` was measured too and added nothing p/default did not already
+    have, which is why the rule packs were left alone and this was enabled instead.
+
+    The REDACTION matters. trivy returns the matched text, and copying that into a
+    Finding would write the live credential into report.json, report.sarif and a pull
+    request comment — docket would publish the secret it is reporting. Only trivy's own
+    starred form is used, and never the raw match.
+    """
+    out: list[Finding] = []
+    for secret in result.get("Secrets") or []:
+        rule = str(secret.get("RuleID") or "secret")
+        line = secret.get("StartLine")
+        where = f"{target}:{line}" if line else target
+        title = str(secret.get("Title") or rule).strip()
+        out.append(Finding(
+            rule_id=f"trivy/secret/{rule}",
+            cwe="CWE-798",
+            title=f"Hardcoded credential: {title}",
+            severity=_SECRET_SEVERITY.get(
+                str(secret.get("Severity") or "UNKNOWN").upper(), Severity.INFO),
+            location=Location(method="STATIC", path=target, source_file=where),
+            description=(
+                "Secret scan (trivy) — a credential committed to the repository. Rotate "
+                "it first: removing the line does not un-leak a value that is in the git "
+                "history and may already have been cloned."
+            ),
+            poc=PoC(
+                # `Match` is trivy's redacted rendering, with the secret starred out.
+                # `Code` holds the surrounding lines and is NOT used: it contains the
+                # literal value.
+                request=f"{rule} at {where}",
+                response=str(secret.get("Match") or "match withheld").strip()[:400],
+            ),
+            discovered_by="trivy",
+        ))
+    return out
 
 
 def run_trivy(sandbox: Any, run_dir: Path, *, timeout_sec: int = 120) -> list[Finding]:
@@ -108,7 +163,10 @@ def run_trivy(sandbox: Any, run_dir: Path, *, timeout_sec: int = 120) -> list[Fi
     out_path = run_dir / "artifacts" / "scanners" / "trivy.json"
     command = (
         "mkdir -p /work/run/artifacts/scanners && "
-        "trivy fs --scanners vuln --format json --quiet "
+        # vuln,secret — not vuln alone. The secret scanner is already in this binary and
+        # costs one pass over the same tree; it catches GitHub PATs and Slack tokens that
+        # semgrep has no rule for. See _secrets.
+        "trivy fs --scanners vuln,secret --format json --quiet "
         # docket's own output directory. --fix writes patched COPIES of the source under
         # docket_runs/<run>/fix/<name>/tree/, each with its own requirements.txt, so a
         # repo scanned before reports the same dependency CVE once per historical run.
@@ -192,6 +250,51 @@ def demo() -> None:
         "VulnerabilityID": "CVE-Y", "PkgName": "p", "InstalledVersion": "1",
         "Severity": "HIGH", "CVSS": {"nvd": {"V3Score": 99.0}}}]}]})
     assert parse_trivy_json(junk)[0].cvss is None, "out-of-range score must be refused"
+
+    # --- secrets --------------------------------------------------------------------
+    # The shape trivy actually returns, taken from a real run against a file holding an
+    # AWS key pair, a GitHub PAT and a Slack token.
+    secret_doc = json.dumps({"Results": [{
+        "Target": "settings.py",
+        "Secrets": [
+            {"RuleID": "github-pat", "Severity": "CRITICAL", "StartLine": 3,
+             "Title": "GitHub Personal Access Token",
+             "Match": 'GITHUB_TOKEN = "ghp_****************************"',
+             # trivy also returns the surrounding source, WITH the live value in it.
+             "Code": {"Lines": [{"Content": 'GITHUB_TOKEN = "ghp_REALSECRETVALUE123"'}]}},
+            {"RuleID": "slack-access-token", "Severity": "HIGH", "StartLine": 4,
+             "Match": "xoxb-****"},
+        ]}]})
+    found = parse_trivy_json(secret_doc)
+    assert len(found) == 2, found
+    pat = found[0]
+    assert pat.rule_id == "trivy/secret/github-pat", pat.rule_id
+    assert pat.cwe == "CWE-798" and pat.severity is Severity.CRITICAL
+    assert pat.location.source_file == "settings.py:3", pat.location
+    # A credential is not a dependency advisory: no package, no version to upgrade.
+    assert pat.location.method == "STATIC", pat.location
+    assert pat.cvss is None, "a leaked secret has no CVSS and must not be given one"
+    # Rotation first. Deleting the line does not un-leak a value already in git history.
+    assert "Rotate it first" in pat.description, pat.description
+
+    # THE ONE THAT MATTERS. report.json, report.sarif and the pull-request comment are all
+    # built from these fields. Writing trivy's `Code` into a Finding would mean docket
+    # PUBLISHES the credential it is reporting — to a GitHub comment, on a public repo.
+    serialised = pat.model_dump_json()
+    assert "REALSECRETVALUE123" not in serialised, "docket just leaked the secret it found"
+    assert "ghp_****" in pat.poc.response, pat.poc.response
+
+    # A result carrying both kinds yields both, and neither shape contaminates the other.
+    both = parse_trivy_json(json.dumps({"Results": [{
+        "Target": "requirements.txt",
+        "Vulnerabilities": [{"VulnerabilityID": "CVE-1", "PkgName": "flask",
+                             "InstalledVersion": "1.0", "Severity": "HIGH"}],
+        "Secrets": [{"RuleID": "aws-secret-access-key", "Severity": "CRITICAL",
+                     "StartLine": 9, "Match": "aws_secret = ****"}]}]}))
+    assert len(both) == 2, both
+    assert {f.location.method for f in both} == {"DEPENDENCY", "STATIC"}, both
+    # Malformed secret rows must not sink a scan that already cost money.
+    assert parse_trivy_json(json.dumps({"Results": [{"Target": "x", "Secrets": [{}]}]}))
 
     print("scanners.trivy: ok")
 
