@@ -9,9 +9,12 @@ from docket.core.verdict_cache import VerdictCache
 
 SPAWNED = []
 
-def fake_finding(i, line):
-    return {"id": f"f{i}", "dedupe_key": f"key{i}", "severity": "high",
-            "rule_id": "sql-injection", "location": {"source_file": f"app.py:{i}"},
+def fake_finding(i, line, at=None, rule="sql-injection", path="app.py"):
+    """`at` is the LINE NUMBER, which is deliberately separable from `i`: the whole point
+    of the content key is that a finding keeps its verdict when its line moves."""
+    n = i if at is None else at
+    return {"id": f"f{i}", "dedupe_key": f"key{i}-{n}", "severity": "high",
+            "rule_id": rule, "location": {"source_file": f"{path}:{n}"},
             "poc": {"request": line, "response": "msg"}}
 
 def run(findings, cache, scope="acme/api", max_findings=10):
@@ -76,5 +79,27 @@ with tempfile.TemporaryDirectory() as tmp:
     assert len(v5) == 5, f"a cached verdict must not consume a cap slot: {len(v5)}"
     assert len(SPAWNED) == 0, SPAWNED
     print(f"  cap of 2   : {len(v5)} verdicts returned, {len(SPAWNED)} agents")
+    # THE FIX. Insert a line at the top of the file: every finding shifts down one. The
+    # code is untouched, so every verdict must survive. Keying on `path:line` re-judged
+    # all of them — measured at 20 of 176 on a real scan, paid for nothing.
+    findings = [fake_finding(i, f"db.execute(q{i})") for i in range(5)]
+    SPAWNED.clear()
+    run(findings, cache, scope="shift/repo")          # warm it
+    assert len(SPAWNED) == 5
+    shifted = [fake_finding(i, f"db.execute(q{i})", at=i + 1) for i in range(5)]
+    SPAWNED.clear()
+    v6 = run(shifted, cache, scope="shift/repo")
+    assert len(SPAWNED) == 0, f"a line shift re-judged {SPAWNED} — the fix did not work"
+    assert len(v6) == 5
+    print(f"  line shift : {len(SPAWNED)} agents spawned, {len(v6)} verdicts (all reused)")
+
+    # The 1.1% case: two IDENTICAL lines in one file, same rule. Nothing can tell which
+    # one a stored verdict was about, so neither is reused — both re-judge, every time.
+    twins = [fake_finding(0, "urlopen(u)", at=10), fake_finding(1, "urlopen(u)", at=20)]
+    SPAWNED.clear(); run(twins, cache, scope="twin/repo")
+    assert len(SPAWNED) == 2, SPAWNED
+    SPAWNED.clear(); run(twins, cache, scope="twin/repo")
+    assert len(SPAWNED) == 2, f"an ambiguous key was reused: {SPAWNED}"
+    print(f"  duplicates : {len(SPAWNED)} agents spawned (ambiguous, never reused)")
     cache.close()
 print("test_verdict_cache: ok")

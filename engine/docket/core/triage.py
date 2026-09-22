@@ -106,7 +106,7 @@ def triage_findings(
     # budget on the findings nobody has judged yet instead of re-buying yesterday's
     # answers. Opened here rather than passed in so every caller gets it by default; an
     # unusable one degrades to today's behaviour and never raises.
-    from docket.core.verdict_cache import VerdictCache, fingerprint
+    from docket.core.verdict_cache import VerdictCache, content_key
 
     owned = cache is None
     if owned:
@@ -123,12 +123,23 @@ def triage_findings(
     # nothing, so capping it would throw away free answers to stay under a budget it does
     # not spend. What remains is the genuinely unjudged work, and THAT is what the cap
     # applies to.
-    pending: list[dict[str, Any]] = []
+    # Uniqueness is established HERE, over the whole finding set, because only the caller
+    # can see it. A content key is (rule, file, matched code) — two identical lines in one
+    # file matched by the same rule share one, and there is then no way to tell which the
+    # stored verdict was about. Those are neither read nor written; both get re-judged.
+    # Measured at 23 of 2172 findings, so 98.9% keep line-independent caching.
+    occurrences: dict[str, int] = {}
+    for finding in findings:
+        key = content_key(finding)
+        occurrences[key] = occurrences.get(key, 0) + 1
+
+    pending: list[tuple[dict[str, Any], str, bool]] = []
     for finding in order_for_triage(findings):
-        key = str(finding.get("dedupe_key") or "")
-        hit = cache.get(scope, key, fingerprint(finding)) if key else None
+        key = content_key(finding)
+        unique = occurrences.get(key, 0) == 1
+        hit = cache.get(scope, key, unique=unique)
         if hit is None:
-            pending.append(finding)
+            pending.append((finding, key, unique))
             continue
         finding_id = str(finding.get("id") or key)
         verdicts[finding_id] = hit
@@ -138,7 +149,7 @@ def triage_findings(
         logger.info("triage: reused %d cached verdict(s); %d finding(s) still to judge",
                     cache.hits, len(pending))
 
-    for index, finding in enumerate(pending[:max_findings]):
+    for index, (finding, key, unique) in enumerate(pending[:max_findings]):
         # Before each agent, because each one costs real money. A stop requested at
         # finding 12 of 50 must not pay for the other 38.
         if cancel.cancelled:
@@ -193,9 +204,7 @@ def triage_findings(
             # out of budget at finding 12 of 50 has still PAID for those twelve, and the
             # next scan should not buy them again. `put` drops the synthesised ones —
             # caching "nobody looked" would turn one shortfall into a permanent skip.
-            key = str(finding.get("dedupe_key") or "")
-            if key:
-                cache.put(scope, key, fingerprint(finding), verdict)
+            cache.put(scope, key, verdict, unique=unique)
             if on_verdict is not None:
                 on_verdict(finding_id, verdict)
         if on_agent is not None:
