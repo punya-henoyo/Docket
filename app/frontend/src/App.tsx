@@ -2,9 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
 import { ApiError } from "./api";
 import type {
-  Finding, FixPr, Repo, RunSummary, ScanState, Session, Severity, Verdict, WatchState,
+  Finding, Repo, RunSummary, ScanState, Session, Severity, Verdict, WatchState,
 } from "./types";
-import { Overview } from "./views/Overview";
 import { Scan } from "./views/Scan";
 import { Surface } from "./views/Surface";
 import { Findings } from "./views/Findings";
@@ -12,32 +11,50 @@ import { Repositories } from "./views/Repositories";
 import { Integrations } from "./views/Integrations";
 import { PullRequests } from "./views/PullRequests";
 import { Compliance } from "./views/Compliance";
-import { useHashRoute } from "./hooks/useHashRoute";
+import { useRoute } from "./hooks/useRoute";
+import { useApi } from "./hooks/useApi";
+import { Shell, type Tab } from "./shell/Shell";
+import { hx } from "./hx/hx";
+import { Home } from "./views/Home";
+import { Applications } from "./views/Applications";
+import { ApplicationPage } from "./views/ApplicationPage";
+import { ScansPage } from "./views/ScansPage";
+import { ScanRunPage } from "./views/ScanRunPage";
+import { FindingsPage } from "./views/FindingsPage";
+import { PolicyPage } from "./views/PolicyPage";
+import { ComplianceBaseline } from "./views/ComplianceBaseline";
 
-type View =
-  | "overview" | "scan" | "pulls" | "surface" | "findings" | "compliance" | "repos"
-  | "integrations";
-
-// Ordered by who asks the question: posture first (a security lead), then the live
-// run, then the map, then the detail an engineer works from.
-const VIEWS: { id: View; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "scan", label: "Scan" },
+// The console is the "Code Security" application inside Henoyo. Tabs follow the question a person
+// asks, posture first (a security lead), then the work an engineer does:
+//   Home (who needs me), Applications (one record each), Scans, Pull requests, Findings,
+//   Compliance (what the code says about written requirements), Policy (what must run).
+// The older single-scan views keep working under scandetail / scanfindings / scancompliance, reached
+// from a scan record, so nothing the previous console did is lost.
+const TABS: Tab[] = [
+  { id: "home", label: "Home" },
+  { id: "apps", label: "Applications" },
+  { id: "scans", label: "Scans" },
   { id: "pulls", label: "Pull requests" },
-  { id: "surface", label: "Attack surface" },
   { id: "findings", label: "Findings" },
-  // After Findings, before the settings pages: a control result is a weaker claim than a
-  // reproduced finding, and the order says so.
   { id: "compliance", label: "Compliance" },
-  { id: "repos", label: "Repositories" },
-  { id: "integrations", label: "Integrations" },
+  { id: "policy", label: "Policy" },
+  { id: "repos", label: "Connections" },
 ];
 
-// Derived, not a second hand-maintained list: the router and the sidebar cannot drift.
-const VIEW_IDS = VIEWS.map((v) => v.id);
+/** Which tab lights up for a route that is not itself a tab. */
+const TAB_OF: Record<string, string> = {
+  app: "apps", scan: "scans", scandetail: "scans", surface: "scans", scanfindings: "findings",
+  scancompliance: "compliance", integrations: "repos",
+};
+
+/** Routes drawn by the older, single-scan views. They own their own padding and layout. */
+const LEGACY = new Set(["scandetail", "scanfindings", "scancompliance", "surface", "pulls", "repos", "integrations"]);
 
 export default function App() {
-  const [view, go] = useHashRoute<View>(VIEW_IDS, "overview");
+  const [route, goRoute] = useRoute();
+  const view = route.name;
+  const go = useCallback((name: string, param?: string | null) => goRoute(name, param), [goRoute]);
+  const portfolio = useApi(api.portfolio.getPortfolio, "portfolio", 20000);
   const [session, setSession] = useState<Session | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [repos, setRepos] = useState<Repo[] | null>(null);
@@ -57,9 +74,6 @@ export default function App() {
   const [watch, setWatch] = useState<WatchState | null>(null);
   const [watchBusy, setWatchBusy] = useState(false);
   const [watchError, setWatchError] = useState<string | null>(null);
-  // Fix PRs read live from GitHub, so "Fixes shipped" survives a restart. Polled slower
-  // than the watcher — each pull hits GitHub per repo, and open fix PRs change rarely.
-  const [fixes, setFixes] = useState<FixPr[]>([]);
   const [liveId, setLiveId] = useState<string | null>(
     () => sessionStorage.getItem("docket.liveId"),
   );
@@ -101,19 +115,6 @@ export default function App() {
         .catch(() => {});
     pull();
     const id = setInterval(pull, 5000);
-    return () => { alive = false; clearInterval(id); };
-  }, []);
-
-  // Fix PRs, read from GitHub so the dashboard shows them regardless of restarts. Every
-  // 30s: infrequent because it costs a GitHub call per repo and open fix PRs are stable.
-  useEffect(() => {
-    let alive = true;
-    const pull = () =>
-      api.github.getFixes()
-        .then((f) => { if (alive) setFixes(f); })
-        .catch(() => {});
-    pull();
-    const id = setInterval(pull, 30000);
     return () => { alive = false; clearInterval(id); };
   }, []);
 
@@ -249,7 +250,7 @@ export default function App() {
           finding_count: 0,
           error: null,
         });
-        go("scan");
+        go("scandetail");
       } catch (err) {
         setScanError(err instanceof ApiError ? err.message : String(err));
       }
@@ -273,7 +274,7 @@ export default function App() {
     setSelected(null);
     try {
       setScan(await api.github.getScan(liveId));
-      go("scan");
+      go("scandetail");
     } catch {
       // The server no longer knows this scan — it finished and was evicted, or the
       // console restarted. Forget it rather than leaving a button that does nothing.
@@ -319,7 +320,7 @@ export default function App() {
   const openFinding = useCallback(
     (finding: Finding) => {
       setSelected(finding);
-      go("findings");
+      go("scanfindings");
     },
     [go],
   );
@@ -331,173 +332,114 @@ export default function App() {
     .replace(/^github:/, "")
     .split("@")[0] || null;
 
+  const active = TAB_OF[view] ?? view;
+  const tabs = TABS.map((t) => (t.id === "pulls" && watch?.enabled ? { ...t, badge: "on" } : t));
+  const legacy = LEGACY.has(view);
+
+  const liveBanner =
+    liveId && scan?.id !== liveId ? (
+      <div className={hx("notice")} style={{ marginBottom: 16, display: "flex", gap: 12, alignItems: "center" }}>
+        <span className="live">●</span>
+        <span style={{ flex: 1 }}>
+          A scan is still running{liveRepo ? <> on <b>{liveRepo}</b></> : null}. You are looking at a different run.
+        </span>
+        <button className="btn primary" onClick={resumeLive}>Go to the live scan</button>
+      </div>
+    ) : null;
+
+  const legacyView =
+    view === "scandetail" ? (
+      <Scan
+        scan={scan}
+        counts={counts}
+        scanError={scanError}
+        onSelectFinding={openFinding}
+        newestId={newestId}
+        cweFilter={cweFilter}
+        onCweSelect={setCweFilter}
+        verdictFilter={verdictFilter}
+        onVerdictSelect={setVerdictFilter}
+        onGoRepos={() => go("repos")}
+      />
+    ) : view === "pulls" ? (
+      <PullRequests
+        watch={watch}
+        onStop={() => applyWatch([])}
+        onGoRepos={() => go("repos")}
+        busy={watchBusy}
+        error={watchError}
+      />
+    ) : view === "surface" ? (
+      <Surface scan={scan} onGoRepos={() => go("repos")} />
+    ) : view === "scanfindings" ? (
+      <Findings
+        findings={findings}
+        selected={selected}
+        onSelect={setSelected}
+        scan={scan}
+        onGoRepos={() => go("repos")}
+        cweFilter={cweFilter}
+        onCweSelect={setCweFilter}
+        verdictFilter={verdictFilter}
+        onVerdictSelect={setVerdictFilter}
+      />
+    ) : view === "scancompliance" ? (
+      <Compliance scan={scan} error={scanError} onSelectFinding={openFinding} />
+    ) : view === "repos" ? (
+      <Repositories
+        session={session}
+        repos={repos}
+        error={reposError}
+        onReload={loadRepos}
+        onScan={runScan}
+        watch={watch}
+        onWatch={applyWatch}
+        watchBusy={watchBusy}
+        scanning={scanning}
+        activeRepo={scan?.repo}
+        onGoIntegrations={() => go("integrations")}
+      />
+    ) : (
+      <Integrations session={session} />
+    );
+
+  const portfolioView =
+    view === "apps" ? (
+      <Applications portfolio={portfolio.data} go={go} />
+    ) : view === "app" && route.param ? (
+      <ApplicationPage id={route.param} go={go} />
+    ) : view === "scans" ? (
+      <ScansPage portfolio={portfolio.data} go={go} />
+    ) : view === "scan" && route.param ? (
+      <ScanRunPage
+        run={route.param}
+        go={go}
+        onOpenDetail={async (run) => { await openRun(run); go("scandetail"); }}
+      />
+    ) : view === "findings" ? (
+      <FindingsPage go={go} />
+    ) : view === "compliance" ? (
+      <ComplianceBaseline portfolio={portfolio.data} go={go} />
+    ) : view === "policy" ? (
+      <PolicyPage go={go} />
+    ) : (
+      <Home portfolio={portfolio.data} error={portfolio.error} go={go} />
+    );
+
   return (
-    <div className="shell">
-      <nav className="rail">
-        <div className="brand">
-          <span className="brand-tile" aria-hidden="true" />
-          <span className="brand-mark">docket</span>
-        </div>
-
-        {session?.login && (
-          <div className="org">
-            <Avatar login={session.login} />
-            <span>{session.login}</span>
-            {session.connected && <span className="tag">GITHUB</span>}
-          </div>
-        )}
-
-        {VIEWS.map((v) => (
-          <button
-            key={v.id}
-            className="nav"
-            aria-current={view === v.id ? "page" : undefined}
-            onClick={() => {
-              // Clicking Scan while a run is live returns to THAT run, not to
-              // whatever historical scan happens to be loaded. Losing your way back
-              // to a running scan is how one ends up spending unwatched.
-              if (v.id === "scan" && liveId && scan?.id !== liveId) resumeLive();
-              else go(v.id);
-            }}
-          >
-            {v.label}
-            {v.id === "scan" && (scanning || liveId) && (
-              <span className="live">● live</span>
-            )}
-            {v.id === "pulls" && watch?.enabled && (
-              <span className="live">● on</span>
-            )}
-            {v.id === "findings" && findings.length > 0 && (
-              <span className="count">{findings.length}</span>
-            )}
-          </button>
-        ))}
-
-        <div className="rail-sep" />
-        <div className="rail-foot">
-          <span>by Henoyo</span>
-          <span className="v">v0.1.0</span>
-        </div>
-      </nav>
-
-      <main className="main">
-        {liveId && scan?.id !== liveId && (
-          <div className="banner">
-            <span className="live">●</span>
-            <span>
-              A scan is still running
-              {liveRepo ? <> on <b>{liveRepo}</b></> : null}. You are looking at a
-              different run.
-            </span>
-            <button className="btn primary" onClick={resumeLive}>
-              Go to the live scan
-            </button>
-          </div>
-        )}
-        {bootError ? (
-          <>
-            <div className="page-head">
-              <h1>Cannot reach docket</h1>
-            </div>
-            <div className="panel">
-              <div className="body">
-                <div className="note bad">{bootError}</div>
-                <div className="note">
-                  Start the backend from the repo root, then reload:
-                </div>
-                <div className="evidence">
-                  <pre>docket connect</pre>
-                </div>
-              </div>
-            </div>
-          </>
-        ) : view === "overview" ? (
-          <Overview
-            scan={scan}
-            runs={runs}
-            watch={watch}
-            fixes={fixes}
-            onGoFindings={() => go("findings")}
-            onGoRepos={() => go("repos")}
-            onGoPulls={() => go("pulls")}
-            onSelectFinding={openFinding}
-            onOpenRun={openRun}
-          />
-        ) : view === "scan" ? (
-          <Scan
-            scan={scan}
-            counts={counts}
-            scanError={scanError}
-            onSelectFinding={openFinding}
-            newestId={newestId}
-            cweFilter={cweFilter}
-            onCweSelect={setCweFilter}
-            verdictFilter={verdictFilter}
-            onVerdictSelect={setVerdictFilter}
-            onGoRepos={() => go("repos")}
-          />
-        ) : view === "pulls" ? (
-          <PullRequests
-            watch={watch}
-            onStop={() => applyWatch([])}
-            onGoRepos={() => go("repos")}
-            busy={watchBusy}
-            error={watchError}
-          />
-        ) : view === "surface" ? (
-          <Surface scan={scan} onGoRepos={() => go("repos")} />
-        ) : view === "findings" ? (
-          <Findings
-            findings={findings}
-            selected={selected}
-            onSelect={setSelected}
-            scan={scan}
-            onGoRepos={() => go("repos")}
-            cweFilter={cweFilter}
-            onCweSelect={setCweFilter}
-            verdictFilter={verdictFilter}
-            onVerdictSelect={setVerdictFilter}
-          />
-        ) : view === "compliance" ? (
-          <Compliance scan={scan} error={scanError} onSelectFinding={openFinding} />
-        ) : view === "repos" ? (
-          <Repositories
-            session={session}
-            repos={repos}
-            error={reposError}
-            onReload={loadRepos}
-            onScan={runScan}
-            watch={watch}
-            onWatch={applyWatch}
-            watchBusy={watchBusy}
-            scanning={scanning}
-            activeRepo={scan?.repo}
-            onGoIntegrations={() => go("integrations")}
-          />
-        ) : (
-          <Integrations session={session} />
-        )}
-      </main>
-    </div>
-  );
-}
-
-/** The connected account's GitHub avatar. GitHub serves any account's picture at
- *  github.com/<login>.png with no auth, so this needs no backend call. Falls back to the
- *  login's initial in a disc if the image fails (rate-limited, offline, deleted account). */
-function Avatar({ login }: { login: string }) {
-  const [failed, setFailed] = useState(false);
-  if (failed || !login) {
-    return <span className="avatar avatar-fallback">{login[0]?.toUpperCase() ?? "?"}</span>;
-  }
-  return (
-    <img
-      className="avatar"
-      alt=""
-      width={26}
-      height={26}
-      src={`https://github.com/${encodeURIComponent(login)}.png?size=48`}
-      onError={() => setFailed(true)}
-    />
+    <Shell tabs={tabs} active={active} onGo={(id) => go(id)} user={session?.login ?? null} sample={Boolean(portfolio.data?.sample)}>
+      {bootError ? (
+        <main className="hx-main">
+          <h1>Cannot reach docket</h1>
+          <div className={hx("notice bad")} style={{ marginTop: 12 }}>{bootError}</div>
+          <p>Start the backend from the repo root, then reload:</p>
+          <pre className="mono">docket connect</pre>
+        </main>
+      ) : legacy ? (
+        <main className="main legacy">{liveBanner}{legacyView}</main>
+      ) : (
+        <main className="hx-main">{liveBanner}{portfolioView}</main>
+      )}
+    </Shell>
   );
 }

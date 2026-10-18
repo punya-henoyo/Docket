@@ -1,0 +1,751 @@
+/* Brand font families are loaded from the <link> in the index*.html entries. */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Henoyo UI theme tokens — the ONE seam every surface reads from.
+   Source of truth: henoyo-design/theme/tokens.css (kept in sync).
+
+   Rules
+   • `:root` holds the CLASSIC theme = the pre-seam values, byte-for-byte,
+     so an <html> with no data-theme attribute renders exactly as before.
+   • `[data-theme="editorial"]` overrides ONLY what changes. Every other
+     theme is written the same way: a single attribute block.
+   • Colour tokens are RGB channel triplets ("26 31 28"), NOT hex, so
+     Tailwind alpha modifiers keep working (`bg-ink-900/40` →
+     `rgb(var(--h-ink-900) / 0.4)`). JS consumers (recharts, SVG, export)
+     read them through `useThemeToken()` which returns hex.
+   • Semantic tokens (severity, status, chart) are the only way UI code may
+     express meaning-through-colour. Raw palette families (slate-*, red-*,
+     amber-*, emerald-*) are migrated OUT of components onto these tokens.
+   • Every text-on-surface pair was checked against WCAG 2.2 (AA 4.5:1 text,
+     3:1 non-text). Ratios in comments are measured (contrast.py).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Surfaces ─────────────────────────────────────────────────────── */
+  --h-canvas: 248 246 241; /* #F8F6F1 page (paper-50)             */
+  --h-surface: 255 254 251; /* #FFFEFB cards (paper-0)             */
+  --h-surface-2: 240 237 229; /* #F0EDE5 wells, hover (paper-100)    */
+  --h-surface-3: 227 223 212; /* #E3DFD4 selected / active (paper-200)*/
+  --h-hairline: 227 223 212; /* #E3DFD4 dividers                    */
+  --h-hairline-2: 201 196 181; /* #C9C4B5 stronger divider            */
+  --h-control-border: 201 196 181; /* #C9C4B5 input borders               */
+
+  /* ── Ink / text ───────────────────────────────────────────────────── */
+  --h-ink-900: 26 31 28; /* #1A1F1C */
+  --h-ink-800: 42 48 44; /* #2A302C */
+  --h-ink-700: 63 70 63; /* #3F463F */
+  --h-text: 26 31 28; /* 15.5:1 on canvas                    */
+  --h-text-2: 90 98 91; /* #5A625B  5.8:1 — AA                 */
+  --h-text-3: 135 143 133; /* #878F85  3.1:1 — large/non-text only*/
+  --h-text-inverse: 248 246 241;
+  --h-text-link: 43 74 53; /* #2B4A35  9.8:1                      */
+
+  /* ── Brand (verdant) ──────────────────────────────────────────────── */
+  --h-verdant-50: 233 239 235; /* #E9EFEB */
+  --h-verdant-100: 210 223 214; /* #D2DFD6 */
+  --h-verdant-200: 168 191 175; /* #A8BFAF */
+  --h-verdant-500: 79 119 96; /* #4F7760 */
+  --h-verdant-600: 59 96 71; /* #3B6047 */
+  --h-verdant-700: 43 74 53; /* #2B4A35 */
+  --h-verdant-bright: 79 167 118; /* #4FA776 */
+  --h-verdant-glow: 107 199 143; /* #6BC78F */
+  --h-brand: 79 167 118; /* CLASSIC CTA fill — 2.9:1 with white (fails AA; fixed in editorial) */
+  --h-brand-hover: 43 74 53;
+  --h-brand-fg: 255 254 251;
+  --h-brand-soft: 233 239 235;
+  --h-brand-ring: 79 167 118; /* focus ring — 2.9:1 (fixed in editorial) */
+  --h-brand-indicator: 79 167 118; /* active tab underline, live dots      */
+
+  /* ── Paper aliases (existing class names keep working) ────────────── */
+  --h-paper-0: 255 254 251;
+  --h-paper-50: 248 246 241;
+  --h-paper-100: 240 237 229;
+  --h-paper-200: 227 223 212;
+  --h-paper-300: 201 196 181;
+  --h-paper-400: 160 155 140; /* #A09B8C — unused. text-paper-400 stays a no-op (2.6:1 on paper-0). */
+
+  /* ── App shell (masthead) ─────────────────────────────────────────── */
+  --h-shell-bg: 26 31 28; /* #1A1F1C dark masthead               */
+  --h-shell-fg: 248 246 241;
+  --h-shell-muted: 201 196 181; /* #C9C4B5  9.6:1                      */
+  --h-shell-dim: 160 155 140; /* placeholder / hints                 */
+  --h-shell-hover: 255 255 255; /* used with /10 alpha                 */
+  --h-shell-border: 255 255 255; /* used with /20 alpha                 */
+  --h-shell-accent: 107 199 143; /* #6BC78F wordmark dot                */
+  --h-shell-input: 255 255 255; /* used with /10 alpha                 */
+  --h-shell-hover-a: 0.1;
+  --h-shell-active-a: 0.15;
+  --h-shell-border-a: 0.2;
+
+  /* ── Severity (ordinal; ALWAYS paired with a label + weight) ──────── */
+  --h-sev-critical: 181 52 31;
+  --h-sev-critical-soft: 254 242 242;
+  --h-sev-critical-fg: 255 254 251;
+  --h-sev-high: 217 122 26;
+  --h-sev-high-soft: 255 251 235;
+  --h-sev-high-fg: 26 31 28;
+  --h-sev-medium: 201 162 39;
+  --h-sev-medium-soft: 254 252 232;
+  --h-sev-medium-fg: 26 31 28;
+  --h-sev-low: 79 119 96;
+  --h-sev-low-soft: 233 239 235;
+  --h-sev-low-fg: 255 254 251;
+  --h-sev-info: 90 98 91;
+  --h-sev-info-soft: 240 237 229;
+  --h-sev-info-fg: 255 254 251;
+
+  /* ── Status (nominal) ─────────────────────────────────────────────── */
+  --h-status-success: 59 96 71;
+  --h-status-success-soft: 233 239 235;
+  --h-status-warning: 180 83 9;
+  --h-status-warning-soft: 255 251 235;
+  --h-status-danger: 185 28 28;
+  --h-status-danger-soft: 254 242 242;
+  --h-status-info: 29 78 216;
+  --h-status-info-soft: 239 246 255;
+  --h-status-neutral: 90 98 91;
+  --h-status-neutral-soft: 240 237 229;
+
+  /* ── Charts ───────────────────────────────────────────────────────── */
+  --h-viz-1: 42 102 159; /* #2A669F */
+  --h-viz-2: 169 126 44; /* #A97E2C */
+  --h-viz-3: 99 87 157; /* #63579D */
+  --h-viz-4: 97 150 85; /* #619655 */
+  --h-viz-5: 130 75 133; /* #824B85 */
+  --h-viz-6: 15 155 137; /* #0F9B89 */
+  --h-viz-7: 152 72 60; /* #98483C */
+  --h-viz-8: 17 149 180; /* #1195B4 */
+  --h-viz-9: 147 78 30; /* #934E1E */
+  --h-viz-10: 10 153 159; /* #0A999F */
+  --h-viz-11: 150 69 91; /* #96455B */
+  --h-viz-12: 141 139 50; /* #8D8B32 */
+  --h-viz-other: 138 135 126; /* #8A877E */
+  --h-viz-seq-0: 252 238 236; /* #FCEEEC */
+  --h-viz-seq-1: 238 203 197; /* #EECBC5 */
+  --h-viz-seq-2: 217 157 146; /* #D99D92 */
+  --h-viz-seq-3: 174 98 86; /* #AE6256 */
+  --h-viz-seq-4: 114 49 39; /* #723127 */
+  --h-viz-div-neg2: 152 72 60; /* #98483C */
+  --h-viz-div-neg1: 205 149 139; /* #CD958B */
+  --h-viz-div-mid: 230 228 225; /* #E6E4E1 */
+  --h-viz-div-pos1: 136 168 201; /* #88A8C9 */
+  --h-viz-div-pos2: 42 102 159; /* #2A669F */
+  --h-chart-scheme: traffic_light;
+  --h-chart-grid: 227 223 212;
+  --h-chart-axis: 135 143 133;
+  --h-chart-label: 90 98 91;
+  --h-seq-1: 254 242 242;
+  --h-seq-2: 252 165 165;
+  --h-seq-3: 239 68 68;
+  --h-seq-4: 185 28 28;
+  --h-seq-5: 127 29 29;
+
+  /* ── Typography ───────────────────────────────────────────────────── */
+  --h-font-display: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+  --h-font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --h-font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --h-font-heading: var(--h-font-display); /* CLASSIC: h1–h4 all serif   */
+  --h-font-eyebrow: var(--h-font-mono); /* CLASSIC: mono eyebrows      */
+  --h-font-number: var(--h-font-display); /* KPI display numbers         */
+  --h-text-base: 14.5px;
+  --h-leading-base: 1.55;
+  --h-eyebrow-tracking: 0.1em;
+  --h-heading-weight: 500;
+  --h-heading-tracking: -0.01em;
+
+  /* ── Shape, elevation, density ────────────────────────────────────── */
+  --h-radius-card: 10px;
+  --h-radius-control: 6px;
+  --h-radius-chip: 4px;
+  --h-shadow-1: 0 1px 2px rgba(26, 31, 28, 0.06);
+  --h-shadow-2: 0 2px 6px rgba(26, 31, 28, 0.05);
+  --h-shadow-3: 0 8px 24px rgba(26, 31, 28, 0.1);
+  --h-shadow-4: 0 12px 40px rgba(26, 31, 28, 0.16);
+  --h-shadow-5: 0 24px 60px rgba(26, 31, 28, 0.22);
+  --h-row-height: 40px;
+  --h-row-height-compact: 32px; /* desktop data tables only — never for touch targets */
+  --h-touch-target: 44px; /* SC 2.5.8 minimum 24px; 44px for primary/touch actions */
+  --h-focus-width: 2px;
+  --h-focus-offset: 2px;
+  --h-gutter: 24px;
+  --h-gutter-compact: 16px;
+  --h-space-half: 2px;
+  --h-space-1: 4px;
+  --h-space-2: 8px;
+  --h-space-3: 12px;
+  --h-space-4: 16px;
+  --h-space-5: 20px;
+  --h-space-6: 24px;
+  --h-space-7: 32px;
+  --h-space-8: 40px;
+
+  /* Visual Kit density (docs/technical/visual-kit.md#density). Every kit web
+     component reads these with a fallback equal to this default, so absent
+     tokens change nothing. Compact tightens them in one place. */
+  --h-kit-pad: 22px; /* card side padding (head, body, foot) */
+  --h-kit-pad-y: 18px; /* head top and body bottom padding */
+  --h-kit-head-pb: var(--h-space-3); /* head bottom padding */
+  --h-kit-gap: var(--h-space-3); /* gap between header blocks */
+  --h-kit-gap-sm: 6px; /* gap inside stacks, legends, chip rows */
+  --h-kit-row-py: 10px; /* vertical padding of a list row or card */
+  --h-kit-row-px: 14px; /* horizontal padding of a list row or card */
+  --h-kit-row: 36px; /* min height of an interactive grid cell */
+  --h-kit-lane: 48px; /* min height of a timeline or clock lane */
+  --h-kit-title-size: 20px; /* card and empty-state title */
+  --h-kit-empty-py: var(--h-space-7); /* empty-state vertical padding */
+  --h-grid-columns-wide: 12;
+  --h-grid-columns-mid: 8;
+  --h-grid-columns-narrow: 4;
+  --h-opacity-disabled: 0.5;
+  --h-icon-stroke: 2;
+  --h-shell-height: 52px;
+  --h-motion: 150ms;
+  --h-motion-fast: 100ms;
+  --h-motion-slow: 250ms;
+  --h-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   EDITORIAL — the proposed default. Restraint, one accent, light masthead,
+   serif reserved for the page title and display numbers, accessible
+   severity ramp in one hue, print-safe chart palette.
+   ═══════════════════════════════════════════════════════════════════════ */
+[data-theme='editorial'] {
+  --h-text-3: 107 115 109; /* #6B736D  4.5:1 — AA for small text  */
+  --h-control-border: 138 144 136; /* #8A9088  ≥3:1 non-text (SC 1.4.11)  */
+  --h-paper-400: 138 144 136;
+
+  --h-brand: 59 96 71; /* #3B6047  7.1:1 with white — AAA     */
+  --h-brand-hover: 43 74 53;
+  /* #3A7C58. 59 96 71 is 6.7:1 on paper and 2.35:1 on the ink masthead,
+     which this port does not restyle. This ring clears 3:1 on both. */
+  --h-brand-ring: 58 124 88;
+  --h-brand-indicator: 59 96 71;
+
+  /* light masthead: the single biggest "not a dark SOC tool" cue */
+  --h-shell-bg: 255 254 251;
+  --h-shell-fg: 26 31 28;
+  --h-shell-muted: 90 98 91;
+  --h-shell-dim: 107 115 109;
+  --h-shell-hover: 26 31 28; /* with /6 alpha → warm grey hover     */
+  --h-shell-border: 26 31 28; /* with /12 alpha                      */
+  --h-shell-accent: 59 96 71;
+  --h-shell-input: 26 31 28; /* with /5 alpha                       */
+  --h-shell-hover-a: 0.06;
+  --h-shell-active-a: 0.1;
+  --h-shell-border-a: 0.12;
+
+  /* severity: one hue (oxblood) for the two that must interrupt you
+     (critical L≈0.05 < high L≈0.10 < everything else L≈0.13), earth tones
+     for medium/low/info which are told apart by hue + the mandatory word +
+     chip weight (fill / outline / tint), NOT by lightness. Colour-only
+     surfaces (heat cells) use --h-seq-*, which IS monotonic. All ≥ 4.5:1. */
+  --h-sev-critical: 110 42 28;
+  --h-sev-critical-soft: 242 224 219;
+  --h-sev-critical-fg: 255 254 251; /* 10.4 / 8.2 */
+  --h-sev-high: 150 64 48;
+  --h-sev-high-soft: 246 228 222;
+  --h-sev-high-fg: 255 254 251; /*  6.8 / 5.6 */
+  --h-sev-medium: 138 90 30;
+  --h-sev-medium-soft: 245 235 217;
+  --h-sev-medium-fg: 255 254 251; /*  5.9 / 5.0 */
+  --h-sev-low: 79 107 91;
+  --h-sev-low-soft: 230 238 232;
+  --h-sev-low-fg: 255 254 251; /*  5.8 / 5.0 */
+  --h-sev-info: 95 103 95;
+  --h-sev-info-soft: 236 236 232;
+  --h-sev-info-fg: 255 254 251; /*  5.8 / 4.9 */
+
+  --h-status-success: 59 96 71;
+  --h-status-success-soft: 233 239 235;
+  --h-status-warning: 138 90 30;
+  --h-status-warning-soft: 245 235 217;
+  --h-status-danger: 150 64 48;
+  --h-status-danger-soft: 246 228 222;
+  --h-status-info: 74 96 104;
+  --h-status-info-soft: 230 235 236; /* 6.6 / 5.5 — grey-teal, not SaaS blue */
+  --h-status-neutral: 95 103 95;
+  --h-status-neutral-soft: 236 236 232;
+
+  /* categorical, muted, projector- and print-safe; all ≥3:1 vs surface */
+  --h-viz-1: 42 102 159; /* #2A669F */
+  --h-viz-2: 169 126 44; /* #A97E2C */
+  --h-viz-3: 99 87 157; /* #63579D */
+  --h-viz-4: 97 150 85; /* #619655 */
+  --h-viz-5: 130 75 133; /* #824B85 */
+  --h-viz-6: 15 155 137; /* #0F9B89 */
+  --h-viz-7: 152 72 60; /* #98483C */
+  --h-viz-8: 17 149 180; /* #1195B4 */
+  --h-viz-9: 147 78 30; /* #934E1E */
+  --h-viz-10: 10 153 159; /* #0A999F */
+  --h-viz-11: 150 69 91; /* #96455B */
+  --h-viz-12: 141 139 50; /* #8D8B32 */
+  --h-viz-other: 138 135 126; /* #8A877E */
+  --h-viz-seq-0: 252 238 236; /* #FCEEEC */
+  --h-viz-seq-1: 238 203 197; /* #EECBC5 */
+  --h-viz-seq-2: 217 157 146; /* #D99D92 */
+  --h-viz-seq-3: 174 98 86; /* #AE6256 */
+  --h-viz-seq-4: 114 49 39; /* #723127 */
+  --h-viz-div-neg2: 152 72 60; /* #98483C */
+  --h-viz-div-neg1: 205 149 139; /* #CD958B */
+  --h-viz-div-mid: 230 228 225; /* #E6E4E1 */
+  --h-viz-div-pos1: 136 168 201; /* #88A8C9 */
+  --h-viz-div-pos2: 42 102 159; /* #2A669F */
+  --h-chart-scheme: editorial;
+  --h-chart-grid: 234 230 220;
+  --h-chart-axis: 107 115 109;
+  --h-chart-label: 90 98 91;
+  --h-seq-1: 242 224 219;
+  --h-seq-2: 227 185 174;
+  --h-seq-3: 201 140 124;
+  --h-seq-4: 168 94 75;
+  --h-seq-5: 110 42 28;
+
+  /* typography: serif is a title voice, not a UI voice */
+  --h-font-heading: var(--h-font-ui); /* h2–h4 → Inter 600           */
+  --h-font-eyebrow: var(--h-font-ui); /* eyebrows → Inter 600        */
+  --h-eyebrow-tracking: 0.06em;
+  --h-heading-weight: 600;
+  --h-heading-tracking: -0.005em;
+
+  --h-text-base: 15px; /* editorial body; classic stays 14.5px */
+  --h-radius-card: 8px;
+  --h-radius-control: 6px;
+  --h-icon-stroke: 1.5;
+  --h-shell-height: 48px;
+  --h-space-half: 2px;
+  --h-space-1: 4px;
+  --h-space-2: 8px;
+  --h-space-3: 12px;
+  --h-space-4: 16px;
+  --h-space-5: 20px;
+  --h-space-6: 24px;
+  --h-space-7: 32px;
+  --h-space-8: 40px;
+  --h-grid-columns-wide: 12;
+  --h-grid-columns-mid: 8;
+  --h-grid-columns-narrow: 4;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   COMPACT, BROADSHEET, CONSOLE — three complete themes, reviewed by glm52 +
+   deepseekv4 (tasks/2026-09-16-theme-system-pre-brief.md and the postcode
+   brief). Each restates editorial's full colour block: `[data-theme="X"]`
+   blocks do not chain off one another — anything a block omits falls back
+   to `:root` (classic, 11 documented AA exceptions), never to editorial.
+   Reusing editorial's page-body palette verbatim means Compact and
+   Broadsheet inherit its already-measured AA pairs with zero new colour
+   risk; Console is the one theme that changes the shell from light to
+   dark, so its shell tokens are freshly computed and commented with the
+   ratio against shell-bg (24,27,29) below.
+
+   --h-space-* and --h-touch-target are DELIBERATELY IDENTICAL across every
+   theme, including these three, and are not redeclared here. This branch
+   does NOT override Tailwind's spacing scale: `mt-1`/`mt-4` etc. keep
+   their stock values, and the --h-space-* tokens are not wired to them
+   (--h-space-7/8 are 32/40px while Tailwind's 7/8 are 28/32px, so a
+   spacing override would shift Setup's existing rhythm). Density lives in
+   row-height, gutter, shell-height, radius and shadow instead; use those
+   tokens or an explicit value for "denser" spacing.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── COMPACT: editorial's palette at higher density — flatter, sharper- ──
+   cornered, sans throughout, for a screen that needs more rows, not more
+   air. ──────────────────────────────────────────────────────────────── */
+[data-theme='compact'] {
+  --h-text-3: 107 115 109;
+  --h-control-border: 138 144 136;
+  --h-paper-400: 138 144 136;
+
+  --h-brand: 59 96 71;
+  --h-brand-hover: 43 74 53;
+  --h-brand-ring: 58 124 88;
+  --h-brand-indicator: 59 96 71;
+
+  --h-shell-bg: 255 254 251;
+  --h-shell-fg: 26 31 28;
+  --h-shell-muted: 90 98 91;
+  --h-shell-dim: 107 115 109;
+  --h-shell-hover: 26 31 28;
+  --h-shell-border: 26 31 28;
+  --h-shell-accent: 59 96 71;
+  --h-shell-input: 26 31 28;
+  --h-shell-hover-a: 0.06;
+  --h-shell-active-a: 0.1;
+  --h-shell-border-a: 0.12;
+
+  --h-sev-critical: 110 42 28;
+  --h-sev-critical-soft: 242 224 219;
+  --h-sev-critical-fg: 255 254 251;
+  --h-sev-high: 150 64 48;
+  --h-sev-high-soft: 246 228 222;
+  --h-sev-high-fg: 255 254 251;
+  --h-sev-medium: 138 90 30;
+  --h-sev-medium-soft: 245 235 217;
+  --h-sev-medium-fg: 255 254 251;
+  --h-sev-low: 79 107 91;
+  --h-sev-low-soft: 230 238 232;
+  --h-sev-low-fg: 255 254 251;
+  --h-sev-info: 95 103 95;
+  --h-sev-info-soft: 236 236 232;
+  --h-sev-info-fg: 255 254 251;
+
+  --h-status-success: 59 96 71;
+  --h-status-success-soft: 233 239 235;
+  --h-status-warning: 138 90 30;
+  --h-status-warning-soft: 245 235 217;
+  --h-status-danger: 150 64 48;
+  --h-status-danger-soft: 246 228 222;
+  --h-status-info: 74 96 104;
+  --h-status-info-soft: 230 235 236;
+  --h-status-neutral: 95 103 95;
+  --h-status-neutral-soft: 236 236 232;
+
+  --h-viz-1: 42 102 159; /* #2A669F */
+  --h-viz-2: 169 126 44; /* #A97E2C */
+  --h-viz-3: 99 87 157; /* #63579D */
+  --h-viz-4: 97 150 85; /* #619655 */
+  --h-viz-5: 130 75 133; /* #824B85 */
+  --h-viz-6: 15 155 137; /* #0F9B89 */
+  --h-viz-7: 152 72 60; /* #98483C */
+  --h-viz-8: 17 149 180; /* #1195B4 */
+  --h-viz-9: 147 78 30; /* #934E1E */
+  --h-viz-10: 10 153 159; /* #0A999F */
+  --h-viz-11: 150 69 91; /* #96455B */
+  --h-viz-12: 141 139 50; /* #8D8B32 */
+  --h-viz-other: 138 135 126; /* #8A877E */
+  --h-viz-seq-0: 252 238 236; /* #FCEEEC */
+  --h-viz-seq-1: 238 203 197; /* #EECBC5 */
+  --h-viz-seq-2: 217 157 146; /* #D99D92 */
+  --h-viz-seq-3: 174 98 86; /* #AE6256 */
+  --h-viz-seq-4: 114 49 39; /* #723127 */
+  --h-viz-div-neg2: 152 72 60; /* #98483C */
+  --h-viz-div-neg1: 205 149 139; /* #CD958B */
+  --h-viz-div-mid: 230 228 225; /* #E6E4E1 */
+  --h-viz-div-pos1: 136 168 201; /* #88A8C9 */
+  --h-viz-div-pos2: 42 102 159; /* #2A669F */
+  --h-chart-scheme: editorial;
+  --h-chart-grid: 234 230 220;
+  --h-chart-axis: 107 115 109;
+  --h-chart-label: 90 98 91;
+  --h-seq-1: 242 224 219;
+  --h-seq-2: 227 185 174;
+  --h-seq-3: 201 140 124;
+  --h-seq-4: 168 94 75;
+  --h-seq-5: 110 42 28;
+
+  /* type: sans throughout except h1, which index.css always sets to
+     font-display regardless of theme. */
+  --h-font-heading: var(--h-font-ui);
+  --h-font-eyebrow: var(--h-font-ui);
+  --h-eyebrow-tracking: 0.04em;
+  --h-heading-weight: 600;
+  --h-heading-tracking: -0.005em;
+  --h-text-base: 13.5px;
+  --h-leading-base: 1.45;
+
+  /* shape / density: sharper, tighter, flatter. touch-target stays the
+     44px floor (SC 2.5.8) — density is a desktop concern. */
+  --h-radius-card: 4px;
+  --h-radius-control: 4px;
+  --h-radius-chip: 3px;
+  --h-icon-stroke: 1.75;
+  --h-shell-height: 44px;
+  --h-row-height: 34px;
+  --h-row-height-compact: 26px;
+  --h-gutter: 20px;
+  --h-gutter-compact: 12px;
+
+  /* kit density: tighter cards; interactive rows stay >= 32px, text >= 12px */
+  --h-kit-pad: var(--h-space-3);
+  --h-kit-pad-y: 10px;
+  --h-kit-head-pb: var(--h-space-2);
+  --h-kit-gap: var(--h-space-2);
+  --h-kit-gap-sm: var(--h-space-1);
+  --h-kit-row-py: 6px;
+  --h-kit-row-px: 10px;
+  --h-kit-row: 32px;
+  --h-kit-lane: 40px;
+  --h-kit-title-size: 16px;
+  --h-kit-empty-py: var(--h-space-4);
+  --h-shadow-1: 0 1px 1px rgba(26, 31, 28, 0.05);
+  --h-shadow-2: 0 1px 3px rgba(26, 31, 28, 0.06);
+  --h-shadow-3: 0 2px 8px rgba(26, 31, 28, 0.07);
+  --h-shadow-4: 0 4px 14px rgba(26, 31, 28, 0.09);
+  --h-shadow-5: 0 8px 24px rgba(26, 31, 28, 0.12);
+}
+
+/* ── BROADSHEET: editorial's palette, airier and softer — serif extends ──
+   to h2-h4 (the one theme where the founder's serif-titles rule reaches
+   past h1), generous spacing, pronounced elevation. ─────────────────── */
+[data-theme='broadsheet'] {
+  --h-text-3: 107 115 109;
+  --h-control-border: 138 144 136;
+  --h-paper-400: 138 144 136;
+
+  --h-brand: 59 96 71;
+  --h-brand-hover: 43 74 53;
+  --h-brand-ring: 58 124 88;
+  --h-brand-indicator: 59 96 71;
+
+  --h-shell-bg: 255 254 251;
+  --h-shell-fg: 26 31 28;
+  --h-shell-muted: 90 98 91;
+  --h-shell-dim: 107 115 109;
+  --h-shell-hover: 26 31 28;
+  --h-shell-border: 26 31 28;
+  --h-shell-accent: 59 96 71;
+  --h-shell-input: 26 31 28;
+  --h-shell-hover-a: 0.06;
+  --h-shell-active-a: 0.1;
+  --h-shell-border-a: 0.12;
+
+  --h-sev-critical: 110 42 28;
+  --h-sev-critical-soft: 242 224 219;
+  --h-sev-critical-fg: 255 254 251;
+  --h-sev-high: 150 64 48;
+  --h-sev-high-soft: 246 228 222;
+  --h-sev-high-fg: 255 254 251;
+  --h-sev-medium: 138 90 30;
+  --h-sev-medium-soft: 245 235 217;
+  --h-sev-medium-fg: 255 254 251;
+  --h-sev-low: 79 107 91;
+  --h-sev-low-soft: 230 238 232;
+  --h-sev-low-fg: 255 254 251;
+  --h-sev-info: 95 103 95;
+  --h-sev-info-soft: 236 236 232;
+  --h-sev-info-fg: 255 254 251;
+
+  --h-status-success: 59 96 71;
+  --h-status-success-soft: 233 239 235;
+  --h-status-warning: 138 90 30;
+  --h-status-warning-soft: 245 235 217;
+  --h-status-danger: 150 64 48;
+  --h-status-danger-soft: 246 228 222;
+  --h-status-info: 74 96 104;
+  --h-status-info-soft: 230 235 236;
+  --h-status-neutral: 95 103 95;
+  --h-status-neutral-soft: 236 236 232;
+
+  --h-viz-1: 42 102 159; /* #2A669F */
+  --h-viz-2: 169 126 44; /* #A97E2C */
+  --h-viz-3: 99 87 157; /* #63579D */
+  --h-viz-4: 97 150 85; /* #619655 */
+  --h-viz-5: 130 75 133; /* #824B85 */
+  --h-viz-6: 15 155 137; /* #0F9B89 */
+  --h-viz-7: 152 72 60; /* #98483C */
+  --h-viz-8: 17 149 180; /* #1195B4 */
+  --h-viz-9: 147 78 30; /* #934E1E */
+  --h-viz-10: 10 153 159; /* #0A999F */
+  --h-viz-11: 150 69 91; /* #96455B */
+  --h-viz-12: 141 139 50; /* #8D8B32 */
+  --h-viz-other: 138 135 126; /* #8A877E */
+  --h-viz-seq-0: 252 238 236; /* #FCEEEC */
+  --h-viz-seq-1: 238 203 197; /* #EECBC5 */
+  --h-viz-seq-2: 217 157 146; /* #D99D92 */
+  --h-viz-seq-3: 174 98 86; /* #AE6256 */
+  --h-viz-seq-4: 114 49 39; /* #723127 */
+  --h-viz-div-neg2: 152 72 60; /* #98483C */
+  --h-viz-div-neg1: 205 149 139; /* #CD958B */
+  --h-viz-div-mid: 230 228 225; /* #E6E4E1 */
+  --h-viz-div-pos1: 136 168 201; /* #88A8C9 */
+  --h-viz-div-pos2: 42 102 159; /* #2A669F */
+  --h-chart-scheme: editorial;
+  --h-chart-grid: 234 230 220;
+  --h-chart-axis: 107 115 109;
+  --h-chart-label: 90 98 91;
+  --h-seq-1: 242 224 219;
+  --h-seq-2: 227 185 174;
+  --h-seq-3: 201 140 124;
+  --h-seq-4: 168 94 75;
+  --h-seq-5: 110 42 28;
+
+  --h-font-heading: var(--h-font-display);
+  --h-font-eyebrow: var(--h-font-ui);
+  --h-eyebrow-tracking: 0.08em;
+  --h-heading-weight: 500;
+  --h-heading-tracking: 0em;
+  --h-text-base: 15.5px;
+  --h-leading-base: 1.65;
+
+  --h-radius-card: 14px;
+  --h-radius-control: 8px;
+  --h-radius-chip: 6px;
+  --h-icon-stroke: 1.5;
+  --h-shell-height: 56px;
+  --h-row-height: 44px;
+  --h-row-height-compact: 36px;
+  --h-gutter: 32px;
+  --h-gutter-compact: 20px;
+  --h-shadow-1: 0 1px 3px rgba(26, 31, 28, 0.07);
+  --h-shadow-2: 0 3px 10px rgba(26, 31, 28, 0.08);
+  --h-shadow-3: 0 10px 30px rgba(26, 31, 28, 0.13);
+  --h-shadow-4: 0 16px 48px rgba(26, 31, 28, 0.19);
+  --h-shadow-5: 0 28px 70px rgba(26, 31, 28, 0.25);
+}
+
+/* ── CONSOLE: technical, dark shell, tabular numerals. Page body stays ──
+   editorial's verified light palette — this is a dark SHELL, not a dark
+   theme (full dark-canvas theming is parked, theme-architecture.md §9).
+   Shell tokens are new and measured against shell-bg (24,27,29), L=0.0096
+   (contrast.py-equivalent math in tasks/2026-09-16-theme-system-pre-brief.md,
+   reviewed by glm52 + deepseekv4):
+     shell-fg   240 241 239  15.27:1 on shell-bg, 9.96:1 on the active-a
+                (0.14) input tint.
+     shell-muted 168 175 172  7.74:1 on shell-bg, 5.05:1 on the active-a
+                tint — both checked, not just the resting shell-bg case,
+                since shell-input (below) composites over whichever
+                element it sits on and hover/active read differently.
+     shell-dim  165 172 168   7.47:1 on shell-bg, 5.98:1 on the hover-a
+                (0.08) input tint, 4.87:1 on the active-a (0.14) tint —
+                checked at both alphas because the alpha darkens toward
+                shell-bg on hover and lightens further on focus, and the
+                first draft (150 158 154) cleared shell-bg but fell to
+                4.11:1 at the focused/active-a input background.
+     shell-input is 255 255 255 used only as `bg-shell-input/[alpha]` —
+                a live white overlay composited over shell-bg at
+                shell-hover-a / shell-active-a by the component itself
+                (PersonaToggle, SearchBar, AvatarMenu, ThemeToggle all
+                use this exact pattern), not a separate flat token value,
+                so the two blended figures above ARE the shell-input
+                pairs, not an approximation of them.
+     shell-accent 107 199 143 (reused verdant-glow) 8.40:1 — grepped every
+                use of `shell-accent` in src/shell; the only hit is
+                `text-shell-accent` on the wordmark's accent letter, never
+                a fill, so no white-on-accent pair exists to check.
+     shell-border white-overlay at alpha 0.36 -> blended ~(107,109,110)
+                3.33:1 (classic's own 0.20 alpha gives 1.90:1 against this
+                same dark bg and is one of classic's 11 documented AA
+                exceptions — corrected from an earlier ~2.4:1 estimate
+                that used an eyeballed "solid" approximation instead of
+                the actual alpha-blend formula; the conclusion — reuse
+                fails, raise the alpha — was unchanged either way).
+     brand-ring 58 124 88, the same value editorial uses. 59 96 71
+                is 2.43:1 on this shell-bg and 2.35:1 on the still-dark
+                ink masthead, so it fails SC 1.4.11 in both places.
+                58 124 88 is 3.46:1 on this shell-bg, 3.35:1 on ink-900,
+                4.95:1 surface, 4.63:1 canvas, 4.27:1
+                surface-2, 3.75:1 surface-3 — the one token shared
+                between the dark shell and the light page body, so it
+                has to clear 3:1 in every direction at once;
+                a first draft (70,140,100) cleared canvas/surface but
+                left only a 0.04 margin on surface-3, thin enough that a
+                future token tweak could silently break it, so this
+                value trades a little shell-bg margin for real headroom
+                on every surface tier. check-design-system.sh enforces
+                brand-ring as the only sanctioned focus-ring token, so a
+                per-component escape hatch isn't an option. ──────────── */
+[data-theme='console'] {
+  --h-text-3: 107 115 109;
+  --h-control-border: 138 144 136;
+  --h-paper-400: 138 144 136;
+
+  --h-brand: 59 96 71;
+  --h-brand-hover: 43 74 53;
+  --h-brand-ring: 58 124 88;
+  --h-brand-indicator: 59 96 71;
+
+  --h-shell-bg: 24 27 29;
+  --h-shell-fg: 240 241 239;
+  --h-shell-muted: 168 175 172;
+  --h-shell-dim: 165 172 168;
+  --h-shell-hover: 255 255 255;
+  --h-shell-border: 255 255 255;
+  --h-shell-accent: 107 199 143;
+  --h-shell-input: 255 255 255;
+  --h-shell-hover-a: 0.08;
+  --h-shell-active-a: 0.14;
+  --h-shell-border-a: 0.36;
+
+  --h-sev-critical: 110 42 28;
+  --h-sev-critical-soft: 242 224 219;
+  --h-sev-critical-fg: 255 254 251;
+  --h-sev-high: 150 64 48;
+  --h-sev-high-soft: 246 228 222;
+  --h-sev-high-fg: 255 254 251;
+  --h-sev-medium: 138 90 30;
+  --h-sev-medium-soft: 245 235 217;
+  --h-sev-medium-fg: 255 254 251;
+  --h-sev-low: 79 107 91;
+  --h-sev-low-soft: 230 238 232;
+  --h-sev-low-fg: 255 254 251;
+  --h-sev-info: 95 103 95;
+  --h-sev-info-soft: 236 236 232;
+  --h-sev-info-fg: 255 254 251;
+
+  --h-status-success: 59 96 71;
+  --h-status-success-soft: 233 239 235;
+  --h-status-warning: 138 90 30;
+  --h-status-warning-soft: 245 235 217;
+  --h-status-danger: 150 64 48;
+  --h-status-danger-soft: 246 228 222;
+  --h-status-info: 74 96 104;
+  --h-status-info-soft: 230 235 236;
+  --h-status-neutral: 95 103 95;
+  --h-status-neutral-soft: 236 236 232;
+
+  --h-viz-1: 42 102 159; /* #2A669F */
+  --h-viz-2: 169 126 44; /* #A97E2C */
+  --h-viz-3: 99 87 157; /* #63579D */
+  --h-viz-4: 97 150 85; /* #619655 */
+  --h-viz-5: 130 75 133; /* #824B85 */
+  --h-viz-6: 15 155 137; /* #0F9B89 */
+  --h-viz-7: 152 72 60; /* #98483C */
+  --h-viz-8: 17 149 180; /* #1195B4 */
+  --h-viz-9: 147 78 30; /* #934E1E */
+  --h-viz-10: 10 153 159; /* #0A999F */
+  --h-viz-11: 150 69 91; /* #96455B */
+  --h-viz-12: 141 139 50; /* #8D8B32 */
+  --h-viz-other: 138 135 126; /* #8A877E */
+  --h-viz-seq-0: 252 238 236; /* #FCEEEC */
+  --h-viz-seq-1: 238 203 197; /* #EECBC5 */
+  --h-viz-seq-2: 217 157 146; /* #D99D92 */
+  --h-viz-seq-3: 174 98 86; /* #AE6256 */
+  --h-viz-seq-4: 114 49 39; /* #723127 */
+  --h-viz-div-neg2: 152 72 60; /* #98483C */
+  --h-viz-div-neg1: 205 149 139; /* #CD958B */
+  --h-viz-div-mid: 230 228 225; /* #E6E4E1 */
+  --h-viz-div-pos1: 136 168 201; /* #88A8C9 */
+  --h-viz-div-pos2: 42 102 159; /* #2A669F */
+  --h-chart-scheme: editorial;
+  --h-chart-grid: 234 230 220;
+  --h-chart-axis: 107 115 109;
+  --h-chart-label: 90 98 91;
+  --h-seq-1: 242 224 219;
+  --h-seq-2: 227 185 174;
+  --h-seq-3: 201 140 124;
+  --h-seq-4: 168 94 75;
+  --h-seq-5: 110 42 28;
+
+  --h-font-heading: var(--h-font-ui);
+  --h-font-eyebrow: var(--h-font-mono);
+  --h-font-number: var(--h-font-mono);
+  --h-eyebrow-tracking: 0.08em;
+  --h-heading-weight: 600;
+  --h-heading-tracking: -0.005em;
+  --h-text-base: 13.5px;
+  --h-leading-base: 1.45;
+
+  --h-radius-card: 6px;
+  --h-radius-control: 4px;
+  --h-radius-chip: 4px;
+  --h-icon-stroke: 1.75;
+  --h-shell-height: 46px;
+  --h-row-height: 34px;
+  --h-row-height-compact: 26px;
+  --h-gutter: 20px;
+  --h-gutter-compact: 12px;
+  --h-shadow-1: 0 1px 1px rgba(26, 31, 28, 0.05);
+  --h-shadow-2: 0 1px 3px rgba(26, 31, 28, 0.06);
+  --h-shadow-3: 0 2px 8px rgba(26, 31, 28, 0.07);
+  --h-shadow-4: 0 4px 14px rgba(26, 31, 28, 0.09);
+  --h-shadow-5: 0 8px 24px rgba(26, 31, 28, 0.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --h-motion: 0ms;
+    --h-motion-fast: 0ms;
+    --h-motion-slow: 0ms;
+  }
+}
