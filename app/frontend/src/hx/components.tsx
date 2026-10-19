@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import type { Level, Origin, Proof, PortfolioFinding } from "../portfolio";
 import { hx } from "./hx";
 
@@ -115,15 +115,24 @@ export function useSort<T>(rows: T[], accessors: Record<string, (r: T) => string
   }, [rows, sort]);
   const next = (key: string) =>
     setSort((s) => (!s || s.key !== key ? { key, dir: "asc" } : s.dir === "asc" ? { key, dir: "desc" } : null));
-  const Th = ({ k, children }: { k: string; children: ReactNode }) => {
-    const active = sort?.key === k ? sort.dir : null;
-    return (
-      <th aria-sort={active === "asc" ? "ascending" : active === "desc" ? "descending" : "none"}>
-        <button type="button" className={hx("sort")} onClick={() => next(k)}>
-          {children}<span aria-hidden="true">{active === "asc" ? " ▲" : active === "desc" ? " ▼" : ""}</span>
-        </button>
-      </th>
-    );
-  };
+  // Th must keep one identity across renders: a component recreated per render remounts its DOM, and a
+  // keyboard user loses focus on the header they just pressed. It reads the latest sort through a ref.
+  const latest = useRef({ sort, next });
+  latest.current = { sort, next };
+  const Th = useMemo(
+    () =>
+      function Th({ k, children }: { k: string; children: ReactNode }) {
+        const { sort: cur, next: go } = latest.current;
+        const active = cur?.key === k ? cur.dir : null;
+        return (
+          <th aria-sort={active === "asc" ? "ascending" : active === "desc" ? "descending" : "none"}>
+            <button type="button" className={hx("sort")} onClick={() => go(k)}>
+              {children}<span aria-hidden="true">{active === "asc" ? " ▲" : active === "desc" ? " ▼" : ""}</span>
+            </button>
+          </th>
+        );
+      },
+    [],
+  );
   return { rows: sorted, Th };
 }
