@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -186,6 +187,12 @@ class ScanResult:
     # exactly this reason; docket had no equivalent field.
     status: str = "completed"          # completed | stopped | error
     stages: dict = field(default_factory=dict)
+    # WHEN each stage ran, in epoch seconds: {stage: {"started": t, "ended": t}}. `stages`
+    # says what happened; this says for how long, which the console's pipeline view needs
+    # to draw a lane. Recorded where the state change is already observed, so it cannot
+    # drift from `stages`. A stage that never began has no entry rather than a zero.
+    stage_timings: dict = field(default_factory=dict)
+    run_timing: dict = field(default_factory=dict)
     # How many static candidates were dropped for living outside --changed-files. Carried
     # out of the run so the report can state it: "3 leads" over a filtered scan and "3
     # leads" over an unfiltered one are different claims, and a suppressed count is the
@@ -200,6 +207,22 @@ class ScanResult:
     # a control result is an agent's cited reading, not a reproduction, and nothing
     # downstream may fold it into finding_count or the exit code.
     compliance: list = field(default_factory=list)
+
+
+def _record_timing(timings: dict[str, dict], scanner: str, state: str, now: float) -> None:
+    """Fold one stage transition into `timings` ({stage: {"started", "ended"}}).
+
+    running opens the interval; any terminal state closes it. A stage reported straight to
+    done/error with no running first (compliance's no-sandbox path does this) gets
+    started == ended: an instant, which is honest, rather than a fabricated duration.
+    `skipped` never ran, so it gets no entry at all.
+    """
+    if state == "running":
+        timings[scanner] = {"started": now}
+    elif state in ("done", "error"):
+        timings.setdefault(scanner, {"started": now})["ended"] = now
+    elif state == "skipped":
+        timings.pop(scanner, None)
 
 
 def run_scan(
@@ -339,10 +362,13 @@ def run_scan(
     # distinguish "semgrep found nothing" from "semgrep never started". That is the
     # fail-open a PR gate cares about most, so record it here and persist it.
     stages: dict[str, str] = {}
+    stage_timings: dict[str, dict] = {}
+    run_started = time.time()
     _caller_on_stage = on_stage
 
     def on_stage(scanner: str, state: str) -> None:      # noqa: F811 - deliberate wrap
         stages[scanner] = state
+        _record_timing(stage_timings, scanner, state, time.time())
         if _caller_on_stage is not None:
             _caller_on_stage(scanner, state)
     coordinator = AgentCoordinator(
@@ -758,7 +784,33 @@ def run_scan(
         triage=triage_report,
         status=status,
         stages=dict(stages),
+        stage_timings={k: dict(v) for k, v in stage_timings.items()},
+        run_timing={"started": run_started, "ended": time.time()},
         suppressed_outside_diff=suppressed_outside_diff,
         patches=patches,
         compliance=compliance_results,
     )
+
+
+def demo() -> None:
+    t: dict[str, dict] = {}
+    _record_timing(t, "trivy", "running", 10.0)
+    _record_timing(t, "trivy", "done", 12.5)
+    assert t["trivy"] == {"started": 10.0, "ended": 12.5}
+    _record_timing(t, "semgrep", "running", 12.5)
+    assert t["semgrep"] == {"started": 12.5}, "a running stage has no end yet"
+    _record_timing(t, "semgrep", "error", 20.0)
+    assert t["semgrep"]["ended"] == 20.0, "an error closes the interval"
+    _record_timing(t, "compliance", "error", 30.0)       # never reported running
+    assert t["compliance"] == {"started": 30.0, "ended": 30.0}
+    _record_timing(t, "fix", "skipped", 31.0)
+    assert "fix" not in t, "a skipped stage has no timing"
+    _record_timing(t, "trivy", "skipped", 32.0)
+    assert "trivy" not in t
+    r = ScanResult(success=True, summary="", finding_count=0)
+    assert r.stage_timings == {} and r.run_timing == {}
+    print("core.runner: ok")
+
+
+if __name__ == "__main__":
+    demo()

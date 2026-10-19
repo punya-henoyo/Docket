@@ -204,6 +204,8 @@ def build_report(
     agents: list[dict] | None = None,
     status: str = "completed",
     stages: dict | None = None,
+    stage_timings: dict | None = None,
+    run_timing: dict | None = None,
     triage_requested: int = 0,
     suppressed_outside_diff: int = 0,
     patches: list | None = None,
@@ -289,6 +291,12 @@ def build_report(
         # "semgrep found nothing" and "semgrep never started", which used to live only in
         # the console's memory.
         "stages": stages or {},
+        # When each stage began and ended (epoch seconds), and the run as a whole. Only
+        # stages that actually began have an entry; absent means "no timing recorded",
+        # never zero, because the console draws lanes from these and a made-up interval
+        # is a made-up claim.
+        "stage_timings": stage_timings or {},
+        "run_timing": run_timing or {},
         "provenance": _provenance(),
         "summary": summary,
         "cost_usd": cost_usd,
@@ -518,6 +526,12 @@ def demo() -> None:
     staged = build_report(empty, run_name="r", target="t",
                           stages={"semgrep": "error", "trivy": "done"})
     assert staged["stages"]["semgrep"] == "error"
+    # Timings travel with the stages, and are absent (not zero) when none were recorded.
+    timed = build_report(empty, run_name="r", target="t", stages={"trivy": "done"},
+                         stage_timings={"trivy": {"started": 1.0, "ended": 2.5}},
+                         run_timing={"started": 1.0, "ended": 3.0})
+    assert timed["stage_timings"]["trivy"]["ended"] == 2.5 and timed["run_timing"]["ended"] == 3.0
+    assert staged["stage_timings"] == {} and staged["run_timing"] == {}
     # Completeness is a different question from findings: 0 judged of 15 requested is not
     # a clean result, it is an unanswered one.
     # `triage_requested` is a CAP clamped to the judgeable population. A cap bigger than

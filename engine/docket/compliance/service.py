@@ -59,13 +59,50 @@ def packs_index(*, cwd: Path | None = None) -> tuple[int, dict[str, Any]]:
     return 200, {"packs": list_packs(cwd=cwd)}
 
 
+def split_citation(citation: str) -> tuple[str, str]:
+    """(instrument, section) from a control's free-text citation.
+
+    Split at the first " — " (what every shipped pack uses), else the first ": ". The
+    instrument is the document the obligation lives in and the section is the part of it
+    the control is about, so a UI can show them on two lines. No separator means the
+    whole string is the instrument and the section is empty: guessing a boundary inside
+    prose would put words in a regulator's mouth.
+    """
+    text = str(citation or "").strip()
+    for sep in (" \u2014 ", ": "):
+        head, found, tail = text.partition(sep)
+        if found and head.strip() and tail.strip():
+            return head.strip(), tail.strip()
+    return text, ""
+
+
+def citation_parts(pack: ControlPack, control: Any) -> dict[str, Any]:
+    """The structured form of a control's citation, for the console.
+
+    `clause` is whatever the pack author recorded and otherwise null — never derived from
+    the citation text, because a clause number docket made up on a regulatory report is
+    worse than none (see the note in rbi-csf.json).
+    """
+    instrument, section = split_citation(control.citation)
+    return {
+        "authority": pack.authority,
+        "instrument": instrument,
+        "section": section,
+        "clause": control.clause,
+        "source_url": pack.source_url or None,
+    }
+
+
 def pack_detail(pack_id: str, *, cwd: Path | None = None) -> tuple[int, dict[str, Any]]:
     """GET /api/compliance/packs/{id} — the controls, for review before use."""
     try:
         pack = load_pack(pack_id, cwd=cwd)
     except PackError as exc:
         return 404, {"error": str(exc)}
-    return 200, {"pack": pack.model_dump(mode="json")}
+    body = pack.model_dump(mode="json")
+    for dumped, control in zip(body["controls"], pack.controls):
+        dumped["citation_parts"] = citation_parts(pack, control)
+    return 200, {"pack": body}
 
 
 def upload_pack(
@@ -177,6 +214,16 @@ def demo() -> None:
     assert status == 200 and {"owasp-api-2023", "sebi-cscrf"} <= {p["id"] for p in body["packs"]}
     status, body = pack_detail("owasp-api-2023")
     assert status == 200 and len(body["pack"]["controls"]) == 10
+    # Citations arrive structured; the clause stays null where the pack supplies none.
+    parts = body["pack"]["controls"][0]["citation_parts"]
+    assert parts["authority"] == "OWASP" and parts["clause"] is None, parts
+    status, body = pack_detail("rbi-csf")
+    first = body["pack"]["controls"][0]
+    assert first["citation_parts"]["instrument"] == "RBI Cyber Security Framework, Annex 1", first
+    assert first["citation_parts"]["section"] == "Cryptographic and network controls", first
+    assert first["citation_parts"]["source_url"].startswith("https://"), first
+    assert split_citation("Annex 1: Secure configuration") == ("Annex 1", "Secure configuration")
+    assert split_citation("Just a title") == ("Just a title", "")
     status, body = pack_detail("nope")
     assert status == 404 and "owasp-api-2023" in body["error"], body
 

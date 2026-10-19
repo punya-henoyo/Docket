@@ -93,6 +93,11 @@ _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 # read back.
 _RUN_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
+# Routes served by docket/portfolio/api.py. Exact paths and prefixes are listed so none of
+# them can shadow, or be shadowed by, the existing "/api/scan/" and "/api/run/" prefixes.
+_PORTFOLIO_ROUTES = frozenset({"/api/portfolio", "/api/findings", "/api/policy"})
+_PORTFOLIO_PREFIXES = ("/api/application/", "/api/pipeline/")
+
 
 def valid_ref(ref: str) -> bool:
     return bool(_REF.match(ref)) and ".." not in ref and not ref.endswith("/") and "//" not in ref
@@ -1496,6 +1501,10 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             summary=result.summary, cost_usd=result.cost_usd,
             agents_spawned=result.agents_spawned, success=result.success,
             compliance=result.compliance,
+            # Timings feed the console's pipeline view; `stages` rides along because a
+            # lane with times but no outcome would be ambiguous between done and error.
+            stages=result.stages, stage_timings=result.stage_timings,
+            run_timing=result.run_timing,
         )
         from docket.report.state import get_global_report_state
 
@@ -1972,6 +1981,21 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
             return False
 
+        def _portfolio(self, path: str, query: dict[str, list[str]]) -> None:
+            from docket.portfolio import api as portfolio_api
+
+            if path.startswith("/api/application/"):
+                self._json(*portfolio_api.application_payload(urllib.parse.unquote(path[len("/api/application/"):])))
+            elif path.startswith("/api/pipeline/"):
+                self._json(*portfolio_api.pipeline_payload(
+                    urllib.parse.unquote(path[len("/api/pipeline/"):])))
+            elif path == "/api/findings":
+                self._json(*portfolio_api.findings_payload())
+            elif path == "/api/policy":
+                self._json(*portfolio_api.policy_payload((query.get("policy") or [None])[0]))
+            else:
+                self._json(*portfolio_api.portfolio_payload())
+
         def do_GET(self) -> None:  # noqa: N802 — stdlib naming
             if not self._authorised():
                 return
@@ -2046,6 +2070,11 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                         _merge_live_usage(state)
                     payload = dict(state) if state else None
                 self._json(200 if payload else 404, payload or {"error": "unknown scan"})
+            elif path in _PORTFOLIO_ROUTES or path.startswith(_PORTFOLIO_PREFIXES):
+                # The Code Security console's read model, computed from disk on each
+                # request. See docket/portfolio/api.py. The id and run name are unquoted
+                # here and validated there; they never become a path.
+                self._portfolio(path, query)
             elif path.startswith("/api/") or path.startswith("/auth/"):
                 self._json(404, {"error": "no such endpoint"})
             else:

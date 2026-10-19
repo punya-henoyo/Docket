@@ -1,4 +1,4 @@
-.PHONY: help install check test test-fast image clean lint console sbom sbom-check sbom-doc sbom-verify-image
+.PHONY: help install check test test-fast image clean lint console console-kit console-build demo-console sbom sbom-check sbom-doc sbom-verify-image
 
 help:
 	@echo "install    install dependencies (uv sync)"
@@ -31,7 +31,7 @@ image:
 check:
 	@set -e; for m in \
 	  docket.config.settings docket.config.models \
-	  docket.core.agents docket.core.paths docket.core.sessions docket.core.inputs docket.core.hooks \
+	  docket.core.agents docket.core.runner docket.core.paths docket.core.sessions docket.core.inputs docket.core.hooks \
 	  docket.llm.context_budget docket.llm.compaction \
 	  docket.discovery.models docket.discovery.sources docket.discovery.discover \
 	  docket.static.models docket.static.engines docket.static.correlate \
@@ -41,6 +41,9 @@ check:
 	  docket.core.triage docket.core.recon docket.core.verdict_cache \
 	  docket.compliance.models docket.compliance.packs docket.compliance.ingest \
 	  docket.compliance.service \
+	  docket.portfolio.timeutil docket.portfolio.catalog docket.portfolio.policy \
+	  docket.portfolio.model.disk docket.portfolio.model.derive docket.portfolio.health \
+	  docket.portfolio.api docket.demo.seed \
 	  docket.core.compliance \
 	  docket.tools.compliance.tool docket.agents.prompts.compliance \
 	  docket.tools.triage.tool docket.tools.recon.tool docket.tools.fix.tool docket.tools.source.tools \
@@ -82,7 +85,8 @@ test-fast:
 	                  tests/test_diff_scope.py tests/test_scm.py \
 	                  tests/test_service_store.py tests/test_source_write.py \
 	                  tests/test_validate.py tests/test_fix.py \
-	                  tests/test_compliance.py tests/test_verdict_cache.py ; do \
+	                  tests/test_compliance.py tests/test_verdict_cache.py \
+	                  tests/test_portfolio.py ; do \
 	  uv run python $$f >/dev/null 2>&1 && echo "ok   $$f" || { echo "FAIL $$f"; exit 1; }; \
 	done
 
@@ -118,6 +122,21 @@ sbom-verify-image:
 # costs no dependency.
 sbom-doc:
 	uv run python scripts/sbom_docx.py
+
+# The Henoyo Visual Kit web components plus Docket's own elements, bundled into one committed script
+# (app/kit/PIN.md). Only needed after editing app/kit; running the console needs no Node toolchain
+# for this part.
+console-kit:
+	cd app/kit && ./build.sh
+
+# Build the React console (type-check, then Vite). Output: app/frontend/dist, served by `docket connect`.
+console-build: console-kit
+	cd app/frontend && npm install --no-audit --no-fund && npm run build
+
+# The Code Security console on sample data, no Docker, no API key, no GitHub: seeds ./.docket-demo and
+# serves http://127.0.0.1:8765. Everything on screen is labelled as sample data.
+demo-console: console-build
+	uv run python -m docket.demo.console
 
 clean:
 	rm -rf docket_runs frontend/dist

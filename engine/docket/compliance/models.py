@@ -102,6 +102,15 @@ class Control(BaseModel):
     # Where this came from in the authority document. Non-negotiable for an uploaded
     # policy: a control nobody can trace back to a clause is our invention, not theirs.
     citation: str = ""
+    # The authority's own clause number, ONLY when the pack author has read it off the
+    # source document. Null is the honest value for every shipped pack today: their
+    # citations name a domain on purpose ("a wrong clause reference on a regulatory
+    # report is worse than no reference"), and the console renders null as "no clause
+    # recorded" rather than a guess.
+    clause: str | None = None
+    # The Henoyo obligation this control resolves to (e.g. "rbi-csf:secrets"), so a policy
+    # step can cite the requirement it satisfies. A pointer, not a claim.
+    obligation_ref: str | None = None
     evidence_hint: str = ""  # what to look for. Free help, no claim attached.
     # Deterministic cross-link keys, matched by CODE at report-build time (never by the
     # agent). See compliance.link.link_findings.
@@ -297,6 +306,10 @@ def demo() -> None:
         rule_ids=["idor"],
     )
     assert control.severity is Severity.HIGH
+    # The new optional fields default to null: a clause is never invented for a pack
+    # that does not supply one.
+    assert control.clause is None and control.obligation_ref is None
+    assert Control(id="x", title="t", requirement="r", clause="3.1(a)").clause == "3.1(a)"
     # Unanswerable unless the pack author says otherwise: the failure-safe default.
     assert Control(id="x", title="t", requirement="r").observability is Observability.PROCESS
     for bad in ({"id": " ", "title": "t", "requirement": "r"},
