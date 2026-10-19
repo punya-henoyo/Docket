@@ -139,7 +139,7 @@ The compliance reader is always optional: compliance is advisory and never gates
 a triage verdict CONFIRMED. `flags` = a required scanner that did not run inside its window. `advises` = compliance results. A critical dependency CVE is
 never listed as blocking: it goes to triage; reachable and unproven it is an `attention` reason. Never write a rule that contradicts these three lists.
 
-Default policy (no `docket_policy.json`): steps trivy, semgrep, then the agents (swarm), cadence 7, gate blocks on reproduced exploit, secret in source, reachable critical CVE.
+Default policy (no `docket_policy.json`): all nine catalog steps are listed, only Trivy and Semgrep are required, cadence 7. The gate blocks on a reproduced exploit, a secret in source or another deterministic rule, or a triage verdict of confirmed. A reachable critical CVE is NOT a block: it is an attention reason (see policy.py GATE).
 
 ### Compliance citations (existing `/api/compliance/packs[/<id>]`, extended)
 Each control gains `citation_parts: {authority, instrument, section, clause|null, source_url|null}`. The pack's `authority` and `source_url` are used;

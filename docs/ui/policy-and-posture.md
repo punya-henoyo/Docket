@@ -137,8 +137,8 @@ re-imported today does not look fresh. If this cannot be done cleanly, `imports`
   `docket_policy.json` atomically (temp file + rename) and bumps `version`.
   Never writes outside the working directory. `DELETE /api/policy/<id>` removes it (404 if absent).
 * `POST /api/policy/preview` body = a draft policy. Returns, with NO side effects:
-  `{matches:[{id,label,tier,category,exposure}], would_meet:N, would_breach:N,
-    changes:[{id,label,before:"meets"|"breaches"|"none",after:"meets"|"breaches",why}],
+  `{matches:[{id,label,tier,category,exposure}], would_meet:N, would_lack:N,
+    changes:[{id,label,before:"current"|"lacks"|"none",after:"current"|"lacks",why}],
     plan:[ {id, n, label, tool, origin, availability, required, command, what, produces} ]}`.
   `changes` compares the application's current policy outcome with the draft's, using the same
   coverage logic as the matrix. This is the "who is affected if I save" panel.
@@ -175,13 +175,15 @@ RULE, using the same facts the health card uses; the number only places it insid
   fraction of required steps current (a step inside twice its window counts half); right half
   54..96 by recency (the fresher, the further right). `assurance_note` says "N of M required
   scanners current" and the tooltip adds the policy's depth ("policy requires 5 steps").
-* **Upper half (y)** iff nothing proven or confirmed is open. Ordinal bands, lowest first:
-  1 a reproduced exploit or a deterministic-floor secret open (y 4..30, more of them lower);
-  2 a triage-CONFIRMED item not reproduced, or a reachable critical dependency CVE (y 30..48);
-  3 UNCERTAIN high or critical item(s) a person must judge (y 52..64, upper half, never counted
-  as clean or as confirmed: AGENTS.md rule 12); 4 candidates only (y 66..84, a little lower as
-  they grow); 5 nothing open (y 88..96). `standing_note` states the band in words.
-  Candidates never lower a dot below the midline.
+* **Upper half (y)** iff the application's security reasons are clear: nothing proven, confirmed,
+  reachable-critical or uncertain-high is open. Ordinal bands, lowest first (the lower half is
+  y 4..48): 1 a reproduced exploit or a deterministic-floor secret open (4..24, more of them
+  lower); 2 a triage-CONFIRMED item not reproduced, or a reachable critical dependency CVE
+  (24..38); 3 UNCERTAIN high or critical item(s) a person must judge (38..48; never counted as
+  clean or as confirmed, AGENTS.md rule 12). Upper half: y = 90 (nothing proven open).
+  **Candidates never move a dot** on either axis (AGENTS.md rule 10); they live in the weekly
+  outcome counts only. `standing_note` states the band in words. The payload field is `standing`,
+  the screen calls the axis "Proven problems", never "exposure" (that is a profile field).
 * **Proven items persist.** Today an open reproduced finding vanishes when a later static-only scan
   does not list it, which would make an app look better for running less. Rule: proven counts come
   from the **latest run in which the exploit lane ran**; a later run that skipped it does not clear
@@ -196,21 +198,28 @@ RULE, using the same facts the health card uses; the number only places it insid
   words it: "Standing worse, assurance steady since 5 Oct".
 * **Time in cell**: `days_in_cell` = days the dot has been in its current quadrant, replayed daily,
   capped at 28 ("28+"). It appears on the dot tooltip and in "Look here first" for `bl`.
-* The four quadrants split at 50/50. Names, **top-right best**:
-  `tr` "Assessed and sound" (Fully assessed, nothing proven open),
-  `tl` "Quiet, not fully assessed" (Little found, but little was looked for. Do not trust the quiet),
-  `br` "Exposed, fully assessed" (The risk is real and well evidenced. Fix it),
-  `bl` "Exposed, not fully assessed" (Proven problems and gaps in coverage. Look here first).
+* The four quadrants split at 50/50. X axis "Required checks": left overdue, right current. Y axis
+  "Proven problems": bottom some open, top none open. Names, **top-right best**, parallel on purpose
+  and never claiming safety:
+  `tr` "Checks current, nothing proven" (Required checks are current and no proven problem is open. That is not a promise of safety),
+  `tl` "Checks overdue, nothing proven" (Quiet is not safe: a required check is missing or stale),
+  `br` "Checks current, problems proven" (The risk is real and well evidenced. Fix it),
+  `bl` "Checks overdue, problems proven" (Proven problems and gaps in coverage. Look here first).
+  `tr` additionally requires the application's level to be `clear`. A zero-required-step policy is
+  refused on save (a policy with nothing required would put everything on the right).
 * `points[].cell`: `tl|tr|bl|br` (server decided). `posture.by_snapshot`: per snapshot date the
   number of applications in each cell plus `unassessed`, drawn as small multiples so "are we
   getting better" reads without scrubbing.
 * `assessments.outcomes`: per assessment (a scan or a pull-request check) in the window, the worst
   that applies: `proven` (>=1 reproduced or deterministic), else `incomplete` (coverage partial or
   failed), else `candidates` (any), else `clean`. Weekly buckets end on the snapshot dates.
-* `categories`: applications grouped by `category · exposure`; `meet_policy` uses the matrix logic.
+* `categories`: applications grouped by `category · exposure`; `meet_policy` is "every required
+  check is current" (matrix logic). It is titled "Required checks current", never "adherence" or
+  "compliance"; a bar never reads as a regulatory verdict. `na` cells are excluded from both counts.
 * `leaders.worst`: level order (action, attention; unassessed excluded), then cell (`bl` before
-  `br` before `tl`), then standing ascending. `leaders.best`: ONLY applications in `tr`, ordered by
-  standing then assurance descending. If fewer than three, fewer are shown; never padded.
+  `br` before `tl`), then standing ascending. `leaders.best` (titled "Clearest right now", never "Steadiest"
+  or "Best"): ONLY applications in `tr` with level `clear`, ordered by assurance descending. If
+  fewer than three, fewer are shown; never padded. Null trail points are skipped, never drawn as 0.
 * Dots that share a coordinate are clustered by the UI with a count badge (quiet applications
   stack); the cluster opens a list.
 
@@ -223,7 +232,7 @@ Order, top to bottom:
 1. Headline sentence (v1) and a six-number strip: applications, assessments in 28 days, proven
    exploits open, applications meeting policy "N of M", not assessed, and the oldest critical.
 2. **Posture map** (`<docket-quadrant>`, about two thirds wide) with, at right, "Look here first"
-   (3 worst) and "Steadiest" (3 best), each row with level lamp, tier, one-line reason and a
+   (3 worst) and "Clearest right now" (up to 3, only where checks are current and nothing is open), each row with level lamp, tier, one-line reason and a
    movement word ("Worse than 2 weeks ago"). The "Not assessed" tray sits under the map.
 3. Policy adherence by category (bars per `categories`), and **Assessments, by week** (stacked bars
    by outcome, with the totals).
@@ -257,7 +266,7 @@ movement word.
   **Starts** (Run now, Pull request, Every N days: with their availability words, not editable) → **Before the agents**
   (scanner stations, each: capability, chosen tool with origin chip and availability chip,
   Required or Optional, cadence) → **Docket agents** (recon, triage, exploit, fix) → **Guidelines**
-  (one chip per selected pack with its authority) → **Gate** (Blocks / Flags / Advises, fixed) →
+  (advisory; one chip per selected pack with its authority) → **Gate** (Blocks / Flags / Advises, fixed) →
   **Outcome** (pull-request check, report, fix pull request). Arrows say what flows ("candidates go
   to triage"; "reproduced exploit blocks"). Two modes: `design` (stations are buttons that open the
   inspector) and `run` (stations show the real state, count and duration of the last run and open
@@ -266,10 +275,13 @@ movement word.
   N applications" line), *Cadence* (the window staleness is judged against), *Steps* (add from a palette grouped by capability and
   vendor with availability chips, remove, move earlier or later, toggle Required, pick the tool,
   set cadence; steps always sit in the order Docket runs them), *Guidelines* (pack cards), the read-only gate, and a **"If you save"** panel from
-  `POST /api/policy/preview`: matched applications, would meet, would breach, and per-application
+  `POST /api/policy/preview`: matched applications, would be current, would lack a check, and per-application
   change. Plus the floor warning and any tie error. A banner under the title says: "Docket runs a fixed
   pipeline. This policy decides what must have run, how recently, and what a gap means." Actions:
-  Save and apply (PUT), Discard, Delete.
+  Save (PUT; it only writes the policy file), Discard, Delete (the confirmation lists the applications
+  that would fall to the default policy). `approved` is not editable until an audit trail exists.
+  Selecting a guideline adds the optional Compliance reader step if absent and says guidelines
+  advise only.
 * **Run it** (below the flow): choose an application (default: the most recent match). **Preview a
   run** shows the plan: per station the command, what it reads, what it produces, who wrote the
   detection. **Last run** switches the same flow to `run` mode with the real evidence per station.
