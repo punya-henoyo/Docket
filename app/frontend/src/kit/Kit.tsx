@@ -26,7 +26,10 @@ export function Kit({
   useEffect(() => {
     const el = ref.current;
     if (el) Object.assign(el, props);
-  });
+    // Runs when the props object changes, not on every render: a caller that memoises its props keeps
+    // the element still (a setter such as `snapshots` resets the map's scrubber). Callers that pass a
+    // fresh object each render behave exactly as before.
+  }, [props]);
 
   useEffect(() => {
     const el = ref.current;

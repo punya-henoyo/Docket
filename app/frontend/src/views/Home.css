@@ -1,7 +1,9 @@
 /* Home (Posture) only. Colours come from the Henoyo tokens, as everywhere else. */
-.hx-lead{display:block;max-width:60ch;font:500 1.45rem/1.35 "Source Serif 4",Georgia,serif;letter-spacing:-.01em;color:rgb(var(--h-text-2))}
-.hx-lead b{color:rgb(var(--h-sev-critical));font-weight:600}
+.hx-lead{display:block;max-width:none;font:500 1.35rem/1.4 "Source Serif 4",Georgia,serif;letter-spacing:-.01em;color:rgb(var(--h-text))}
+.hx-lead b{display:block;color:rgb(var(--h-sev-critical));font-weight:600}
 .hx-lead b.hx-calm{color:rgb(var(--h-text))}
+.hx-lead .hx-h2{display:block;font-size:1.1rem;color:rgb(var(--h-text-2));margin-top:2px}
+.hx-pagehead .hx-sub:has(.hx-lead){max-width:96ch}
 .hx-wq li.hx-wqh{display:block;cursor:default;background:rgb(var(--h-surface-2));font:600 11px/1 Inter,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:rgb(var(--h-text-2));padding:9px 20px}
 .hx-wq li.hx-wqh:hover{background:rgb(var(--h-surface-2))}
 .hx-wq li.hx-wqh b{margin-left:8px;color:rgb(var(--h-text))}
@@ -17,3 +19,30 @@
 .hx-covrow .hx-cc{font:500 13px "Source Serif 4",serif;font-variant-numeric:tabular-nums;min-width:48px;text-align:right}
 .hx-pagehead .hx-grow>.hx-sub{margin-top:6px}
 .hx-nw{white-space:nowrap}
+
+/* Posture home: six numbers, the map beside two short lists, category bars. */
+.hx-res.hx-six{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
+.hx-res.hx-six .hx-count{flex:none}
+.hx-res.hx-six .hx-count span{display:flex;align-items:center;gap:2px}
+.hx-count span .hx-help{margin-left:6px}
+@media(max-width:1100px){.hx-res.hx-six{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:640px){.hx-res.hx-six{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.hx-mapcols{display:grid;gap:16px;grid-template-columns:minmax(0,2fr) minmax(300px,1fr);align-items:start}
+@media(max-width:1020px){.hx-mapcols{grid-template-columns:1fr}}
+.hx-wq.hx-wql{display:block}
+.hx-wq.hx-wql li{display:block;padding:0}
+.hx-wq.hx-wql li:hover{background:none}
+.hx-lrow{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:start;width:100%;text-align:left;font:inherit;color:inherit;background:none;border:0;border-top:1px solid rgb(var(--h-hairline));padding:13px 20px;cursor:pointer}
+.hx-lrow:hover{background:rgb(var(--h-surface-2))}
+.hx-lrow:focus-visible{outline:2px solid rgb(var(--h-brand-ring));outline-offset:-2px}
+.hx-lrow .hx-lamp-col{margin-top:6px}
+.hx-lrow .hx-lb{display:block;min-width:0}
+.hx-lrow .hx-t{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:600;font-size:14px}
+.hx-lrow .hx-r{display:block;font-size:13px;color:rgb(var(--h-text));margin-top:3px}
+.hx-lrow .hx-mv{display:block;font-size:12.5px;color:rgb(var(--h-text-2));margin-top:4px}
+.hx-lw{font-size:12px;font-weight:600;margin-left:auto}
+.hx-lw.hx-bad{color:rgb(var(--h-sev-critical))}.hx-lw.hx-warn{color:rgb(var(--h-status-warning))}.hx-lw.hx-ok{color:rgb(var(--h-status-success))}.hx-lw.hx-off{color:rgb(var(--h-text-2))}
+.hx-note.hx-flat{margin:0;padding:12px 20px;border-top:1px solid rgb(var(--h-hairline));border-left:0;background:rgb(var(--h-surface-2));border-radius:0 0 var(--h-radius-card) var(--h-radius-card)}
+.hx-covrow.hx-cat{grid-template-columns:minmax(0,1.5fr) minmax(90px,1fr) auto}
+.hx-covrow.hx-cat .hx-cl{display:block}
+.hx-covrow.hx-cat .hx-cs{display:block;font-size:12.5px;color:rgb(var(--h-text-2))}

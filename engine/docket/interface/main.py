@@ -206,7 +206,8 @@ def cmd_scan(args) -> int:
                    agents_spawned=result.agents_spawned, success=result.success,
                    leads=result.leads, triage=result.triage,
                    status=result.status, stages=result.stages,
-                   stage_timings=result.stage_timings, run_timing=result.run_timing,
+                   stage_timings=result.stage_timings, stage_meta=result.stage_meta,
+                   run_timing=result.run_timing,
                    # "4 leads" over a diff-scoped scan and "4 leads" over a whole-repo scan
                    # are different claims; the suppressed count is what separates them.
                    suppressed_outside_diff=result.suppressed_outside_diff,

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Posture: Code Security in Henoyo (mockup)</title>
+<link rel="stylesheet" href="../../../app/frontend/public/assets/fonts.css">
+<link rel="stylesheet" href="../../../app/frontend/public/assets/kit/tokens.css">
+<link rel="stylesheet" href="mock.css">
+<style>
+/* Posture page only: the strip, the map beside two short lists, category bars. */
+.headline{font:500 1.35rem/1.4 "Source Serif 4",Georgia,serif;letter-spacing:-.01em;color:rgb(var(--h-text));display:block;max-width:none}
+.headline b{color:rgb(var(--h-sev-critical));display:block}
+.headline .h2{display:block;font-size:1.1rem;color:rgb(var(--h-text-2));margin-top:2px}
+.pagehead .sub{max-width:96ch}
+.res.six{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
+.res.six .count{flex:none}
+.res.six .count span{display:flex;align-items:center;gap:2px}
+@media(max-width:1100px){.res.six{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:640px){.res.six{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.mapcols{display:grid;gap:16px;grid-template-columns:minmax(0,2fr) minmax(300px,1fr);align-items:start}
+@media(max-width:1020px){.mapcols{grid-template-columns:1fr}}
+.wq.lead{counter-reset:none}
+.wq.lead li{align-items:start;padding:13px 20px}
+.wq.lead li:focus-visible{outline:2px solid rgb(var(--h-brand));outline-offset:-2px}
+.wq.lead .lamp{margin-top:6px}
+.wq.lead .t{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.wq.lead .r{font-size:13px;color:rgb(var(--h-text));margin-top:3px}
+.wq.lead .mv{font-size:12.5px;color:rgb(var(--h-text-2));margin-top:4px}
+.lw{font-size:12px;font-weight:600;margin-left:auto}
+.lw.bad{color:rgb(var(--h-sev-critical))}.lw.warn{color:rgb(var(--h-status-warning))}.lw.ok{color:rgb(var(--h-status-success))}
+.wq.lead .note.flat{margin:0;padding:12px 20px;border-top:1px solid rgb(var(--h-hairline));border-left:0;background:rgb(var(--h-surface-2));border-radius:0 0 var(--h-radius-card) var(--h-radius-card)}
+.covrow.cat{grid-template-columns:minmax(0,1.5fr) minmax(90px,1fr) auto}
+.covrow.cat .cl{display:block}.covrow.cat .cs{display:block;font-size:12.5px;color:rgb(var(--h-text-2))}
+.count span .help{margin-left:6px}
+</style>
+</head>
+<body>
+<div class="shell">
+  <span class="mark">henoyo<i>.</i></span>
+  <button class="launcher" aria-label="Switch application">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+    Code Security
+  </button>
+  <div class="search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search applications, findings, controls<kbd>⌘K</kbd></div>
+  <div class="who"><span>Saurabh</span><span class="av">SG</span></div>
+</div>
+<nav class="tabs" id="tabs" aria-label="Code Security sections"></nav>
+<main id="main"></main>
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-label="Finding detail"></aside>
+<div class="sample">Sample data. Nothing here is a real scan.</div>
+<script src="../../../app/frontend/public/assets/kit/henoyo-kit.js"></script>
+<script src="sample.js"></script>
+<script src="posture-sample.js"></script>
+<script src="posture.js"></script>
+</body>
+</html>

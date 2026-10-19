@@ -30,11 +30,10 @@ from typing import Any
 
 from docket.portfolio import timeutil
 from docket.portfolio.catalog import BY_ID
-from docket.portfolio.model.derive import AppState, Item, RunView, coverage
+from docket.portfolio.model.derive import AppState, Item, RunView, active_items, coverage
 
 DEFAULT_THRESHOLDS = {"reach": 3, "age": 7, "triage": 2}
 _TREND_SCANS = 8
-_ACTIVE_EXCLUDED = "not_reachable"
 
 
 @dataclass(slots=True)
@@ -61,6 +60,11 @@ class Metrics:
     cve_title: str | None = None         # the first reachable critical CVE, for the sentence
     uncertain_title: str | None = None   # the first high/critical triage could not decide
     skipped_always: set[str] = field(default_factory=set)
+    # Where the proven count comes from: the latest run in which the exploit lane ran. When
+    # that is not the latest scan, the count is CARRIED forward (proven items persist).
+    proven_run: str | None = None
+    proven_at: float | None = None
+    proven_carried: bool = False
 
 
 @dataclass(slots=True)
@@ -118,9 +122,13 @@ def classify(m: Metrics) -> tuple[str, list[Cause]]:
 
 
 def _active(items: list[Item]) -> list[Item]:
-    """Open items that still count: triage-cleared (not_reachable) ones do not, but a
-    deterministic floor hit does, because the gate does not defer to a verdict."""
-    return [i for i in items if i.open and (i.proof != _ACTIVE_EXCLUDED)]
+    """Open items that still count (derive.active_items; kept under this name for callers)."""
+    return active_items(items)
+
+
+def as_of_label(at: float) -> str:
+    """"12 Oct": a date, the way the console words an exploit run."""
+    return timeutil.short_date(at)
 
 
 def _name(step_id: str) -> str:
@@ -129,13 +137,22 @@ def _name(step_id: str) -> str:
 
 
 def measure(app: AppState, run: RunView, first_seen: dict[str, float], at: float,
-            now: float | None = None, *, history: bool = False) -> Metrics:
+            now: float | None = None, *, history: bool = False,
+            asof: float | None = None) -> Metrics:
     """Measure one scan. `at` is the instant ages are taken against (the scan's own time
     for a trend point, now for the current state); `history` skips the staleness walk,
-    which only means something for the current state."""
+    which only means something for the current state.
+
+    `asof` replays the measurement as it stood at that instant: only runs up to it are
+    known, and freshness is judged at `now` (pass `now=asof` to replay a past day). A
+    history point is always measured as of its own scan."""
     pol = app.policy
-    items = _active(run.items)
+    if history and asof is None:
+        asof = at
+    items, exploit = app.standing_items(run, asof)
     m = Metrics(has_scan=True, cadence_days=pol.cadence_days)
+    if exploit is not None:
+        m.proven_run, m.proven_at, m.proven_carried = exploit.name, exploit.at, exploit is not run
     m.proven = sum(i.proof == "reproduced" for i in items)
     m.deterministic = sum(i.proof == "deterministic" for i in items)
     m.blockers = sum(i.blocks for i in items)
@@ -160,7 +177,7 @@ def measure(app: AppState, run: RunView, first_seen: dict[str, float], at: float
     if not history and now is not None:
         m.scan_age_days = timeutil.whole_days(now - run.at)
         for step in required:
-            last = app.last_ran(step)
+            last = app.last_ran(step, asof)
             name = _name(step)
             window = pol.window_days(step)
             if last is None:
@@ -232,6 +249,11 @@ def analytes(app: AppState, current: Metrics, history: list[Metrics]) -> list[di
     out: list[dict[str, Any]] = []
     out.append(_zero_ref("proven", "Proven exploitable", "Reproduced with a working request",
                          current.proven, trend("proven"), 6))
+    if current.proven_carried and current.proven_at is not None:
+        # Proven items persist: the latest scan did not run the exploit lane, so this count
+        # is the one from the last run that did, and the card must say so.
+        out[-1]["asOf"] = {"run": current.proven_run, "at": timeutil.iso(current.proven_at),
+                           "label": f"as of the {as_of_label(current.proven_at)} exploit run"}
     t = th["reach"]
     scale = _scale(4 * t, current.reachable)
     tr = trend("reachable")
@@ -313,12 +335,15 @@ def annunciators(app: AppState, run: RunView, current: Metrics, ans: list[dict[s
         flag = by_key[key]["flag"]
         return "off" if flag == "unknown" else flag
 
-    items = _active(run.items)
+    items, _ = app.standing_items(run)
     secret_item = next((i for i in items if i.is_secret), None)
     out: list[dict[str, Any]] = []
+    carried = (f" (as of the {as_of_label(current.proven_at)} exploit run)"
+               if current.proven_carried and current.proven_at is not None else "")
     out.append({"key": "proven", "label": "Proven exploits", "state": state("proven"),
                 "value": str(current.proven),
-                "hint": "reproduced, still open" if current.proven else "none reproduced", "advisory": False})
+                "hint": ("reproduced, still open" if current.proven else "none reproduced") + carried,
+                "advisory": False})
     out.append({"key": "secrets", "label": "Secrets in code", "state": state("secrets"),
                 "value": str(current.secrets),
                 "hint": (secret_item.file or secret_item.location or "in source") if secret_item
@@ -419,7 +444,7 @@ def evaluate(app: AppState, now: float) -> Health:
     level, causes = classify(cur)
 
     # Reasons: the per-item facts first (what a person acts on), then the process causes.
-    items = _active(run.items)
+    items, _ = app.standing_items(run)
     reasons: list[str] = []
     for i in [i for i in items if i.proof == "reproduced"][:3]:
         reasons.append(_sentence(f"{i.title} was reproduced; the proof is attached"))

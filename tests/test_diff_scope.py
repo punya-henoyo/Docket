@@ -83,14 +83,16 @@ def test_empty_scope_file_yields_zero_not_everything() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_filter_still_applies_after_the_empty_sarif_fall_through() -> None:
-    """static/engines.py:collect() falls through to a WHOLE-TREE semgrep run when a
-    supplied --sarif parses to zero findings. That is verified here, because it is the
-    path that could turn a PR check into a full-repo scan — and the filter has to bite
-    after it, which is exactly why it is post-hoc rather than in semgrep's argv."""
+def test_filter_still_applies_after_the_unreadable_sarif_fall_through() -> None:
+    """static/engines.py:collect() falls through to a WHOLE-TREE semgrep run only when a
+    supplied --sarif cannot be read as SARIF at all (a readable but empty one is a clean
+    result and never falls through: see test_empty_sarif_is_clean). That is verified here,
+    because it is the path that could turn a PR check into a full-repo scan — and the
+    filter has to bite after it, which is exactly why it is post-hoc rather than in
+    semgrep's argv."""
     tmp = Path(tempfile.mkdtemp())
     try:
-        (tmp / "empty.sarif").write_text(json.dumps({"runs": []}))
+        (tmp / "empty.sarif").write_text(json.dumps([]))      # valid JSON, not a SARIF document
         (tmp / "app.py").write_text("import os\nos.system(input())\n")
         report = collect_static(sarif_path=tmp / "empty.sarif", source_root=tmp)
         # The fall-through happened: the report is talking about semgrep, not about the
@@ -101,6 +103,23 @@ def test_filter_still_applies_after_the_empty_sarif_fall_through() -> None:
         suppressed = apply_diff_scope(report, {"app.py"})
         assert suppressed >= 1
         assert all(f.file == "app.py" for f in report.findings), [f.file for f in report.findings]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_empty_sarif_is_clean() -> None:
+    """An explicit --sarif is the user choosing the source of static results. A readable
+    one with no results is a clean result: Semgrep does not run on top of it, even with a
+    source root, and the import is recorded so the run counts the slot as having run."""
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        (tmp / "empty.sarif").write_text(json.dumps({"runs": [{
+            "tool": {"driver": {"name": "CodeQL", "version": "2.17.0"}}, "results": []}]}))
+        (tmp / "app.py").write_text("import os\nos.system(input())\n")
+        report = collect_static(sarif_path=tmp / "empty.sarif", source_root=tmp)
+        assert len(report) == 0 and report.imported is not None
+        assert report.imported["tool"] == "CodeQL" and report.imported["tool_version"] == "2.17.0"
+        assert not any("semgrep" in n for n in report.notes), report.notes
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -134,6 +153,11 @@ def test_run_scan_reports_the_suppressed_count() -> None:
         assert result.suppressed_outside_diff == 1
         assert len(result.leads) == 1
         assert result.leads[0].finding.file == "app.py"
+        # The imported SARIF counts as the static-analysis slot having run, credited to the
+        # tool that made it, with the file's own time and revision.
+        assert result.stages.get("semgrep") == "done", result.stages
+        assert result.stage_meta["semgrep"] == {
+            "tool": "semgrep", "tool_version": None, "sarif_at": None, "revision": None}
         static_json = json.loads((tmp / "docket_runs" / "diff-scope-test"
                                   / "static.json").read_text())
         assert static_json["finding_count"] == 1
@@ -239,7 +263,8 @@ if __name__ == "__main__":
     test_scope_of_one_file_suppresses_the_other_two()
     test_missing_scope_file_raises()
     test_empty_scope_file_yields_zero_not_everything()
-    test_filter_still_applies_after_the_empty_sarif_fall_through()
+    test_filter_still_applies_after_the_unreadable_sarif_fall_through()
+    test_empty_sarif_is_clean()
     test_run_scan_reports_the_suppressed_count()
     test_a_store_with_no_sink_never_silently_swallows_findings()
     print("test_diff_scope: ok")

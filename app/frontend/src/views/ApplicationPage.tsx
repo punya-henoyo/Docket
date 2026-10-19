@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import * as api from "../api";
-import type { ApplicationDetail, Lane, PortfolioFinding, Proof } from "../portfolio";
-import { Card, Empty, LEVELS, Lamp, OriginChip, ProofCell, SevChip, ago, useSort } from "../hx/components";
+import type { AppProfile, ApplicationDetail, Lane, PortfolioFinding, Posture, PosturePoint, Proof } from "../portfolio";
+import { Card, Empty, Help, LEVELS, Lamp, OriginChip, ProofCell, SevChip, ago, useSort } from "../hx/components";
 import { FindingDrawer, LaneDrawer } from "../hx/Drawers";
 import { hx } from "../hx/hx";
 import { useApi } from "../hooks/useApi";
 import { Kit } from "../kit/Kit";
+import { MiniQuadrant, cellTitle, firstSeenOf, moveWords, usePolicyNames } from "./postureParts";
 import "./ApplicationPage.css";
 
 type Go = (name: string, param?: string | null) => void;
@@ -133,8 +134,69 @@ function FixTable({ rows }: { rows: Fix[] }) {
   );
 }
 
+/** Where this application sits on the posture map: its own two-by-two with its trail, the two notes
+ *  that explain the dot, and the policy it falls under. The server decides every word; a dot only
+ *  exists for an assessed application (AGENTS.md rules 10 and 14). */
+function PositionStrip({ app, posture, go }: { app: ApplicationDetail["application"] & AppProfile; posture: Posture | null | undefined; go: Go }) {
+  const names = usePolicyNames();
+  if (posture === undefined) return null;
+  if (posture === null) return <Card title="Position"><Empty>Loading the position…</Empty></Card>;
+  const point: PosturePoint | undefined = posture.points.find((p) => p.id === app.id);
+  const a = app.assignment ?? point?.assignment;
+  const policyId = a?.policy ?? app.policy ?? point?.policy ?? null;
+  const policyName = policyId ? names.get(policyId) ?? point?.policy_name ?? policyId : null;
+  const quad = cellTitle(posture.quadrants, point?.cell);
+  const moved = point ? moveWords(point.moved, point.moved_since, firstSeenOf(point)) : "";
+  const via = !a ? "" : a.via === "pinned"
+    ? `Pinned${a.overrides ? `: overrides ${names.get(a.overrides) ?? a.overrides}` : ""}`
+    : a.via === "default" ? "Default" : "Matched";
+  return (
+    <Card title="Position" sub="Where this application sits against its policy"
+          tip="The dot is how current the required checks are (left to right) against whether a proven problem is open (bottom to top). It is not a grade and not a promise of safety. Candidates never move it.">
+      <div className={hx("posstrip")}>
+        {point ? (
+          <>
+            <MiniQuadrant point={point} quadrants={posture.quadrants} />
+            <div className={hx("posbody")}>
+              <div className={hx("cell")}>{quad?.title ?? "Position"}</div>
+              {quad?.note ? <div className={hx("ms")}>{quad.note}</div> : null}
+              <dl className={hx("kv")}>
+                <dt>Dot colour</dt><dd><Lamp level={point.level} /> <b style={{ marginLeft: 6 }}>{LEVELS[point.level].word}</b></dd>
+                <dt>Required checks</dt><dd>{point.assurance_note}{point.assurance_detail ? <div className={hx("ms")}>{point.assurance_detail}</div> : null}</dd>
+                <dt>Proven problems</dt><dd>{point.standing_note}</dd>
+                {moved ? <><dt>Movement</dt><dd>{moved}</dd></> : null}
+                {point.cell === "bl" && point.days_in_cell != null
+                  ? <><dt>Time here</dt><dd>{point.days_in_cell >= 28 ? "28+ days here" : `${point.days_in_cell} ${point.days_in_cell === 1 ? "day" : "days"} here`}</dd></> : null}
+              </dl>
+            </div>
+          </>
+        ) : (
+          <div className={hx("posbody")}>
+            <div className={hx("cell")}>Not assessed: no position</div>
+            <div className={hx("ms")}>No scan has run, so there is no evidence to place a dot. It will appear after the first scan.</div>
+          </div>
+        )}
+        <div className={hx("posbody")}>
+          <div className={hx("cell")}>Policy<Help text="The policy decides which checks are required and how recently. It is matched from the application's profile, or pinned by hand." /></div>
+          {policyId ? (
+            <div>
+              <a href="#/policy" onClick={(e) => { e.preventDefault(); go("policy"); }}>{policyName}</a>
+              {via ? <span className={hx("chip neutral")} style={{ marginLeft: 8 }}>{via}</span> : null}
+            </div>
+          ) : <div className={hx("ms")}>No policy applies.</div>}
+          {a?.incomplete?.length
+            ? <div style={{ marginTop: 8 }}><span className={hx("chip warn")}>Profile incomplete: {a.incomplete.join(", ")} missing</span></div> : null}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 export function ApplicationPage({ id, go }: { id: string; go: Go }) {
   const { data, error, loading } = useApi(() => api.portfolio.getApplication(id), `app:${id}`, 20000);
+  // The application payload carries the profile and policy, but the dot and its trail live on the portfolio.
+  const pf = useApi(api.portfolio.getPortfolio, "portfolio:position", 20000);
+  const posture: Posture | null | undefined = pf.data ? pf.data.posture : pf.error ? undefined : null;
   const [tab, setTab] = useState<Tab>("overview");
   const [finding, setFinding] = useState<PortfolioFinding | null>(null);
   const [lane, setLane] = useState<Lane | null>(null);
@@ -228,6 +290,7 @@ export function ApplicationPage({ id, go }: { id: string; go: Go }) {
             helpText: "The verdict, then what is lit, then every measure against its reference range. Reference ranges come from the security policy that covers this application.",
             source: { label: "Last scan" }, asOf: a.last_scan_at ?? undefined,
           }} />
+          <PositionStrip app={a as ApplicationDetail["application"] & AppProfile} posture={posture} go={go} />
           <Kit tag="docket-pipeline" on={{ "docket:lane": onLane }} props={{
             heading: "Latest scan pipeline", lanes: pipeline.lanes, groups: pipeline.groups, policy: pipeline.policy ?? undefined,
             helpText: "Each bar is a scanner or agent, from when it started to when it finished. Verdant bars are built by Henoyo; grey bars are third-party tools. A dashed amber bar is a scanner the policy requires that did not run.",

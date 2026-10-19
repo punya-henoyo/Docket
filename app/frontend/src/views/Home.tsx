@@ -1,16 +1,12 @@
 import { useMemo } from "react";
-import type { Application, Level, Origin, Portfolio } from "../portfolio";
-import { Card, Empty, Lamp, OriginChip, PageHead, ago } from "../hx/components";
+import type { Level, Portfolio, Posture, PostureCategory, PostureLeader, QuadCell } from "../portfolio";
+import { Card, Empty, Help, LEVELS, Lamp, PageHead } from "../hx/components";
 import { hx } from "../hx/hx";
 import { Kit } from "../kit/Kit";
+import { firstSeenOf, moveWords, useStable } from "./postureParts";
 import "./Home.css";
 
 type Go = (name: string, param?: string | null) => void;
-
-/** One required step of the default policy, and how many applications ran it inside the cadence
- *  window (api-contract.md, GET /api/portfolio). Not yet in src/portfolio.ts, so declared here. */
-interface ScannerCoverage { id: string; label: string; tool?: string | null; origin: Origin; required?: boolean; current: number; of: number }
-type HomePortfolio = Portfolio & { scanner_coverage?: ScannerCoverage[] };
 
 /** The kit's palette helper, exposed by app/kit/globals.ts. Series need paint to be drawn. */
 type KitGlobal = { paint?: (key: string, index?: number) => Record<string, unknown> };
@@ -20,88 +16,124 @@ const paint = (key: string): Record<string, unknown> =>
 const ORDER: Level[] = ["action", "attention", "unknown", "clear"];
 const DAY = 86_400_000;
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+const longDate = (iso: string) =>
+  new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 
-const lastScan = (a: Application) =>
-  a.age_days == null ? "" : a.age_days < 1 ? "Scanned today" : `Scanned ${ago(a.age_days)} ago`;
+/** Cells are decided by the server per application; this only counts the dots in each. */
+const inCell = (p: Posture, k: QuadCell) => p.points.filter((x) => x.cell === k).length;
 
-function Lead({ counts, total }: { counts: Record<Level, number>; total: number }) {
-  if (total === 0) return <span className={hx("lead")}>No applications yet. Connect a repository and Docket will scan it.</span>;
-  const { action, attention, unknown, clear } = counts;
-  const rest = [
-    attention ? `${attention}${action ? " more" : ""} ${plural(attention, "needs", "need")} a look this week` : "",
-    unknown ? `${unknown} ${plural(unknown, "has", "have")} never been scanned` : "",
-    clear ? `${clear} ${plural(clear, "is", "are")} clear` : "",
+/** The headline: one bold sentence, then one short one. Counts come from the map's own dots. */
+function Headline({ posture, total }: { posture: Posture; total: number }) {
+  const bl = inCell(posture, "bl"), br = inCell(posture, "br"), tl = inCell(posture, "tl");
+  const un = posture.unassessed.length;
+  const first = posture.leaders.worst[0];
+  const lead = bl
+    ? <b>{bl} of {total} {plural(bl, "application has", "applications have")} proven problems and overdue checks.</b>
+    : br
+      ? <b>{br} of {total} {plural(br, "application has", "applications have")} proven problems open.</b>
+      : <b className={hx("calm")}>No application has a proven problem open.</b>;
+  const bits = [
+    tl ? `${tl} ${plural(tl, "is", "are")} quiet only because checks are overdue` : "",
+    un ? `${un} ${plural(un, "is", "are")} not assessed` : "",
   ].filter(Boolean);
-  const tail = rest.length > 1 ? `${rest.slice(0, -1).join(", ")}, and ${rest[rest.length - 1]}.` : rest[0] ? `${rest[0]}.` : "";
+  const second = [first ? `${first.label} first` : "", bits.join(" and ")].filter(Boolean).join("; ");
   return (
     <span className={hx("lead")}>
-      {action
-        ? <b>{action} of {total} {plural(total, "application needs", "applications need")} action today.</b>
-        : <b className={hx("calm")}>No application needs action today.</b>}
-      {tail ? ` ${tail}` : ""}
+      {lead}
+      {second ? <span className={hx("h2")}>{second}.</span> : null}
     </span>
   );
 }
 
-function QueueGroup({ title, apps, go }: { title: string; apps: Application[]; go: Go }) {
-  if (!apps.length) return null;
+function Num({ value, label, tone, tip }: { value: string | number; label: string; tone?: string; tip: string }) {
   return (
-    <>
-      <li className={hx("wqh")}>{title}<b>{apps.length}</b></li>
-      {apps.map((a) => (
-        <li key={a.id} tabIndex={0} onClick={() => go("app", a.id)}
-            onKeyDown={(e) => e.key === "Enter" && go("app", a.id)}>
-          <div><Lamp level={a.level} /></div>
-          <div>
-            <div className={hx("t")}>{a.label} <span className={hx("chip neutral")} style={{ marginLeft: 6 }}>{a.tier}</span></div>
-            <div className={hx("r")}>{a.reason}</div>
-          </div>
-          <div className={hx("age")}>
-            {a.level === "unknown" ? null : lastScan(a)}
-            <span className={hx("go")}>{a.level === "unknown" ? "Connect repo" : "Open"} →</span>
-          </div>
-        </li>
-      ))}
-    </>
+    <div className={hx(`count ${tone ?? ""}`)}>
+      <b>{value}</b>
+      <span>{label}<Help text={tip} /></span>
+    </div>
   );
 }
 
-function Posture({ portfolio, go }: { portfolio: HomePortfolio; go: Go }) {
-  const { applications: apps, counts } = portfolio;
-  const by = (l: Level) => apps.filter((a) => a.level === l);
-  const act = by("action"), att = by("attention"), unk = by("unknown");
+/** One row of "Look here first" / "Clearest right now": a button, so it takes focus and Enter or Space. */
+function LeaderRow({ l, posture, go }: { l: PostureLeader; posture: Posture; go: Go }) {
+  const tone = LEVELS[l.level].tone;
+  const point = posture.points.find((p) => p.id === l.id);
+  const moved = moveWords(l.moved, l.moved_since, firstSeenOf(point));
+  return (
+    <li>
+      <button type="button" className={hx("lrow")} onClick={() => go("app", l.id)}
+              aria-label={`${l.label}, ${LEVELS[l.level].word}. ${l.reason}.${moved ? ` ${moved}.` : ""} Open application`}>
+        <span className={hx("lamp-col")}><Lamp level={l.level} /></span>
+        <span className={hx("lb")}>
+          <span className={hx("t")}>
+            {l.label} <span className={hx("chip neutral")}>{l.tier}</span>
+            <span className={hx(`lw ${tone}`)}>{LEVELS[l.level].word}</span>
+          </span>
+          <span className={hx("r")}>{l.reason}</span>
+          {moved ? <span className={hx("mv")}>{moved}</span> : null}
+        </span>
+      </button>
+    </li>
+  );
+}
 
-  const kit = useMemo(() => {
-    const asOf = portfolio.generated_at;
-    const to = Date.parse(asOf);
-    const trend = portfolio.trend;
-    const sa = portfolio.severity_age;
+function CategoryRow({ c }: { c: PostureCategory }) {
+  const bits = [
+    c.levels.action ? `${c.levels.action} need action` : "",
+    c.levels.attention ? `${c.levels.attention} to watch` : "",
+  ].filter(Boolean).join(", ");
+  return (
+    <div className={hx("covrow cat")}>
+      <div className={hx("cl")}><span className={hx("cn")}>{c.key}</span><span className={hx("cs")}>{bits || "None need attention"}</span></div>
+      <div className={hx("cbar")} role="img" aria-label={`${c.checks_current} of ${c.apps} applications have every required check current`}>
+        <span className="h" style={{ width: `${c.apps ? (c.checks_current / c.apps) * 100 : 0}%` }} />
+      </div>
+      <div className={hx("cc")}>{c.checks_current} of {c.apps}</div>
+    </div>
+  );
+}
+
+function PostureHome({ portfolio, posture, go }: { portfolio: Portfolio; posture: Posture; go: Go }) {
+  const { applications: apps, counts } = portfolio;
+  const total = apps.length;
+  const sa = portfolio.severity_age;
+
+  // The one total this page adds up: every category's "required checks current" count. The server
+  // does not send the sum (see the report); each term is its own server number.
+  const currentN = posture.categories.reduce((a, c) => a + c.checks_current, 0);
+  const currentOf = posture.categories.reduce((a, c) => a + c.apps, 0);
+
+  // The map is the part that must not redraw on a quiet re-poll: its setters reset the scrubber.
+  const stable = useStable({ ...posture, as_of: "" });
+  const asOf = useMemo(() => posture.as_of, [stable]); // eslint-disable-line react-hooks/exhaustive-deps
+  const quad = useMemo(() => ({
+    heading: "Posture map",
+    points: stable.points, unassessed: stable.unassessed, quadrants: stable.quadrants,
+    snapshots: stable.snapshots, bySnapshot: stable.by_snapshot,
+    asOfNote: `As of ${longDate(asOf)}.`,
+    source: { label: "Docket scans" }, asOf,
+  }), [stable, asOf]);
+
+  const rest = useMemo(() => {
+    const as = portfolio.generated_at;
+    const to = Date.parse(as);
+    const W = posture.assessments.weekly;
     return {
-      ring: {
-        heading: "Application health", showPercent: false, centerLabel: "applications",
-        finding: `${act.length} need action, ${att.length} need a look`,
-        helpText: "Every application is in one state. Act today means a reproduced exploit, a secret in code, or a broken policy. Watch means something to look at this week.",
-        parts: [
-          { label: "Act today", count: counts.action, tone: "bad" },
-          { label: "Watch", count: counts.attention, tone: "warn" },
-          { label: "Clear", count: counts.clear, tone: "ok" },
-          { label: "Not scanned", count: counts.unknown, tone: "neutral" },
-        ],
-        source: { label: "Docket scans" }, asOf,
+      weekly: {
+        heading: "Assessments, by week",
+        periods: W.map((w) => ({ key: w.label, label: w.label })),
+        series: ([["proven", "Proven", "critical"], ["candidates", "Candidates", "medium"], ["clean", "Clean", "low"], ["incomplete", "Incomplete", "info"]] as const)
+          .map(([key, label, sev]) => ({ key, label, ...paint(sev), values: W.map((w) => w[key]) })),
+        helpText: "Each scan or pull-request check, by the worst thing it found: proven (a reproduced exploit or a deterministic secret), incomplete (coverage partial or failed), candidates (scanner hits nobody has proven), or clean. Candidates never move a dot on the map.",
+        source: { label: "Docket scans" }, asOf: as,
       },
       continuum: {
         heading: "Scan continuum",
         rows: [...apps].sort((a, b) => ORDER.indexOf(a.level) - ORDER.indexOf(b.level))
           .map((a) => ({ id: a.id, label: a.label, sub: a.tier, level: a.level, events: a.events })),
-        from: new Date(to - portfolio.window_days * DAY).toISOString(), to: asOf, cadenceDays: portfolio.cadence_days,
+        from: new Date(to - portfolio.window_days * DAY).toISOString(), to: as, cadenceDays: portfolio.cadence_days,
         helpText: "Every scan of every application. A red diamond is a scan that proved an exploit. Amber hatching is time beyond the policy cadence with no scan.",
-        source: { label: "Docket scans" }, asOf,
-      },
-      trend: {
-        heading: "Open findings and candidates, by week",
-        helpText: "What was open at the end of each week, by severity. It counts scanner candidates as well as proven exploits, so read the shape, not the headline percentage.",
-        periods: trend.periods, series: trend.series.map((s) => ({ ...s, ...paint(s.key) })),
-        source: { label: "Findings" }, asOf,
+        source: { label: "Docket scans" }, asOf: as,
       },
       sevAge: {
         heading: "Open findings and candidates by severity and age",
@@ -111,56 +143,66 @@ function Posture({ portfolio, go }: { portfolio: HomePortfolio; go: Go }) {
         columns: sa.columns.map((c) => ({ id: c, label: `${c.replace("-", " to ")} days`, tone: "" })),
         cells: sa.cells,
         helpText: "How many open items sit in each severity and age band, candidates included. Darker means more items; the row says how severe. Old criticals are the ones to chase.",
-        source: { label: "Findings" }, asOf,
+        source: { label: "Findings" }, asOf: as,
       },
     };
     // everything above derives from the payload; a re-poll that changes nothing keeps the elements still
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [portfolio]);
+
   const events = useMemo(() => ({
     "docket:open-app": (d: Record<string, string | undefined>) => d.id && go("app", d.id),
     "docket:open-scan": (d: Record<string, string | undefined>) => d.id && go("scan", d.id),
   }), [go]);
 
-  const cov = portfolio.scanner_coverage ?? [];
+  const { worst, best } = posture.leaders;
   return (
     <div className={hx("stack")}>
-      <div className={hx("cols")}>
-        <Card title="Needs you" flush sub="Worst first. Only the first group needs someone today."
-              tip="Applications that are not clear, grouped by urgency. Each line says why in one sentence.">
-          {act.length + att.length + unk.length === 0
-            ? <Empty>Nothing needs you. Every scanned application is clear.</Empty>
-            : (
-              <ul className={hx("wq")}>
-                <QueueGroup title="Act today" apps={act} go={go} />
-                <QueueGroup title="Watch this week" apps={att} go={go} />
-                <QueueGroup title="Not scanned" apps={unk} go={go} />
-              </ul>
-            )}
-        </Card>
+      <div className={hx("res six")}>
+        <Num value={total} label="Applications" tip="Every application the policies cover, assessed or not." />
+        <Num value={posture.assessments.total} label={`Assessments in ${posture.assessments.days} days`}
+             tip="A scan or a pull-request check. Candidates and clean results count; only proven problems move a dot." />
+        <Num value={counts.action} label="Need action today" tone="bad"
+             tip="Applications with a reproduced exploit, a secret in code or a broken policy. Reproduced exploits stay counted until an exploit run shows them closed." />
+        <Num value={`${currentN} of ${currentOf}`} label="Required checks current" tone="ok"
+             tip="Applications whose every required check finished inside its window. This is about running the checks, not a verdict on any regulation." />
+        <Num value={posture.unassessed.length} label="Not assessed" tone="un"
+             tip="No scan has run, so there is no position. They sit in the tray under the map." />
+        <Num value={sa.old_critical} label={`Criticals open over ${sa.old_age}`} tone="na"
+             tip="Open critical items older than this. A critical that stays open is the one to chase first." />
+      </div>
+
+      <div className={hx("mapcols")}>
+        <Kit tag="docket-quadrant" props={quad} on={events} />
         <div className={hx("stack")}>
-          <Kit tag="henoyo-ring" props={kit.ring} />
-          {cov.length ? (
-            <Card title="Required scanners, this week" sub={`Inside the ${portfolio.cadence_days}-day window`}
-                  tip={`How many applications ran each scanner the policy requires, inside the ${portfolio.cadence_days}-day window. Verdant is a Henoyo-built scanner; grey is a third-party tool Docket runs for you.`}>
-              {cov.map((s) => (
-                <div key={s.id} className={hx("covrow")}>
-                  <div className={hx("cl")}><OriginChip origin={s.origin} name={s.tool ?? undefined} /><span className={hx("cn")}>{s.label}</span></div>
-                  <div className={hx("cbar")} role="img" aria-label={`${s.current} of ${s.of} applications ran ${s.label} inside ${portfolio.cadence_days} days`}>
-                    <span className={s.origin === "henoyo" ? "h" : "t"} style={{ width: `${s.of ? (s.current / s.of) * 100 : 0}%` }} />
-                  </div>
-                  <div className={hx("cc")}>{s.current} of {s.of}</div>
-                </div>
-              ))}
-            </Card>
-          ) : null}
+          <Card title="Look here first" flush sub="Proven problems first, then overdue checks."
+                tip="The three applications to open first: reproduced exploits before anything else, then overdue checks, then the fewest problems open.">
+            {worst.length
+              ? <ol className={hx("wq wql")}>{worst.map((l) => <LeaderRow key={l.id} l={l} posture={posture} go={go} />)}</ol>
+              : <Empty>No application needs action or a watch.</Empty>}
+          </Card>
+          <Card title="Clearest right now" flush sub="Checks current, nothing proven."
+                tip="Never padded: fewer than three means fewer than three qualify. Not 'best' and not 'safest'.">
+            {best.length ? (
+              <>
+                <ol className={hx("wq wql")}>{best.map((l) => <LeaderRow key={l.id} l={l} posture={posture} go={go} />)}</ol>
+                <p className={hx("note flat")}>Only applications whose required checks are current and have nothing proven open. That is not a promise of safety.</p>
+              </>
+            ) : <Empty>No application currently has current checks and nothing proven open.</Empty>}
+          </Card>
         </div>
       </div>
-      <Kit tag="docket-continuum" props={kit.continuum} on={events} />
+
       <div className={hx("cols2")}>
-        <Kit tag="henoyo-discovery-trend" props={kit.trend} />
-        <Kit tag="henoyo-severity-age" props={kit.sevAge} />
+        <Card title="Required checks current, by category" sub="Under each application's own policy"
+              tip="Grouped by category and exposure. A bar is the share of applications whose required checks are all current under their own policy. Not applicable steps are left out of both counts.">
+          {posture.categories.length ? posture.categories.map((c) => <CategoryRow key={c.key} c={c} />) : <Empty>No application has a policy yet.</Empty>}
+          <p className={hx("note")} style={{ marginTop: 12 }}>Applications whose every required check finished inside its window. This counts checks that ran; it is not a verdict on any regulation.</p>
+        </Card>
+        <Kit tag="henoyo-discovery-trend" props={rest.weekly} />
       </div>
+      <Kit tag="docket-continuum" props={rest.continuum} on={events} />
+      <Kit tag="henoyo-severity-age" props={rest.sevAge} />
     </div>
   );
 }
@@ -168,7 +210,7 @@ function Posture({ portfolio, go }: { portfolio: HomePortfolio; go: Go }) {
 export function Home({ portfolio, error, go }: { portfolio: Portfolio | null; error: string | null; go: Go }) {
   const actions = (
     <>
-      <button className={hx("btn")} onClick={() => go("policy")}>Policy</button>
+      <button className={hx("btn")} onClick={() => go("policy")}>Policies</button>
       <button className={hx("btn primary")} onClick={() => go("repos")}>Run a scan</button>
     </>
   );
@@ -182,12 +224,18 @@ export function Home({ portfolio, error, go }: { portfolio: Portfolio | null; er
       </>
     );
   }
+  const posture = portfolio.posture;
+  const total = portfolio.applications.length;
   return (
     <>
       <PageHead eyebrow="Code Security" title="Posture" actions={actions}
-                sub={<Lead counts={portfolio.counts} total={portfolio.applications.length} />} />
+                sub={posture && total
+                  ? <Headline posture={posture} total={total} />
+                  : <span className={hx("lead")}>{total ? "Posture needs a newer docket server." : "No applications yet. Connect a repository and Docket will scan it."}</span>} />
       {error ? <div className={hx("notice bad")} role="alert" style={{ marginBottom: 16 }}>Showing the last data loaded. The latest refresh failed: {error}</div> : null}
-      <Posture portfolio={portfolio} go={go} />
+      {posture && total
+        ? <PostureHome portfolio={portfolio} posture={posture} go={go} />
+        : <Empty>{total ? "This server does not send posture data yet." : "Nothing to show until an application is connected."}</Empty>}
     </>
   );
 }

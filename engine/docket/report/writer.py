@@ -205,6 +205,7 @@ def build_report(
     status: str = "completed",
     stages: dict | None = None,
     stage_timings: dict | None = None,
+    stage_meta: dict | None = None,
     run_timing: dict | None = None,
     triage_requested: int = 0,
     suppressed_outside_diff: int = 0,
@@ -296,6 +297,10 @@ def build_report(
         # never zero, because the console draws lanes from these and a made-up interval
         # is a made-up claim.
         "stage_timings": stage_timings or {},
+        # Facts about a stage that are not times: for an imported SARIF, the tool that made
+        # it, its version, the file's own time and the revision. Absent means "this stage
+        # was run by Docket", never "imported with unknown details".
+        "stage_meta": stage_meta or {},
         "run_timing": run_timing or {},
         "provenance": _provenance(),
         "summary": summary,
@@ -532,6 +537,12 @@ def demo() -> None:
                          run_timing={"started": 1.0, "ended": 3.0})
     assert timed["stage_timings"]["trivy"]["ended"] == 2.5 and timed["run_timing"]["ended"] == 3.0
     assert staged["stage_timings"] == {} and staged["run_timing"] == {}
+    assert staged["stage_meta"] == {}
+    imported = build_report(empty, run_name="r", target="t", stages={"semgrep": "done"},
+                            stage_meta={"semgrep": {"tool": "CodeQL", "tool_version": "2.17.0",
+                                                    "sarif_at": "2026-10-01T10:05:00Z",
+                                                    "revision": "abc123"}})
+    assert imported["stage_meta"]["semgrep"]["tool"] == "CodeQL"
     # Completeness is a different question from findings: 0 judged of 15 requested is not
     # a clean result, it is an unanswered one.
     # `triage_requested` is a CAP clamped to the judgeable population. A cap bigger than

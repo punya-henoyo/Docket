@@ -18,7 +18,7 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
-from docket.static.models import StaticReport, parse_sarif
+from docket.static.models import StaticReport, parse_sarif, sarif_import_meta
 
 # p/default is Semgrep's curated cross-language ruleset. NOT --config=auto, which refuses
 # to run with metrics off ("Cannot create auto config when metrics are off") — and metrics
@@ -45,6 +45,8 @@ def ingest_sarif_file(path: str | Path) -> StaticReport:
         report.notes.append(f"{path} is not a SARIF document")
         return report
     report = parse_sarif(document)
+    if isinstance(document.get("runs"), list):
+        report.imported = sarif_import_meta(document)
     report.notes.append(f"ingested {len(report)} finding(s) from {path}")
     return report
 
@@ -126,12 +128,16 @@ def _relative_to(file: str, root: Path) -> str:
 def collect(
     *, sarif_path: str | Path | None = None, source_root: str | Path | None = None,
 ) -> StaticReport:
-    """The ladder: a supplied SARIF wins; otherwise run Semgrep if we have a source tree."""
+    """The ladder: a supplied SARIF wins; otherwise run Semgrep if we have a source tree.
+
+    An explicit --sarif is the user choosing the source of static results, so a readable
+    SARIF that holds no results is a CLEAN result, not a reason to run Semgrep on top of it.
+    Only a file we could not read as SARIF (report.imported is None) falls through, as
+    before, and its notes say why.
+    """
     if sarif_path:
         report = ingest_sarif_file(sarif_path)
-        if len(report):
-            return report
-        if not source_root:
+        if report.imported is not None or not source_root:
             return report
     if source_root:
         return run_semgrep(source_root)
@@ -157,6 +163,8 @@ def demo() -> None:
         report = ingest_sarif_file(sarif)
         assert len(report) == 1 and report.findings[0].cwe == "CWE-89"
         assert any("ingested 1" in n for n in report.notes)
+        assert report.imported == {"tool": "semgrep", "tool_version": None,
+                                   "sarif_at": None, "revision": None}, report.imported
 
         # A missing or corrupt file is REPORTED, never silently zero — "no findings" and
         # "we could not look" must not be indistinguishable in a security report.
@@ -176,10 +184,26 @@ def demo() -> None:
         none_at_all = collect()
         assert len(none_at_all) == 0
         assert any("no --sarif and no --source" in n for n in none_at_all.notes)
-        # An empty SARIF plus a source root falls through to running an engine.
+        # An empty but readable SARIF is a clean result: Semgrep must NOT run on top of it,
+        # even with a source root (the notes hold only the ingest line, no "semgrep ...").
         (tmp / "empty.sarif").write_text(json.dumps({"runs": []}))
-        fell_through = collect(sarif_path=tmp / "empty.sarif", source_root=tmp)
-        assert fell_through.notes, "falling through must leave a trace of why"
+        clean = collect(sarif_path=tmp / "empty.sarif", source_root=tmp)
+        assert len(clean) == 0 and clean.imported is not None
+        assert not any("semgrep" in n for n in clean.notes), clean.notes
+        (tmp / "clean.sarif").write_text(json.dumps({"runs": [{
+            "tool": {"driver": {"name": "CodeQL", "semanticVersion": "2.17.0"}},
+            "invocations": [{"endTimeUtc": "2026-10-01T10:00:00Z"},
+                            {"endTimeUtc": "2026-10-01T10:05:00Z"}],
+            "versionControlProvenance": [{"repositoryUri": "x", "revisionId": "abc123"}],
+            "results": []}]}))
+        codeql = collect(sarif_path=tmp / "clean.sarif", source_root=tmp)
+        assert len(codeql) == 0 and not any("semgrep" in n for n in codeql.notes)
+        assert codeql.imported == {"tool": "CodeQL", "tool_version": "2.17.0",
+                                   "sarif_at": "2026-10-01T10:05:00Z", "revision": "abc123"}
+        assert codeql.to_dict()["imported"]["tool"] == "CodeQL"
+        # A file we could not read as SARIF still falls through, and says why.
+        fell_through = collect(sarif_path=tmp / "list.sarif", source_root=tmp)
+        assert fell_through.imported is None and fell_through.notes
     finally:
         sh.rmtree(tmp, ignore_errors=True)
     print("static.engines: ok")

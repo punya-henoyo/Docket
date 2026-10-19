@@ -192,6 +192,10 @@ class ScanResult:
     # to draw a lane. Recorded where the state change is already observed, so it cannot
     # drift from `stages`. A stage that never began has no entry rather than a zero.
     stage_timings: dict = field(default_factory=dict)
+    # Extra facts about a stage that is not a timing: today only the static-analysis slot
+    # when its results were IMPORTED from a SARIF file ({"semgrep": {"tool", "tool_version",
+    # "sarif_at", "revision"}}). Kept apart from stage_timings, whose values are all numbers.
+    stage_meta: dict = field(default_factory=dict)
     run_timing: dict = field(default_factory=dict)
     # How many static candidates were dropped for living outside --changed-files. Carried
     # out of the run so the report can state it: "3 leads" over a filtered scan and "3
@@ -363,6 +367,7 @@ def run_scan(
     # fail-open a PR gate cares about most, so record it here and persist it.
     stages: dict[str, str] = {}
     stage_timings: dict[str, dict] = {}
+    stage_meta: dict[str, dict] = {}
     run_started = time.time()
     _caller_on_stage = on_stage
 
@@ -615,6 +620,14 @@ def run_scan(
         suppressed_outside_diff = 0
         if sarif_path or whitebox_path:
             static = collect_static(sarif_path=sarif_path, source_root=whitebox_path)
+            # An imported SARIF IS the static-analysis slot having run (stage key
+            # "semgrep", as the catalog names it), credited to the tool that made it.
+            # Without this record the import could never count as coverage. A stage that
+            # already ended in "error" keeps that state: the import must not paper over it.
+            if static.imported is not None:
+                stage_meta["semgrep"] = dict(static.imported)
+                if stages.get("semgrep") != "error":
+                    on_stage("semgrep", "done")
             # Straight after collect_static, so everything downstream — correlation,
             # triage's bill, static.json, the leads in the report — sees the scoped set and
             # only the scoped set. An empty scope keeps NOTHING: "the PR changed nothing
@@ -785,6 +798,7 @@ def run_scan(
         status=status,
         stages=dict(stages),
         stage_timings={k: dict(v) for k, v in stage_timings.items()},
+        stage_meta={k: dict(v) for k, v in stage_meta.items()},
         run_timing={"started": run_started, "ended": time.time()},
         suppressed_outside_diff=suppressed_outside_diff,
         patches=patches,
@@ -808,7 +822,7 @@ def demo() -> None:
     _record_timing(t, "trivy", "skipped", 32.0)
     assert "trivy" not in t
     r = ScanResult(success=True, summary="", finding_count=0)
-    assert r.stage_timings == {} and r.run_timing == {}
+    assert r.stage_timings == {} and r.stage_meta == {} and r.run_timing == {}
     print("core.runner: ok")
 
 

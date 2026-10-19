@@ -34,6 +34,19 @@ def parse_iso(value: object) -> float | None:
     return parsed.timestamp()
 
 
+def date(epoch: float | None) -> str | None:
+    """UTC calendar date, "2026-10-19"; None in, None out."""
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(float(epoch), tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def short_date(epoch: float) -> str:
+    """"5 Oct": day without a leading zero, then the month. Axis and tooltip wording."""
+    d = datetime.fromtimestamp(float(epoch), tz=timezone.utc)
+    return f"{d.day} {d:%b}"
+
+
 def whole_days(seconds: float) -> int:
     """Floor to whole days, never negative (a clock a little ahead is not "-1 d")."""
     return max(0, int(seconds // DAY))
@@ -55,6 +68,7 @@ def demo() -> None:
     assert parse_iso("1970-01-02T00:00:00+00:00") == DAY
     assert parse_iso("not a date") is None and parse_iso(None) is None and parse_iso("") is None
     assert parse_iso("1970-01-02T00:00:00") == DAY  # naive reads as UTC, like report.json
+    assert date(None) is None and date(DAY) == "1970-01-02" and short_date(DAY * 4) == "5 Jan"
     assert whole_days(-5) == 0 and whole_days(2.5 * DAY) == 2
     assert ago(2 * DAY + 1) == "2 d" and ago(7200) == "2 h" and ago(5) == "now"
     print("portfolio.timeutil: ok")

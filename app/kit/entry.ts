@@ -33,5 +33,7 @@ import './frontend/src/components/webcomponents/henoyoZoneExposure.ts';
 import './frontend/src/components/webcomponents/docketContinuum.ts';
 import './frontend/src/components/webcomponents/docketHealthCard.ts';
 import './frontend/src/components/webcomponents/docketPipeline.ts';
+import './frontend/src/components/webcomponents/docketPolicyFlow.ts';
 import './frontend/src/components/webcomponents/docketPolicyMatrix.ts';
+import './frontend/src/components/webcomponents/docketQuadrant.ts';
 import './globals.ts';

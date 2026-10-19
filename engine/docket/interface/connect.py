@@ -95,8 +95,14 @@ _RUN_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 # Routes served by docket/portfolio/api.py. Exact paths and prefixes are listed so none of
 # them can shadow, or be shadowed by, the existing "/api/scan/" and "/api/run/" prefixes.
-_PORTFOLIO_ROUTES = frozenset({"/api/portfolio", "/api/findings", "/api/policy"})
+_PORTFOLIO_ROUTES = frozenset({"/api/portfolio", "/api/findings", "/api/policy", "/api/catalog"})
 _PORTFOLIO_PREFIXES = ("/api/application/", "/api/pipeline/")
+# Policy writes (docket/portfolio/policy_write.py): PUT and DELETE /api/policy/<id>, and
+# POST /api/policy/preview. A policy body is a few KB; the cap stops a request becoming the
+# server's memory ceiling.
+_POLICY_PREFIX = "/api/policy/"
+_POLICY_PREVIEW = "/api/policy/preview"
+_POLICY_BODY_MAX = 256 * 1024
 
 
 def valid_ref(ref: str) -> bool:
@@ -1504,7 +1510,7 @@ def run_repo_scan(full_name: str, token: str, scan_id: str, ref: str | None = No
             # Timings feed the console's pipeline view; `stages` rides along because a
             # lane with times but no outcome would be ambiguous between done and error.
             stages=result.stages, stage_timings=result.stage_timings,
-            run_timing=result.run_timing,
+            stage_meta=result.stage_meta, run_timing=result.run_timing,
         )
         from docket.report.state import get_global_report_state
 
@@ -1993,6 +1999,10 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 self._json(*portfolio_api.findings_payload())
             elif path == "/api/policy":
                 self._json(*portfolio_api.policy_payload((query.get("policy") or [None])[0]))
+            elif path == "/api/catalog":
+                from docket.portfolio.catalog import catalog_payload
+
+                self._json(*catalog_payload())
             else:
                 self._json(*portfolio_api.portfolio_payload())
 
@@ -2082,12 +2092,76 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 # the router decide, so a deep link or a refresh does not 404.
                 self._static("/index.html")
 
+        def _policy_write_ok(self, *, has_body: bool) -> bool:
+            """Gate for a policy write; False means it has been answered.
+
+            The console is local and single-user, but a browser tab on another site can still
+            send a request to loopback. A cross-origin write needs a preflight this server
+            never grants, and these two checks refuse the cases that need none: an `Origin`
+            that is not this server, and a body that is not declared JSON (a form or
+            text/plain post is the simple request that skips the preflight)."""
+            origin = self.headers.get("Origin")
+            if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host"):
+                self.close_connection = True       # an unread body must not become a request
+                self._json(403, {"errors": ["cross-origin writes are refused"]})
+                return False
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if has_body and ctype != "application/json":
+                self.close_connection = True       # the unread body must not become a request
+                self._json(415, {"errors": ["send the policy as application/json"]})
+                return False
+            return True
+
+        def _policy_body(self) -> Any:
+            """The JSON request body, or None after answering 400/411/413 itself."""
+            try:
+                length = int(self.headers.get("Content-Length", ""))
+            except (TypeError, ValueError):
+                length = -1
+            if length < 0:
+                self.close_connection = True
+                self._json(411, {"errors": ["a valid Content-Length is required"]})
+                return None
+            if length > _POLICY_BODY_MAX:
+                self.close_connection = True       # the body is deliberately left unread
+                self._json(413, {"errors": [f"the body is larger than {_POLICY_BODY_MAX // 1024} KB"]})
+                return None
+            try:
+                return json.loads(self.rfile.read(length) or b"null")
+            except (ValueError, UnicodeDecodeError):
+                self._json(400, {"errors": ["the body must be JSON"]})
+                return None
+
+        def do_PUT(self) -> None:  # noqa: N802 — stdlib naming
+            if not self._authorised():
+                return
+            path = urllib.parse.urlparse(self.path).path
+            if not path.startswith(_POLICY_PREFIX) or path == _POLICY_PREVIEW:
+                self.close_connection = True
+                self._json(404, {"error": "no such endpoint"})
+                return
+            if not self._policy_write_ok(has_body=True):
+                return
+            body = self._policy_body()
+            if body is None:
+                return
+            from docket.portfolio import policy_write
+
+            self._json(*policy_write.put_policy(urllib.parse.unquote(path[len(_POLICY_PREFIX):]), body))
+
         def do_DELETE(self) -> None:  # noqa: N802 — stdlib naming
             if not self._authorised():
                 return
-            """One route today. Present because deleting an uploaded pack IS a delete, and
-            a POST spelled /delete would be the kind of thing nobody removes later."""
+            """Deleting an uploaded pack IS a delete, and a POST spelled /delete would be the
+            kind of thing nobody removes later. A saved policy is the same."""
             path = urllib.parse.urlparse(self.path).path
+            if path.startswith(_POLICY_PREFIX) and path != _POLICY_PREVIEW:
+                if self._policy_write_ok(has_body=False):
+                    from docket.portfolio import policy_write
+
+                    self._json(*policy_write.delete_policy(
+                        urllib.parse.unquote(path[len(_POLICY_PREFIX):])))
+                return
             if not path.startswith("/api/compliance/packs/"):
                 self._json(404, {"error": "no such endpoint"})
                 return
@@ -2141,6 +2215,15 @@ def make_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if post_path == "/api/compliance/packs":
                 self._upload_pack()
+                return
+            if post_path == _POLICY_PREVIEW:
+                # A plan, not a write: nothing is saved, whatever the body says.
+                if self._policy_write_ok(has_body=True):
+                    body = self._policy_body()
+                    if body is not None:
+                        from docket.portfolio import policy_write
+
+                        self._json(*policy_write.preview_payload(body))
                 return
             if post_path != "/api/scan":
                 self._send(404, b"not found", "text/plain")

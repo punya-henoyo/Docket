@@ -78,6 +78,32 @@ APPS: list[tuple[str, str, str, str, str, str, list[tuple[float, int, int, str]]
 ]
 HERO = "card-payments"
 
+# The application profile the policy assignment reads (docs/ui/policy-and-posture.md, section 2):
+# slug -> (category, exposure, stack). `tier` stays on APPS.
+PROFILE: dict[str, tuple[str, str, str]] = {
+    "card-payments": ("Banking", "Customer-facing", "API"),
+    "disputes": ("Banking", "Customer-facing", "API"),
+    "kyc-gateway": ("Banking", "Partner-facing", "API"),
+    "admin-ledger": ("Banking", "Internal", "Web"),
+    "upi-adapter": ("Banking", "Customer-facing", "API"),
+    "loan-origination": ("Banking", "Internal", "Web"),
+    "netbanking-web": ("Banking", "Customer-facing", "Web"),
+    "acct-statements": ("Banking", "Customer-facing", "Web"),
+    "notifications": ("Non-banking", "Customer-facing", "API"),
+    "treasury-reports": ("Banking", "Internal", "Batch"),
+    "branch-locator": ("Non-banking", "Customer-facing", "Web"),
+    "legacy-feed": ("Banking", "Internal", "Batch"),
+}
+# Applications whose scans carry the deep pipeline (apisec and the exploit swarm). Every
+# Tier 1 application does; Account Statements is Tier 2 but customer-facing banking, so the
+# policy that now covers it requires both and its sample scans ran them.
+DEEP_SLUGS = frozenset({"acct-statements"})
+# Non-banking web and API applications run Nuclei, which their policy requires.
+NUCLEI_SLUGS = frozenset({"notifications", "branch-locator"})
+# Admin Ledger is back-office (so its profile matches `internal`) but Tier 1, and the
+# security council pinned it to the stricter policy: the sample for an explicit override.
+PINNED = {"admin-ledger": "banking-customer"}
+
 # Stage layout in seconds from the start of a run, taken from the mockup's hero pipeline.
 TIER1 = {"trivy": (6, 62), "semgrep": (62, 195), "apisec": (195, 280), "triage": (285, 450)}
 SWARM = (365, 665)
@@ -510,7 +536,7 @@ def _build_run(slug: str, label: str, repo: str, tier: str, lang: str, d: float,
     at = now - d * DAY
     name = f"{slug}-{kind}-{int(round(d * 10)):03d}"
     latest_hero = is_hero and int(d) == 1 and kind == "scan"
-    tier1 = tier == "Tier 1"
+    tier1 = tier == "Tier 1" or slug in DEEP_SLUGS
     # Which stages ran, and when (seconds from the start of the run).
     if kind == "pr":
         layout, swarm, end = dict(PR_LAYOUT), False, 130.0
@@ -522,6 +548,10 @@ def _build_run(slug: str, label: str, repo: str, tier: str, lang: str, d: float,
             layout.pop("apisec")        # never wired in for this application
     else:
         layout, swarm, end = dict(STANDARD), False, 320.0
+    if slug in NUCLEI_SLUGS and kind == "scan":
+        layout["nuclei"] = (200, 255)
+        layout["triage"] = (258, 330)
+        end = 340.0
     if slug == "netbanking-web" and kind == "scan":
         layout["nuclei"] = (195, 280)       # a staging site exists here
         layout["apisec"] = (280, 365)
@@ -626,10 +656,20 @@ def _policies() -> dict[str, Any]:
     sec = lambda t: {"kind": "security", "text": t}          # noqa: E731
     reg = lambda ref: {"kind": "regulatory", "obligation_ref": ref}   # noqa: E731
     every = "At least every 7 days, and on every pull request"
+    thin = lambda t, d: {"text": t, "detail": d}          # noqa: E731
+    secret = thin("No credentials in source",
+                  "A deterministic rule: a secret in code blocks the pull request.")
+    proof = thin("Only proof blocks a release",
+                 "A reproduced exploit, a triage verdict of confirmed, or a deterministic "
+                 "rule such as a secret. A scanner hit alone does not.")
     return {"sample": True, "policies": [
-        {"id": "tier1-payments", "name": "Tier 1 payments baseline",
-         "applies": "Applications tagged Tier 1", "applies_tier": ["Tier 1"], "version": 3,
+        {"id": "banking-customer", "name": "Banking, customer-facing",
+         "applies": "Customer- and partner-facing banking applications",
+         "applies_when": {"category": ["Banking"], "exposure": ["Customer-facing", "Partner-facing"],
+                          "stack": [], "tier": []},
+         "version": 3,
          "approved": "Sample: approved by the security council, 12 Sep 2026", "cadence_days": 7,
+         "guidelines": ["rbi-csf", "sebi-cscrf", "owasp-api-2023"],
          "steps": [
              step("trivy", True, every, "Blocks on a secret in source. A critical CVE goes to triage.",
                   sec("No credentials in source"), reg("rbi-csf:secrets")),
@@ -656,19 +696,20 @@ def _policies() -> dict[str, Any]:
              step("fix", False, "After a proven exploit", "None. Optional.",
                   sec("Each proven exploit gets a proposed patch and a pull request")),
          ],
-         "regulatory": [{"obligation_ref": "rbi-csf"}, {"obligation_ref": "rbi-csf:crypto-algorithms"},
-                        {"obligation_ref": "sebi-cscrf"}, {"obligation_ref": "owasp-api-2023"}],
+         "regulatory": [{"obligation_ref": "rbi-csf:crypto-algorithms"}],
          "security": [
-             {"text": "No credentials in source", "detail": "A deterministic rule: a secret in code blocks the pull request."},
-             {"text": "Every exposed API endpoint is tested", "detail": "By the API Security engine, at least every 7 days."},
-             {"text": "Only proof blocks a release", "detail": "A reproduced exploit, a triage verdict of confirmed, or a deterministic rule such as a secret. A scanner hit alone does not."},
-             {"text": "Triage never guesses", "detail": "A scanner hit it cannot judge stays uncertain for a person. It is never marked a false positive by default."}]},
-        {"id": "standard-baseline", "name": "Standard baseline",
-         "applies": "Applications tagged Tier 2 or Tier 3", "applies_tier": ["Tier 2", "Tier 3"],
+             secret,
+             thin("Every exposed API endpoint is tested", "By the API Security engine, at least every 7 days."),
+             proof,
+             thin("Triage never guesses", "A scanner hit it cannot judge stays uncertain for a person. It is never marked a false positive by default.")]},
+        {"id": "internal", "name": "Internal and back-office",
+         "applies": "Applications that are not exposed to customers or partners",
+         "applies_when": {"category": [], "exposure": ["Internal"], "stack": [], "tier": []},
          "version": 1, "approved": None, "cadence_days": 7,
+         "guidelines": ["rbi-csf"],
          "steps": [
              step("trivy", True, every, "Blocks on a secret in source. A critical CVE goes to triage.",
-                  sec("No credentials in source")),
+                  sec("No credentials in source"), reg("rbi-csf:secrets")),
              step("semgrep", True, every, "Flags the application as out of policy; feeds triage",
                   sec("Injection and unsafe-deserialisation patterns checked")),
              step("nuclei", False, "When a staging URL is configured", "None. Optional."),
@@ -680,16 +721,41 @@ def _policies() -> dict[str, Any]:
              step("swarm", False, "On request", "Blocks on any reproduced exploit"),
              step("fix", False, "After a proven exploit", "None. Optional."),
          ],
-         "security": [{"text": "No credentials in source",
-                       "detail": "A deterministic rule: a secret in code blocks the pull request."}]},
+         "security": [secret]},
+        {"id": "non-banking-web", "name": "Non-banking web and API",
+         "applies": "Web and API applications outside banking",
+         "applies_when": {"category": ["Non-banking"], "exposure": [], "stack": ["Web", "API"],
+                          "tier": []},
+         "version": 1, "approved": None, "cadence_days": 7,
+         "guidelines": ["owasp-api-2023"],
+         "steps": [
+             step("trivy", True, every, "Blocks on a secret in source. A critical CVE goes to triage.",
+                  sec("No credentials in source")),
+             step("semgrep", True, every, "Flags the application as out of policy; feeds triage",
+                  sec("Injection and unsafe-deserialisation patterns checked")),
+             step("nuclei", True, "At least every 7 days", "Flags the application as out of policy",
+                  sec("Known-exposure checks against the running site")),
+             step("apisec", False, "When the application exposes an API", "None. Optional."),
+             step("recon", False, "With every exploit run", "None. Optional."),
+             step("triage", True, "After every scanner run", "Flags the application as out of policy.",
+                  sec("Every scanner hit is read against the source and judged")),
+             step("compliance", False, "Weekly", "Advises only. Never blocks."),
+             step("swarm", False, "On request", "Blocks on any reproduced exploit"),
+             step("fix", False, "After a proven exploit", "None. Optional."),
+         ],
+         "security": [secret]},
     ]}
 
 
 def _portfolio() -> dict[str, Any]:
     apps = []
     for slug, label, repo, tier, owner, lang, _ in APPS:
-        apps.append({"repo": repo, "label": label, "tier": tier, "owner": owner, "lang": lang,
-                     "policy": "tier1-payments" if tier == "Tier 1" else "standard-baseline"})
+        category, exposure, stack = PROFILE[slug]
+        row = {"repo": repo, "label": label, "tier": tier, "owner": owner, "lang": lang,
+               "category": category, "exposure": exposure, "stack": stack}
+        if slug in PINNED:
+            row["policy"] = PINNED[slug]
+        apps.append(row)
     return {"sample": True, "organization": "iBank (sample data)", "cadence_days": 7,
             "applications": apps}
 

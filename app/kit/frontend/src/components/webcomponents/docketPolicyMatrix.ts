@@ -34,13 +34,13 @@ export interface MatrixRow {
 const WORD: Record<CellState, string> = { ok: 'Ran', stale: 'Stale', missing: 'Never ran', na: 'Not required' };
 
 export class DocketPolicyMatrix extends HenoyoElement {
-  private _heading = 'Policy coverage';
+  private _heading = 'Required checks against the policy';
   private _scanners: MatrixScanner[] = [];
   private _rows: MatrixRow[] = [];
   private _window = 7;
 
   set heading(v: string | undefined) {
-    this._heading = v ?? 'Policy coverage';
+    this._heading = v ?? 'Required checks against the policy';
     this.invalidate();
   }
   set scanners(v: MatrixScanner[]) {
@@ -92,10 +92,10 @@ export class DocketPolicyMatrix extends HenoyoElement {
       });
     const ok = this._rows.filter(meets).length;
     const breach = this._rows.length - ok;
-    const title = `${ok} of ${this._rows.length} applications meet the policy`;
+    const title = `${ok} of ${this._rows.length} applications have every required check current`;
     const stats: KitStat[] = [
-      { text: `${ok} meet it`, tone: 'ok', icon: 'check' },
-      ...(breach > 0 ? [{ text: `${breach} breach it`, tone: 'bad' as const, icon: 'triangle-alert' }] : []),
+      { text: `${ok} current`, tone: 'ok', icon: 'check' },
+      ...(breach > 0 ? [{ text: `${breach} lack a check`, tone: 'bad' as const, icon: 'triangle-alert' }] : []),
     ];
     const head = `<tr><th></th>${this._scanners
       .map(

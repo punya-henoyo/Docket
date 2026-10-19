@@ -53,6 +53,10 @@ class StaticReport:
     findings: list[StaticFinding] = field(default_factory=list)
     engines: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # Set only when the results came from an IMPORTED SARIF document: which tool made it,
+    # and when. See sarif_import_meta. None means "not imported" (a Semgrep run of ours,
+    # or a file we could not read), never "imported with unknown details".
+    imported: dict | None = None
 
     def add(self, finding: StaticFinding) -> bool:
         """Dedupe on (rule, file, line). Two engines flagging the same line is one lead."""
@@ -65,9 +69,12 @@ class StaticReport:
         return len(self.findings)
 
     def to_dict(self) -> dict:
-        return {"engines": self.engines, "notes": self.notes,
-                "finding_count": len(self.findings),
-                "findings": [asdict(f) for f in self.findings]}
+        out = {"engines": self.engines, "notes": self.notes,
+               "finding_count": len(self.findings),
+               "findings": [asdict(f) for f in self.findings]}
+        if self.imported is not None:
+            out["imported"] = self.imported
+        return out
 
     def save(self, run_dir: Path) -> Path:
         path = Path(run_dir) / "static.json"
@@ -94,6 +101,32 @@ def cwe_from_tags(tags: list) -> str | None:
             # CWE-79, and docket's own SARIF tags must match for these to correlate.
             return f"CWE-{int(number)}"
     return None
+
+
+def sarif_import_meta(document: dict) -> dict:
+    """Who produced an imported SARIF document, and when: the facts the console needs to
+    say "CodeQL, run on this commit" instead of crediting the import to Docket.
+
+    Always has `tool`, `tool_version`, `sarif_at` and `revision` keys; a value the file does
+    not carry is None rather than a guess. `sarif_at` is the file's OWN time (the latest
+    invocation end), so a stale file re-imported today does not look fresh.
+    """
+    runs = [r for r in document.get("runs") or [] if isinstance(r, dict)]
+    run = runs[0] if runs else {}
+    driver = (run.get("tool") or {}).get("driver") if isinstance(run.get("tool"), dict) else {}
+    driver = driver if isinstance(driver, dict) else {}
+
+    def text(value: object) -> str | None:
+        return str(value).strip() or None if isinstance(value, (str, int, float)) else None
+
+    ends = [t for inv in run.get("invocations") or [] if isinstance(inv, dict)
+            if (t := text(inv.get("endTimeUtc")))]
+    revision = next((r for p in run.get("versionControlProvenance") or []
+                     if isinstance(p, dict) and (r := text(p.get("revisionId")))), None)
+    return {"tool": text(driver.get("name")),
+            "tool_version": text(driver.get("version")) or text(driver.get("semanticVersion")),
+            "sarif_at": max(ends) if ends else None,
+            "revision": revision}
 
 
 def parse_sarif(document: dict, *, engine: str | None = None) -> StaticReport:

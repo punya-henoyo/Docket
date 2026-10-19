@@ -175,15 +175,16 @@ RULE, using the same facts the health card uses; the number only places it insid
   fraction of required steps current (a step inside twice its window counts half); right half
   54..96 by recency (the fresher, the further right). `assurance_note` says "N of M required
   scanners current" and the tooltip adds the policy's depth ("policy requires 5 steps").
-* **Upper half (y)** iff the application's security reasons are clear: nothing proven, confirmed,
-  reachable-critical or uncertain-high is open. Ordinal bands, lowest first (the lower half is
-  y 4..48): 1 a reproduced exploit or a deterministic-floor secret open (4..24, more of them
-  lower); 2 a triage-CONFIRMED item not reproduced, or a reachable critical dependency CVE
-  (24..38); 3 UNCERTAIN high or critical item(s) a person must judge (38..48; never counted as
-  clean or as confirmed, AGENTS.md rule 12). Upper half: y = 90 (nothing proven open).
-  **Candidates never move a dot** on either axis (AGENTS.md rule 10); they live in the weekly
-  outcome counts only. `standing_note` states the band in words. The payload field is `standing`,
-  the screen calls the axis "Proven problems", never "exposure" (that is a profile field).
+* **Lower half (y)** iff a proven or confirmed problem is open. Ordinal bands, lowest first
+  (y 4..48): 1 a reproduced exploit or a deterministic-floor secret open (4..26, more of them
+  lower); 2 a triage-CONFIRMED item not reproduced, or a reachable critical dependency CVE whose
+  reachability triage confirmed (26..48). **Upper half**: nothing proven or confirmed is open.
+  Sub-bands (higher is clearer): 3 UNCERTAIN high or critical item(s) a person must judge (y 52..64;
+  never counted as clean or as confirmed, AGENTS.md rule 12; the dot keeps its amber `attention`
+  colour and the tooltip says "needs a person to judge"); 4 nothing open (y = 90). **Candidates never
+  move a dot** on either axis (AGENTS.md rule 10); they live in the weekly outcome counts only.
+  `standing_note` states the band in words. The payload field is `standing`, the screen calls the
+  axis "Proven problems" ("proven or confirmed": the info text says so), never "exposure".
 * **Proven items persist.** Today an open reproduced finding vanishes when a later static-only scan
   does not list it, which would make an app look better for running less. Rule: proven counts come
   from the **latest run in which the exploit lane ran**; a later run that skipped it does not clear
@@ -205,7 +206,7 @@ RULE, using the same facts the health card uses; the number only places it insid
   `tl` "Checks overdue, nothing proven" (Quiet is not safe: a required check is missing or stale),
   `br` "Checks current, problems proven" (The risk is real and well evidenced. Fix it),
   `bl` "Checks overdue, problems proven" (Proven problems and gaps in coverage. Look here first).
-  `tr` additionally requires the application's level to be `clear`. A zero-required-step policy is
+  The "Clearest right now" list additionally requires level `clear`. A zero-required-step policy is
   refused on save (a policy with nothing required would put everything on the right).
 * `points[].cell`: `tl|tr|bl|br` (server decided). `posture.by_snapshot`: per snapshot date the
   number of applications in each cell plus `unassessed`, drawn as small multiples so "are we

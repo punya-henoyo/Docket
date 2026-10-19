@@ -21,13 +21,13 @@ import { ApplicationPage } from "./views/ApplicationPage";
 import { ScansPage } from "./views/ScansPage";
 import { ScanRunPage } from "./views/ScanRunPage";
 import { FindingsPage } from "./views/FindingsPage";
-import { PolicyPage } from "./views/PolicyPage";
+import { PoliciesPage } from "./views/PoliciesPage";
 import { ComplianceBaseline } from "./views/ComplianceBaseline";
 
 // The console is the "Code Security" application inside Henoyo. Tabs follow the question a person
 // asks, posture first (a security lead), then the work an engineer does:
 //   Home (who needs me), Applications (one record each), Scans, Pull requests, Findings,
-//   Compliance (what the code says about written requirements), Policy (what must run).
+//   Compliance (what the code says about written requirements), Policies (what must run).
 // The older single-scan views keep working under scandetail / scanfindings / scancompliance, reached
 // from a scan record, so nothing the previous console did is lost.
 const TABS: Tab[] = [
@@ -37,7 +37,7 @@ const TABS: Tab[] = [
   { id: "pulls", label: "Pull requests" },
   { id: "findings", label: "Findings" },
   { id: "compliance", label: "Compliance" },
-  { id: "policy", label: "Policy" },
+  { id: "policy", label: "Policies" },
   { id: "repos", label: "Connections" },
 ];
 
@@ -421,7 +421,8 @@ export default function App() {
     ) : view === "compliance" ? (
       <ComplianceBaseline portfolio={portfolio.data} go={go} />
     ) : view === "policy" ? (
-      <PolicyPage go={go} />
+      <PoliciesPage go={go} portfolio={portfolio.data} onPortfolioChanged={portfolio.reload}
+                    connected={Boolean(session?.connected)} param={route.param} />
     ) : (
       <Home portfolio={portfolio.data} error={portfolio.error} go={go} />
     );

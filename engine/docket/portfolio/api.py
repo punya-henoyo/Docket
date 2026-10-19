@@ -20,11 +20,13 @@ from pathlib import Path
 from typing import Any
 
 from docket.portfolio import health as health_mod
+from docket.portfolio import posture as posture_mod
 from docket.portfolio import timeutil
-from docket.portfolio.catalog import BY_ID, CATALOG, GROUPS, SPECIALISTS
+from docket.portfolio.catalog import (
+    BY_ID, CATALOG, GROUPS, SPECIALISTS, STARTS, default_tool, slot_tools)
 from docket.portfolio.model import disk
 from docket.portfolio.model.derive import AppState, Item, Model, RunView, build_model, coverage
-from docket.portfolio.policy import GATE, Policy, default_policy
+from docket.portfolio.policy import GATE, Policy, default_policy, find_ties, floor_warnings
 
 WINDOW_DAYS = 28
 _LEVEL_RANK = {"action": 0, "attention": 1, "clear": 2, "unknown": 3}
@@ -53,12 +55,59 @@ def _event(app: AppState, run: RunView) -> dict[str, Any]:
             "proven": proven, "candidates": candidates, "kind": run.kind, "label": run.label}
 
 
+def assignment_view(app: AppState) -> dict[str, Any]:
+    """`assignment` of an application: which policy governs it and why (spec section 3)."""
+    found = app.assignment or {"policy": app.policy, "via": "default", "incomplete": [],
+                               "overrides": None}
+    return {"policy": app.policy.id, "via": found["via"], "incomplete": list(found["incomplete"]),
+            "overrides": found["overrides"]}
+
+
+def profile_sentence(app: AppState) -> str | None:
+    """"Profile incomplete: category is missing, so the default policy applies", or None."""
+    missing = (app.assignment or {}).get("incomplete") or []
+    if not missing:
+        return None
+    names = " and ".join(missing) if len(missing) < 3 else ", ".join(missing[:-1]) + " and " + missing[-1]
+    via = (app.assignment or {}).get("via")
+    applies = ("the default policy applies" if via == "default"
+               else f"the {app.policy.name} policy applies")
+    return f"Profile incomplete: {names} {'is' if len(missing) == 1 else 'are'} missing, so {applies}"
+
+
+def _health(app: AppState, now: float) -> health_mod.Health:
+    """health.evaluate plus the profile-gap reason.
+
+    An application whose profile lacks a field some policy constrains gets the best policy,
+    but nobody chose it, so the card says so as an attention reason. health.py knows nothing of
+    profiles, so the reason is added here: it raises `clear` to `attention`, is appended to the
+    reasons of an application that is already `attention` or `action`, and never touches
+    `unknown` (no scan, no card)."""
+    h = health_mod.evaluate(app, now)
+    text = profile_sentence(app)
+    if text is None or h.level == "unknown":
+        return h
+    import dataclasses
+
+    banner = [*h.banner, {"id": f"b{len(h.banner) + 1}", "level": "warning",
+                          "word": "Profile incomplete", "message": text + ".",
+                          "reason": "Add the missing field to docket_portfolio.json so the "
+                                    "intended policy applies.", "actionLabel": None, "href": None}]
+    if h.level == "clear":
+        banner = [b for b in banner if b["level"] != "success"]
+        return dataclasses.replace(h, level="attention", reason=text, reasons=[text + "."],
+                                   verdict=text + ".", banner=banner)
+    return dataclasses.replace(h, reasons=[*h.reasons, text + "."], banner=banner)
+
+
 def _application(app: AppState, h: health_mod.Health, now: float) -> dict[str, Any]:
     latest = app.latest
     since = now - WINDOW_DAYS * timeutil.DAY
     return {
         "id": app.id, "label": app.label, "repo": app.repo, "tier": app.tier,
+        "category": app.category, "exposure": app.exposure, "stack": app.stack,
         "owner": app.owner, "lang": app.lang, "policy": app.policy.id,
+        "assignment": assignment_view(app),
         "level": h.level, "reason": h.reason,
         "age_days": timeutil.whole_days(now - latest.at) if latest else None,
         "last_scan_at": timeutil.iso(latest.at) if latest else None,
@@ -67,7 +116,7 @@ def _application(app: AppState, h: health_mod.Health, now: float) -> dict[str, A
 
 
 def _all(model: Model, now: float) -> list[tuple[AppState, health_mod.Health]]:
-    rows = [(a, health_mod.evaluate(a, now)) for a in model.apps]
+    rows = [(a, _health(a, now)) for a in model.apps]
     rows.sort(key=lambda r: (_LEVEL_RANK[r[1].level], r[0].label.lower()))
     return rows
 
@@ -82,13 +131,31 @@ def _active(run: RunView | None) -> list[Item]:
     return health_mod._active(run.items) if run else []
 
 
-def _step_days(app: AppState, step_id: str, now: float) -> tuple[str, str]:
-    """(state, ago) of one required scanner for one application."""
+def _standing(app: AppState, run: RunView | None) -> list[Item]:
+    """Open items that count for `app`, reproduced exploits carried forward from the latest
+    exploit-lane run (derive.AppState.standing_items): the card, the map and every list
+    read this, so a later static-only scan cannot make an exploit disappear."""
+    return app.standing_items(run)[0] if run else []
+
+
+def _open_findings(app: AppState, run: RunView, seen: dict[str, float], now: float
+                   ) -> list[dict[str, Any]]:
+    """The open items of the latest run plus the exploits carried from an earlier exploit
+    run, each tagged with the run it was found in. Never a candidate promoted."""
+    return [i.finding(app.id, timeutil.whole_days(now - seen.get(i.key, now)))
+            for i in [*run.open_items, *app.carried_proven(run)]]
+
+
+def _step_days(app: AppState, step_id: str, now: float,
+               policy: Policy | None = None) -> tuple[str, str]:
+    """(state, ago) of one required scanner for one application, judged against `policy`
+    (default: the application's own). A preview passes the draft, so it and the matrix share
+    this one definition of ok, stale and missing."""
     last = app.last_ran(step_id)
     if last is None:
         return "missing", "never"
     age = now - last
-    state = "ok" if age <= app.policy.window_days(step_id) * timeutil.DAY else "stale"
+    state = "ok" if age <= (policy or app.policy).window_days(step_id) * timeutil.DAY else "stale"
     return state, timeutil.ago(age)
 
 
@@ -142,7 +209,7 @@ def _severity_age(model: Model, now: float) -> dict[str, Any]:
     old = 0
     for app in model.apps:
         seen = app.first_seen()
-        for item in _active(app.latest):
+        for item in _standing(app, app.latest):
             if item.sev not in ("critical", "high", "medium", "low"):
                 continue
             age = timeutil.whole_days(now - seen.get(item.key, now))
@@ -186,6 +253,8 @@ def portfolio_payload(cwd: Path | None = None, now: float | None = None) -> tupl
         "applications": [_application(a, h, now) for a, h in rows],
         "scanner_coverage": _scanner_coverage(model, now),
         "trend": _trend(model, now), "severity_age": _severity_age(model, now),
+        "posture": posture_mod.build_posture(
+            model, model.policies, now, {a.id: (h.level, h.reason) for a, h in rows}),
     }
 
 
@@ -268,6 +337,12 @@ def build_lanes(app: AppState, run: RunView) -> dict[str, Any]:
                                 "group": sc.phase, "icon": sc.icon, "required": required}
         if sc.tool:
             lane["tool"] = sc.tool
+        imported = run.import_meta(sc.id)
+        if imported:
+            # An imported static result names its own tool, version, time and commit.
+            lane["tool"] = imported.get("tool") or lane.get("tool")
+            lane.update({k: imported.get(k) for k in ("tool_version", "sarif_at", "revision")})
+            lane["imported"] = True
         state: str | None = None
         timing: dict[str, float] = {}
         if sc.stage is not None:
@@ -448,7 +523,7 @@ def _lifecycle(app: AppState, h: health_mod.Health) -> dict[str, Any]:
     if run is None:
         return {"current": "onboarded", "since": None, "owner": app.owner}
     seen = app.first_seen()
-    items = _active(run)
+    items = _standing(app, run)
     fixes = health_mod.fix_rows(app)
     hot = [i for i in items if i.proof in ("reproduced", "deterministic") or i.blocks]
     since = run.at
@@ -473,13 +548,12 @@ def application_payload(app_id: str, cwd: Path | None = None, now: float | None 
     app = model.app(app_id)          # equality against derived ids; never a path
     if app is None:
         return 404, {"error": "no such application"}
-    h = health_mod.evaluate(app, now)
+    h = _health(app, now)
     run = app.latest
     seen = app.first_seen()
     findings = []
     if run is not None:
-        findings = [i.finding(app.id, timeutil.whole_days(now - seen.get(i.key, now)))
-                    for i in run.open_items]
+        findings = _open_findings(app, run, seen, now)
         findings.sort(key=lambda f: (_PROOF_RANK[f["proof"]], _SEV_RANK[f["sev"]], f["title"]))
     pipeline: dict[str, Any] = {"run": None, "lanes": [], "groups": [dict(g) for g in GROUPS],
                                 "policy": app.policy.name}
@@ -517,8 +591,7 @@ def findings_payload(cwd: Path | None = None, now: float | None = None) -> tuple
         if run is None:
             continue
         seen = app.first_seen()
-        rows += [i.finding(app.id, timeutil.whole_days(now - seen.get(i.key, now)))
-                 for i in run.open_items]
+        rows += _open_findings(app, run, seen, now)
     rows.sort(key=lambda f: (_PROOF_RANK[f["proof"]], _SEV_RANK[f["sev"]], f["application"], f["title"]))
     return 200, {"generated_at": timeutil.iso(now), "sample": model.sample, "count": len(rows),
                  "findings": rows}
@@ -543,16 +616,48 @@ def _step_view(policy: Policy, n: int, step: dict[str, Any]) -> dict[str, Any]:
     else:
         on_fail = "Flags the application as out of policy" if step["required"] else "None. Optional."
     group = next(g["label"] for g in GROUPS if g["key"] == sc.phase)
-    return {"n": n, "id": sc.id, "label": sc.label, "tool": sc.tool, "origin": sc.origin,
+    chosen = next((t for t in slot_tools(sc.id) if t["id"] == step.get("tool")), None) \
+        or default_tool(sc.id) or {}
+    return {"n": n, "id": sc.id, "label": sc.label,
+            "tool": chosen["name"] if step.get("tool") else sc.tool,
+            "tool_id": step.get("tool"), "origin": chosen.get("origin", sc.origin),
+            "availability": chosen.get("availability"),
             "phase": group, "required": step["required"], "cadence": cadence, "on_fail": on_fail,
-            "why": [dict(w) for w in step["why"]]}
+            "cadence_days": step["cadence_days"], "why": [dict(w) for w in step["why"]]}
 
 
-def _policy_view(model: Model, pol: Policy) -> dict[str, Any]:
+def starts_for(pol: Policy) -> list[dict[str, Any]]:
+    """How assessments start: stated, never configured. The schedule entry names the cadence
+    the policy JUDGES against; Docket does not start scans by itself yet (planned)."""
+    return [{**s, "label": f"Every {pol.cadence_days} days"} if s["kind"] == "schedule" else dict(s)
+            for s in STARTS]
+
+
+def meets(app: AppState, now: float, policy: Policy | None = None) -> bool:
+    """Does the application meet the policy: every required scanner finished inside its
+    window. The matrix's definition (`_step_days`), and the preview's."""
+    pol = policy or app.policy
+    return all(_step_days(app, s, now, pol)[0] == "ok" for s in pol.required_ids())
+
+
+def policy_conflicts(pols: list[Policy]) -> list[dict[str, Any]]:
+    names = {p.id: p.name for p in pols}
+    return [{"ids": [a, b], "message": f"{names[a]} and {names[b]} are equally specific for "
+             "the same applications; make one of them narrower"} for a, b in find_ties(pols)]
+
+
+def _policy_view(model: Model, pol: Policy, now: float | None = None,
+                 conflicts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    mine = [a for a in model.apps if a.policy.id == pol.id]
     return {
         "id": pol.id, "name": pol.name,
-        "applies": pol.applies, "applies_count": sum(a.policy.id == pol.id for a in model.apps),
+        "applies": pol.applies, "applies_when": {k: list(v) for k, v in pol.applies_when.items()},
+        "applies_count": len(mine),
+        "meets_count": sum(meets(a, now) for a in mine) if now is not None else None,
         "version": pol.version, "approved": pol.approved, "cadence_days": pol.cadence_days,
+        "default": pol.default, "status": pol.status, "guidelines": list(pol.guidelines),
+        "starts": starts_for(pol), "warnings": floor_warnings(pol),
+        "conflicts": [c for c in (conflicts or []) if pol.id in c["ids"]],
         "steps": [_step_view(pol, n, s) for n, s in enumerate(pol.steps, 1)],
         "regulatory": [{"authority": w.get("authority"), "text": w["text"],
                         "obligation_ref": w.get("obligation_ref"), "clause": w.get("clause"),
@@ -562,12 +667,13 @@ def _policy_view(model: Model, pol: Policy) -> dict[str, Any]:
     }
 
 
-def _consequence(app: AppState, run: RunView | None, now: float) -> dict[str, Any]:
+def _consequence(app: AppState, run: RunView | None, now: float,
+                 policy: Policy | None = None) -> dict[str, Any]:
     """What the policy does about this application, scanner coverage first (that is what the
     matrix columns show): a stale or missing required scanner FLAGS; otherwise open blocking
     findings BLOCK; otherwise nothing."""
-    pol = app.policy
-    states = [(s, *_step_days(app, s, now)) for s in pol.required_ids()]
+    pol = policy or app.policy
+    states = [(s, *_step_days(app, s, now, pol)) for s in pol.required_ids()]
     bad = [(s, st, ago) for s, st, ago in states if st != "ok"]
     if bad:
         if len(bad) == len(states) and len(states) > 1 and all(st == "stale" for _, st, _ in bad):
@@ -581,7 +687,7 @@ def _consequence(app: AppState, run: RunView | None, now: float) -> dict[str, An
         else:
             text = f"{len(bad)} required scanners are stale or missing"
         return {"effect": "flags", "text": text}
-    blockers = [i for i in _active(run) if i.blocks]
+    blockers = [i for i in _standing(app, run) if i.blocks]
     if blockers:
         n = len(blockers)
         text = (f"Reproduced exploit is open: {blockers[0].title}" if n == 1 and blockers[0].proof == "reproduced"
@@ -618,8 +724,10 @@ def policy_payload(policy_id: str | None = None, cwd: Path | None = None,
         if found is None:
             return 404, {"error": "no such policy"}
         chosen = found
+    conflicts = policy_conflicts(model.policies)
     body: dict[str, Any] = {
-        "policies": [_policy_view(model, p) for p in pols],
+        "policies": [_policy_view(model, p, now, conflicts) for p in pols],
+        "conflicts": conflicts,
         "coverage": _coverage_block(model, chosen, now), "sample": model.sample}
     if model.warnings:
         body["warnings"] = list(model.warnings)

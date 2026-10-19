@@ -43,7 +43,7 @@ check:
 	  docket.compliance.service \
 	  docket.portfolio.timeutil docket.portfolio.catalog docket.portfolio.policy \
 	  docket.portfolio.model.disk docket.portfolio.model.derive docket.portfolio.health \
-	  docket.portfolio.api docket.demo.seed \
+	  docket.portfolio.posture docket.portfolio.api docket.portfolio.policy_write docket.demo.seed \
 	  docket.core.compliance \
 	  docket.tools.compliance.tool docket.agents.prompts.compliance \
 	  docket.tools.triage.tool docket.tools.recon.tool docket.tools.fix.tool docket.tools.source.tools \

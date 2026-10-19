@@ -12,3 +12,11 @@
 a.hx-btn{text-decoration:none;color:inherit}
 a.hx-btn.hx-primary{color:rgb(var(--h-brand-fg))}
 .hx-scroll{overflow-x:auto}
+
+/* Position strip: the application's own two-by-two beside its notes and its policy. */
+.hx-posstrip{display:grid;grid-template-columns:auto minmax(0,1.4fr) minmax(0,1fr);gap:24px;align-items:start}
+@media(max-width:980px){.hx-posstrip{grid-template-columns:1fr}}
+.hx-posbody .hx-cell{font:600 14px Inter,sans-serif;margin-bottom:4px}
+.hx-posbody .hx-kv{margin-top:10px}
+.hx-posbody a{color:rgb(var(--h-text-link));font-weight:600}
+.hx-miniq{display:block;max-width:100%;height:auto}

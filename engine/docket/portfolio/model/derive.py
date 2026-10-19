@@ -36,7 +36,7 @@ from typing import Any
 from docket.portfolio import timeutil
 from docket.portfolio.catalog import BY_ID, SPECIALISTS, Source, classify_source
 from docket.portfolio.model import disk
-from docket.portfolio.policy import Policy, load_policies, policy_for, requires_pr
+from docket.portfolio.policy import Policy, assign, load_policies, requires_pr
 from docket.report.writer import parse_source_file
 from docket.service.gate import floor_reason
 
@@ -210,7 +210,9 @@ def _from_lead(run: str, lead: dict[str, Any], verdict_row: dict[str, Any] | Non
     """A flagged_not_proven entry (or a triage row with no finding behind it)."""
     rule_id = str(lead.get("rule_id") or "") or None
     engine = str(lead.get("engine") or "semgrep")
-    src = classify_source(engine)
+    # A lead's `engine` is a tool name (an imported SARIF may name any vendor), never the
+    # free-text author of a proven finding, so an unknown name is credited to that tool.
+    src = classify_source(engine, imported=True)
     file, line = lead.get("file"), lead.get("line")
     raw_triage = verdict_row if verdict_row is not None else (
         lead.get("triage") if isinstance(lead.get("triage"), dict) else None)
@@ -300,10 +302,27 @@ class RunView:
     errored: bool
     finished: bool
     sample: bool = False
+    # report.json `stage_meta`: for an IMPORTED static result, {tool, tool_version, sarif_at,
+    # revision} under the stage key it filled (the catalog's "semgrep" slot).
+    stage_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def open_items(self) -> list[Item]:
         return [i for i in self.items if i.open]
+
+    def step_time(self, step_id: str) -> float:
+        """When this step's result dates from. A run's own time, except for an imported
+        static result that carries the SARIF's own time: a stale file imported today must not
+        look fresh. Never later than the run (a clock in the file is not evidence of the future)."""
+        meta = self.import_meta(step_id)
+        sarif_at = timeutil.parse_iso(meta.get("sarif_at")) if meta else None
+        return self.at if sarif_at is None else min(sarif_at, self.at)
+
+    def import_meta(self, step_id: str) -> dict[str, Any] | None:
+        """The imported-tool record of a step (tool, tool_version, sarif_at, revision), or None."""
+        stage = BY_ID[step_id].stage if step_id in BY_ID else None
+        meta = self.stage_meta.get(stage) if stage else None
+        return meta if isinstance(meta, dict) and meta else None
 
 
 def app_key(report: dict[str, Any], name: str) -> str:
@@ -322,17 +341,22 @@ def _num(value: object) -> float | None:
 
 
 def _ran(report: dict[str, Any], stages: dict[str, str],
-         timings: dict[str, dict[str, float]]) -> frozenset[str]:
+         timings: dict[str, dict[str, float]],
+         stage_meta: dict[str, dict[str, Any]] | None = None) -> frozenset[str]:
     """Catalog ids with EVIDENCE of having run to completion. Absence of a stage record is
     not evidence: an old report with no `stages` yields an empty set, so coverage reads
-    partial rather than claiming scanners ran that nothing says ran."""
+    partial rather than claiming scanners ran that nothing says ran.
+
+    An imported static result (`stage_meta`, written by report/writer.py for an imported
+    SARIF) is evidence that the slot was filled, unless the stage itself ended in error."""
     ran: set[str] = set()
     for sid, scanner in BY_ID.items():
         if scanner.stage is None:
             continue
         state = stages.get(scanner.stage)
         stamp = timings.get(scanner.stage) or {}
-        if state == "done" or (state is None and "ended" in stamp):
+        imported = bool((stage_meta or {}).get(scanner.stage)) and state in (None, "done", "skipped")
+        if state == "done" or (state is None and "ended" in stamp) or imported:
             ran.add(sid)
     agents = [a for a in (report.get("agents") or []) if isinstance(a, dict)]
     usage = (report.get("usage") or {}).get("agents") if isinstance(report.get("usage"), dict) else []
@@ -364,6 +388,8 @@ def load_run(name: str, directory: Path) -> RunView | None:
             timings[str(k)] = {"started": float(v["started"])}
             if _num(v.get("ended")) is not None:
                 timings[str(k)]["ended"] = float(v["ended"])
+    raw_meta = report.get("stage_meta") if isinstance(report.get("stage_meta"), dict) else {}
+    stage_meta = {str(k): dict(v) for k, v in raw_meta.items() if isinstance(v, dict) and v}
     prov = report.get("provenance") if isinstance(report.get("provenance"), dict) else {}
     pr = prov.get("pr")
     kind = "pr" if pr or name.startswith("pr-") else "scan"
@@ -371,10 +397,10 @@ def load_run(name: str, directory: Path) -> RunView | None:
         name=name, directory=directory, report=report, at=at, started=started, ended=ended,
         kind=kind, label=f"PR #{pr}" if pr else None, repo=app_key(report, name),
         items=build_items(name, report), stages=stages, timings=timings,
-        ran=_ran(report, stages, timings),
+        ran=_ran(report, stages, timings, stage_meta),
         errored=any(v == "error" for v in stages.values()),
         finished=str(report.get("status") or "completed") == "completed",
-        sample=bool(report.get("sample")))
+        sample=bool(report.get("sample")), stage_meta=stage_meta)
 
 
 def coverage(run: RunView, policy: Policy) -> str:
@@ -400,6 +426,11 @@ class AppState:
     lang: str | None
     policy: Policy
     runs: list[RunView] = field(default_factory=list)      # ascending by time, scans and PRs
+    # Application profile (policy-and-posture.md section 2) and how its policy was chosen.
+    category: str | None = None
+    exposure: str | None = None
+    stack: str | None = None
+    assignment: dict | None = None      # policy.assign() result; `policy` above is its policy
 
     @property
     def scans(self) -> list[RunView]:
@@ -421,12 +452,69 @@ class AppState:
                 seen.setdefault(item.key, run.at)
         return seen
 
-    def last_ran(self, step_id: str) -> float | None:
-        """When this step last ran in a scan of the matching kind (None: never)."""
-        for run in reversed(self.runs):
-            if step_id in run.ran and requires_pr(step_id, run.kind):
-                return run.at
+    def runs_asof(self, asof: float | None = None) -> list[RunView]:
+        """Runs at or before `asof` (all of them when None), oldest first."""
+        return self.runs if asof is None else [r for r in self.runs if r.at <= asof]
+
+    def latest_asof(self, asof: float | None = None) -> RunView | None:
+        """`latest` as it stood at `asof`: the newest scan, else the newest run of any kind."""
+        runs = self.runs_asof(asof)
+        scans = [r for r in runs if r.kind == "scan"]
+        return scans[-1] if scans else (runs[-1] if runs else None)
+
+    def last_ran(self, step_id: str, asof: float | None = None) -> float | None:
+        """When this step last ran in a FULL scan, at or before `asof` (None: never).
+
+        The one definition of "ran" for assurance, shared by the matrix, the health card and
+        the posture map. A pull-request check is scoped, so it does not refresh a required
+        step. An imported static result is dated by the SARIF's own time (`step_time`)."""
+        best: float | None = None
+        for run in self.runs_asof(asof):
+            if run.kind != "scan" or step_id not in run.ran:
+                continue
+            t = run.step_time(step_id)
+            best = t if best is None else max(best, t)
+        return best
+
+    def exploit_run(self, asof: float | None = None) -> RunView | None:
+        """The latest run, at or before `asof`, in which the exploit lane ran. A run that
+        holds a reproduced finding ran it by definition, whatever else the report records."""
+        for run in reversed(self.runs_asof(asof)):
+            if "swarm" in run.ran or any(i.proof == "reproduced" for i in run.items):
+                return run
         return None
+
+    def standing_items(self, run: RunView, asof: float | None = None
+                       ) -> tuple[list[Item], RunView | None]:
+        """(open items that count, the run whose exploit lane they come from).
+
+        PROVEN ITEMS PERSIST. Reproduced exploits are read from the latest run in which the
+        exploit lane ran, never from a later static-only scan: otherwise an application would
+        look better for running less. Everything else comes from `run`, the latest scan.
+        Items triage cleared (not_reachable) do not count; a floor hit does."""
+        ex = self.exploit_run(asof)
+        if ex is None or ex is run:
+            return active_items(run.items), ex
+        base = [i for i in active_items(run.items) if i.proof != "reproduced"]
+        return base + [i for i in active_items(ex.items) if i.proof == "reproduced"], ex
+
+
+    def carried_proven(self, run: RunView, asof: float | None = None) -> list[Item]:
+        """Open reproduced exploits that live in an EARLIER exploit-lane run than `run` and
+        are not listed in `run` itself: what a later static-only scan did not clear. Each item
+        keeps its own `run`, so a table can say where it came from. Only reproduced items are
+        carried; a candidate is never promoted (AGENTS.md rule 10)."""
+        ex = self.exploit_run(asof)
+        if ex is None or ex is run:
+            return []
+        have = {i.key for i in run.open_items}
+        return [i for i in ex.open_items if i.proof == "reproduced" and i.key not in have]
+
+
+def active_items(items: list[Item]) -> list[Item]:
+    """Open items that still count: triage-cleared (not_reachable) ones do not, but a
+    deterministic floor hit does, because the gate does not defer to a verdict."""
+    return [i for i in items if i.open and i.proof != "not_reachable"]
 
 
 @dataclass(slots=True)
@@ -465,10 +553,13 @@ def build_model(cwd: Path | None = None, now: float | None = None) -> Model:
             continue
         repo = entry["repo"].strip()
         row = {k: (str(entry[k]) if entry.get(k) is not None else None)
-               for k in ("label", "tier", "owner", "lang", "policy")}
+               for k in ("label", "tier", "owner", "lang", "policy", "category", "exposure", "stack")}
+        found = assign(row, policies)
         apps[repo.lower()] = AppState(
             id=repo, label=row["label"] or repo.rsplit("/", 1)[-1], repo=repo, tier=row["tier"],
-            owner=row["owner"], lang=row["lang"], policy=policy_for(row, policies))
+            owner=row["owner"], lang=row["lang"], policy=found["policy"],
+            category=row["category"], exposure=row["exposure"], stack=row["stack"],
+            assignment=found)
     sample = bool(cfg.get("sample"))
     for name, directory in disk.list_runs(cwd):
         run = load_run(name, directory)
@@ -479,7 +570,7 @@ def build_model(cwd: Path | None = None, now: float | None = None) -> Model:
         if state is None:
             state = AppState(id=run.repo, label=run.repo.rsplit("/", 1)[-1], repo=run.repo,
                              tier=None, owner=None, lang=None,
-                             policy=policy_for({}, policies))
+                             policy=(found := assign({}, policies))["policy"], assignment=found)
             apps[run.repo.lower()] = state
         state.runs.append(run)
     for state in apps.values():
@@ -579,6 +670,29 @@ def demo() -> None:
         assert model.app("o/never").runs == [] and model.app("z/z") is not None
         assert model.run("s2")[0].id == "o/a" and model.run("nope") is None
         assert coverage(load_run("orphan", d), a.policy) == "partial"   # no stage evidence
+
+    # --- freshness: full scans only, as of an instant; imported files keep their own time ------
+    with tempfile.TemporaryDirectory() as tmp:
+        cwd = Path(tmp)
+        day = timeutil.DAY
+
+        def put(n: str, at: float, **kw: Any) -> None:
+            d = cwd / "docket_runs" / n
+            d.mkdir(parents=True)
+            (d / "report.json").write_text(json.dumps({
+                "target": "github:o/a@main", "run_timing": {"started": at - 5, "ended": at},
+                "stages": {"trivy": "done", "semgrep": "done"}, "findings": [], **kw}))
+
+        put("s1", 10 * day)
+        put("pr-1", 40 * day, provenance={"repo": "o/a", "pr": 3})       # a PR check, newer
+        put("s2", 50 * day, stage_meta={"semgrep": {
+            "tool": "CodeQL", "tool_version": "2.17", "sarif_at": timeutil.iso(30 * day),
+            "revision": "abc"}})
+        a = build_model(cwd, now=60 * day).app("o/a")
+        assert a.last_ran("trivy") == 50 * day, "the PR check does not refresh a step"
+        assert a.last_ran("semgrep") == 30 * day, "an imported file is dated by its own time"
+        assert a.last_ran("trivy", asof=20 * day) == 10 * day and a.last_ran("trivy", asof=5 * day) is None
+        assert a.runs[-1].import_meta("semgrep")["tool"] == "CodeQL" and a.runs[0].import_meta("trivy") is None
     print("portfolio.model.derive: ok")
 
 
