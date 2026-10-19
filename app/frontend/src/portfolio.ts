@@ -39,7 +39,7 @@ export interface Portfolio {
   organization: string;
   counts: Record<Level, number>;
   applications: Application[];
-  by_origin: { label: string; origin: Origin; count: number; proven?: boolean }[];
+  scanner_coverage: { id: string; label: string; tool?: string | null; origin: Origin; required: boolean; current: number; of: number }[];
   trend: { periods: { key: string; label: string }[]; series: { key: string; label: string; values: number[] }[] };
   severity_age: {
     old_critical: number;
@@ -96,6 +96,7 @@ export interface PipelineDetail {
   run: string; application: string; started_at: string | null; ended_at: string | null; elapsed: number;
   commit: string | null; cost_usd: number; agents: number; tokens: { input: number; output: number };
   policy: string | null; lanes: Lane[]; groups: LaneGroup[];
+  required?: { ran: number; of: number };
 }
 
 export interface PolicyWhy {
@@ -103,7 +104,7 @@ export interface PolicyWhy {
   clause?: string | null; source_url?: string | null;
 }
 export interface PolicyStep {
-  n: number; id: string; label: string; tool?: string | null; origin: Origin; phase: string; cadence: string; on_fail: string; why: PolicyWhy[];
+  n: number; id: string; label: string; tool?: string | null; origin: Origin; phase: string; required: boolean; cadence: string; on_fail: string; why: PolicyWhy[];
 }
 export interface Policy {
   id: string; name: string; applies: string; applies_count: number; version: number; approved?: string | null; cadence_days: number;

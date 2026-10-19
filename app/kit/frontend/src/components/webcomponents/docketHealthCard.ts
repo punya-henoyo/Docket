@@ -75,7 +75,7 @@ function delta(a: Analyte): string {
   const was = t[t.length - 2]!;
   if (now === was) return `<div class="prev">Same as last scan</div>`;
   const worse = a.higherIsBetter ? now < was : now > was;
-  return `<div class="prev ${worse ? 'worse' : 'better'}">${worse ? 'Worse' : 'Better'} than last scan${a.previous ? ` (was ${esc(a.previous)})` : ''}</div>`;
+  return `<div class="prev ${worse ? 'worse' : 'better'}">${worse ? 'Worse' : 'Better'} than last scan${a.previous ? ` (was ${esc(a.previous === 'None' ? 'none' : a.previous)})` : ''}</div>`;
 }
 
 export class DocketHealthCard extends HenoyoElement {
@@ -120,7 +120,7 @@ export class DocketHealthCard extends HenoyoElement {
     return (
       DOCKET_STYLE +
       `
-.plate { display:grid; grid-template-columns:auto 1fr; gap:18px; align-items:stretch; margin:2px var(--h-kit-pad, 22px) 0; }
+.plate { display:grid; grid-template-columns:auto 1fr; gap:18px; align-items:stretch; margin:2px var(--h-kit-pad, 22px) 16px; }
 .cap { display:flex; flex-direction:column; justify-content:center; gap:4px; min-width:148px; padding:12px 16px; border-radius:12px; border:1.5px solid var(--lv); background:var(--lv-soft); }
 .cap .k { font:500 10.5px/1 "JetBrains Mono", ui-monospace, monospace; letter-spacing:.12em; text-transform:uppercase; color:var(--k-text-2); }
 .cap .v { display:flex; align-items:center; gap:9px; font-family:var(--k-serif); font-size:26px; font-weight:500; letter-spacing:-.01em; color:var(--lv); line-height:1.1; }
@@ -172,9 +172,11 @@ export class DocketHealthCard extends HenoyoElement {
       .slice(0, 4)
       .map((r) => `<li>${dg(this._level === 'clear' ? 'check' : 'alert', 14)}<span>${esc(r)}</span></li>`)
       .join('');
+    // The server's verdict is often just the first reasons joined; say each thing once.
+    const showVerdict = this._verdict !== '' && !this._reasons.some((r) => this._verdict.includes(r.replace(/\.$/, '')));
     const plate = `<div class="plate" data-level="${this._level}">
       <div class="cap" role="status"><span class="k">Needs attention?</span><span class="v"><span class="lamp"></span>${esc(lv.word)}</span></div>
-      <div class="why"><div class="ans">${esc(lv.answer)}</div>${this._verdict ? `<div class="sub" style="margin:0 0 6px">${esc(this._verdict)}</div>` : ''}<ul>${reasons}</ul></div></div>`;
+      <div class="why"><div class="ans">${esc(lv.answer)}</div>${showVerdict ? `<div class="sub" style="margin:0 0 6px">${esc(this._verdict)}</div>` : ''}<ul>${reasons}</ul></div></div>`;
 
     const ann = this._ann
       .map(

@@ -137,6 +137,7 @@ export class DocketPipeline extends HenoyoElement {
 .bar.error { background:var(--k-bad-soft); color:var(--k-bad); border:1px solid var(--k-sev-critical); }
 .bar.skipped, .bar.queued { background:transparent; color:var(--k-text-3); border:1px dashed var(--k-hairline-2); }
 .bar.not_run { background:rgb(var(--h-sev-high-soft, 255 251 235)); color:var(--k-warn); border:1.5px dashed rgb(var(--h-sev-high, 217 122 26)); }
+.untimed { position:absolute; left:0; top:4px; font-size:11px; color:var(--k-text-3); font-style:italic; }
 .now { position:absolute; top:-8px; bottom:-8px; border-left:2px solid var(--k-sev-critical); z-index:2; }
 .now::after { content:'now'; position:absolute; top:-2px; left:4px; font-size:10px; font-weight:700; color:var(--k-sev-critical); }
 .res { text-align:right; font-size:12px; line-height:1.35; font-variant-numeric:tabular-nums; color:var(--k-text-2); }
@@ -202,7 +203,7 @@ export class DocketPipeline extends HenoyoElement {
   }
 
   protected view(): string {
-    if (this._lanes.length === 0) return this.emptyCard(this._heading, 'Nothing has run yet.');
+    if (this._lanes.length === 0) return this.emptyCard(this._heading, 'Nothing has run yet.', 'The pipeline appears after the first scan.');
     const { total, lanes: timed } = this.timing();
     const step = STEPS.find((s) => total / s <= 7) ?? 3600;
     const ticks: number[] = [];
@@ -223,6 +224,9 @@ export class DocketPipeline extends HenoyoElement {
       const width = Math.max(pct(t.end - t.start), 0.8);
       const dur = l.state === 'not_run' ? 'Not run' : l.state === 'queued' ? 'Queued' : clock(t.end - t.start);
       const barCls = `${l.origin === 'henoyo' ? 'h' : 't'} ${l.state}`;
+      // A report from before stage timings were recorded knows a stage ran but not when: say so
+      // rather than draw a bar that implies a time.
+      const untimed = l.start === undefined && l.state !== 'not_run';
       const reqBy = l.requiredBy ?? [];
       const req = l.required
         ? `<span class="req" title="Required by the security policy">${dg('lock', 10)}Required</span>`
@@ -246,7 +250,11 @@ export class DocketPipeline extends HenoyoElement {
         <div class="lbl"><span class="ic">${dg(l.icon ?? 'scan', child ? 12 : 15)}</span><div><div class="nm">${esc(l.label)}</div>${
           child ? '' : `<div class="meta">${originChip(l.origin, l.tool)}${req}</div>`
         }</div></div>
-        <div class="track">${lines}<span class="bar ${barCls}" style="left:${left}%;width:${width}%">${child ? '' : esc(dur)}</span>${now}</div>
+        <div class="track">${lines}${
+          untimed
+            ? `<span class="untimed">No timing recorded</span>`
+            : `<span class="bar ${barCls}" style="left:${left}%;width:${width}%">${child ? '' : esc(dur)}</span>`
+        }${now}</div>
         <div class="res">${res.slice(0, 3).join('<br>')}</div>
         <span class="tipbox" role="tooltip">${tip}</span>
       </button>`;

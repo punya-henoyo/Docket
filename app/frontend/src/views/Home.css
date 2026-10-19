@@ -1,0 +1,19 @@
+/* Home (Posture) only. Colours come from the Henoyo tokens, as everywhere else. */
+.hx-lead{display:block;max-width:60ch;font:500 1.45rem/1.35 "Source Serif 4",Georgia,serif;letter-spacing:-.01em;color:rgb(var(--h-text-2))}
+.hx-lead b{color:rgb(var(--h-sev-critical));font-weight:600}
+.hx-lead b.hx-calm{color:rgb(var(--h-text))}
+.hx-wq li.hx-wqh{display:block;cursor:default;background:rgb(var(--h-surface-2));font:600 11px/1 Inter,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:rgb(var(--h-text-2));padding:9px 20px}
+.hx-wq li.hx-wqh:hover{background:rgb(var(--h-surface-2))}
+.hx-wq li.hx-wqh b{margin-left:8px;color:rgb(var(--h-text))}
+.hx-wq li:focus-visible{outline:2px solid rgb(var(--h-brand-ring));outline-offset:-2px}
+.hx-wq .hx-go{display:block;color:rgb(var(--h-text-link));font-weight:600}
+.hx-covrow{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(80px,1fr) auto;gap:12px;align-items:center;padding:7px 0}
+.hx-covrow .hx-cl{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
+.hx-covrow .hx-cn{font-size:13px;font-weight:600}
+.hx-covrow .hx-cbar{height:8px;border-radius:4px;background:rgb(var(--h-surface-2));overflow:hidden}
+.hx-covrow .hx-cbar span{display:block;height:100%}
+.hx-covrow .hx-cbar span.h{background:rgb(var(--h-verdant-600))}
+.hx-covrow .hx-cbar span.t{background:rgb(var(--h-text-3))}
+.hx-covrow .hx-cc{font:500 13px "Source Serif 4",serif;font-variant-numeric:tabular-nums;min-width:48px;text-align:right}
+.hx-pagehead .hx-grow>.hx-sub{margin-top:6px}
+.hx-nw{white-space:nowrap}

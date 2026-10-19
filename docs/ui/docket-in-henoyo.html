@@ -1,0 +1,330 @@
+<!doctype html>
+<!--
+Henoyo design language: page template for explainer/design/status pages.
+Source of truth for tokens: ~/projects-sg/henoyo-design/theme/tokens.css (CLASSIC theme, the app default)
+and ~/projects-sg/henoyo-core/docs/technical/design-system.md. Keep this file in sync with those.
+Replace Code Security: Docket inside Henoyo, Design note · Docket UI review and proposal, <h1>Code Security: Docket inside Henoyo</h1>
+<p class="sub">A review of the Docket console, and one integrated Henoyo experience to replace it. Built overnight, 19 October 2026.</p>
+
+<div class="callout ok"><b>Look at it.</b> Console on sample data: <code>make demo-console</code>, then <code>http://127.0.0.1:8765</code> (it was left running). The approved HTML mockup is <code>docs/ui/mockup/index.html</code>. Everything is on branch <code>feat/henoyo-console</code>. Every number you will see is <b>sample data</b>, labelled as such on every screen.</div>
+
+<h2>The short version</h2>
+<p>Docket becomes a Henoyo application called <b>Code Security</b>: the Henoyo shell, Henoyo's tokens and type, and Henoyo's own Visual Kit components, so it can sit beside IRM and RBVM without looking like a separate product. A security lead opens it and the first screen says, in one sentence, <i>"2 of 12 applications need action today. 4 more need a look this week, 1 has never been scanned, and 5 are clear."</i> Each application then has a health report, a scan pipeline drawn as a Gantt chart, and a policy that says what must run.</p>
+<figure><img src="img/live-home.png" alt="Home screen of the Code Security console"><figcaption>Home, rendered by the real console from the seeded run directories (not the mockup).</figcaption></figure>
+
+<h2>What you asked for, and where it landed</h2>
+<div class="scroll"><table>
+<tr><th>Your note</th><th>What was built</th></tr>
+<tr><td>1. Missing process visualization</td><td><b>Scan pipeline Gantt</b> (<code>docket-pipeline</code>): one lane per scanner or agent, bar from start to end, grouped "before the agents" and "Docket agents", exploit specialists nested under the swarm. On every application and scan page. A portfolio-wide <b>scan continuum</b> on Home shows every scan of every application on one time axis, with the gaps where the cadence was broken.</td></tr>
+<tr><td>2. Multiple scans; missing Henoyo ones; no indicator of whose they are</td><td>Every lane and every policy step carries a chip: <span class="tag">Henoyo</span> (verdant) or the tool's name (grey: Trivy, Semgrep, Nuclei). The Henoyo API Security engine is a lane and a policy step; it shows "Not run" when the policy requires it and it did not run. Home has a "Required scanners, this week" card that answers the same question for the whole portfolio.</td></tr>
+<tr><td>3. Repo health card, validated issues, timeline</td><td><b>Health report</b> (<code>docket-health-card</code>), three registers: a caution plate that answers "needs attention?" in a word, status lamps, and a lab-report table with each measure against its reference range, a flag in words, an 8-scan sparkline and "worse/better than last scan". Issues carry a Proof column: reproduced, deterministic, candidate, not reachable.</td></tr>
+<tr><td>4. Needs a code security policy: number of scanners, sequence, regulatory and security requirements</td><td><b>Policy page</b>: the full sequence that runs (9 steps), each Required or Optional, each with the security rule and/or regulation behind it, its cadence and what happens if it fails; regulatory and security requirement cards; a "what the policy does about it" list (blocks / flags / advises); and <b>Policy against reality</b>, a matrix of applications by required scanner with the consequence of each row.</td></tr>
+<tr><td>5. Add regulatory citation to the compliance baseline</td><td>Every control shows its citation as authority, instrument and section, a "Clause: not mapped" marker unless the pack supplies a clause, a source link, and a link to the Henoyo obligation it should resolve to. See "What is not done" for why clause numbers are not filled in.</td></tr>
+<tr><td>"Where does it sit in the Gantt scheme? Do I need to worry?"</td><td>The application page has a lifecycle path (Onboarded, Scanned, Exploit open, Fix in review, Fix merged, Re-verified), the pipeline of its latest scan, its place on the continuum, and the caution plate: <i>Act today / Watch / Clear / Unknown</i>.</td></tr>
+</table></div>
+
+<h2>Review of today's Docket console</h2>
+<div class="two">
+<figure><img src="img/current-overview.png" alt="Existing console overview"><figcaption>Existing Overview.</figcaption></figure>
+<figure><img src="img/current-scan.png" alt="Existing console scan view"><figcaption>Existing Scan view: a radar and an agent list.</figcaption></figure>
+</div>
+<p><b>Keep.</b> The honesty is good and is carried over untouched: the headline is the <i>reachable</i> count, not scanner volume; findings are judged by reading source; compliance says "not answerable from code" instead of guessing; the PR watcher, autofix and the repository connection all work and are still there (under Pull requests and Connections).</p>
+<p><b>What does not work for a busy security professional:</b></p>
+<ol>
+<li><b>It stands alone.</b> Its own "docket." rail, tokens hand-copied from a BRAND.md, no app switcher, search or tabs. It cannot sit next to IRM or RBVM.</li>
+<li><b>It is organised around repositories, not applications under a policy.</b> There are no tiers, owners or cadence, so it cannot answer "is anything overdue?" or "has this application been checked by everything it should be?".</li>
+<li><b>The process is a radar of stage states.</b> No order, no duration, no sense of who built each tool. Underneath, <code>report.json</code> recorded only the state of each stage, never when it ran; that is fixed.</li>
+<li><b>No Henoyo-versus-third-party distinction</b>, and Henoyo's own API Security engine is invisible.</li>
+<li><b>No policy.</b> Scanners are chosen per scan in a form; nothing states what is required, in what order, or why.</li>
+<li><b>Compliance opens on an empty state</b> until a pack is chosen, and a citation is a single string.</li>
+<li><b>Hygiene.</b> It fetched Google Fonts and GitHub avatars at render time (against Docket's own no-incidental-outbound-calls rule), and no table sorts (a Henoyo rule).</li>
+</ol>
+<figure><img src="img/current-compliance.png" alt="Existing compliance view"><figcaption>Existing Compliance: an empty state until a pack is run; the control library and policy upload sit below (both kept).</figcaption></figure>
+
+<h2>The proposal</h2>
+<h3>Four principles</h3>
+<ul>
+<li><b>One application, one record.</b> The page is a Henoyo record page: banner, status path, kit components, related lists.</li>
+<li><b>Proof first.</b> A reproduced exploit is a different kind of thing from a scanner hit and is drawn differently everywhere. Candidates are never counted as findings.</li>
+<li><b>Show the process, and whose it is.</b> Order, duration, origin, and what the policy required.</li>
+<li><b>The policy is the yardstick.</b> One definition of "required scanner" drives the pipeline caption, the health measure, the matrix and the coverage of each scan.</li>
+</ul>
+<h3>Tabs</h3>
+<div class="scroll"><table>
+<tr><th>Tab</th><th>Question it answers</th></tr>
+<tr><td>Home</td><td>Who needs me today, and is anything overdue?</td></tr>
+<tr><td>Applications</td><td>Every application, worst first. Open one for its health report and pipeline.</td></tr>
+<tr><td>Scans</td><td>What ran, when, with what coverage and result.</td></tr>
+<tr><td>Pull requests</td><td>The PR gate and watcher (existing, restyled).</td></tr>
+<tr><td>Findings</td><td>Proven exploitable, reachable but unproven, secrets, everything open. Click a row for the proof.</td></tr>
+<tr><td>Compliance</td><td>What the code says about each written requirement, with its citation. No score, ever.</td></tr>
+<tr><td>Policy</td><td>What must run, in what order, and why. Policy against reality.</td></tr>
+<tr><td>Connections</td><td>Repositories and integrations (existing, restyled).</td></tr>
+</table></div>
+
+<h3>The application page</h3>
+<figure><img src="img/live-application.png" alt="Application page"><figcaption>Card Payments API: banner, lifecycle path, health report, pipeline, findings, history. The record page pattern Henoyo already uses.</figcaption></figure>
+<ul>
+<li><b>Health report</b> borrows from places that solved "tell me fast": the avionics caution plate (one word, one sentence, the reasons), a strip of status lamps, and the lab report (value, reference range, flag in words, trend). Colour never carries meaning alone.</li>
+<li><b>Pipeline</b> is the Gantt. Verdant bars are Henoyo-built, grey bars are third-party tools, a dashed amber bar is a required scanner that did not run, in the slot it should have filled. Click a bar for the stage.</li>
+</ul>
+<div class="two">
+<figure><img src="img/live-scan.png" alt="Scan run page"><figcaption>A scan: cost, tokens, commit, the full pipeline, its findings.</figcaption></figure>
+<figure><img src="img/live-unscanned.png" alt="Unscanned application"><figcaption>An application never scanned: honest empty states, no lab table of "No data".</figcaption></figure>
+</div>
+<h3>Policy and compliance</h3>
+<figure><img src="img/live-policy.png" alt="Policy page"><figcaption>Policy: the sequence that runs, requirements, what blocks, and policy against reality.</figcaption></figure>
+<figure><img src="img/live-compliance.png" alt="Compliance baseline"><figcaption>Compliance baseline for Card Payments API. Counts are filters; the 26 process controls open and read "not answerable from code".</figcaption></figure>
+
+<h2>How it fits Henoyo</h2>
+<div class="scroll"><table>
+<tr><th>Code Security</th><th>Henoyo (security spine, <code>sec__</code>)</th><th>Gap</th></tr>
+<tr><td>Application</td><td><code>sec__application</code> (<code>repository_url</code>, <code>production_url</code>, <code>criticality</code>)</td><td>No separate Repository object; the repo is a text field.</td></tr>
+<tr><td>Finding</td><td><code>sec__finding</code> with <code>assessment_type</code> pentest / api_dynamic / code_review / software_composition / secret_scan</td><td>None.</td></tr>
+<tr><td>Proof (request, response)</td><td><code>sec__evidence</code> (content hash, captured_at)</td><td>The spine has no per-finding proof field; "proven vs unproven" needs a relation to evidence.</td></tr>
+<tr><td>A scan run</td><td><code>sec__assessment</code> (kind, cadence, regulator_mandated)</td><td>None.</td></tr>
+<tr><td>Policy</td><td>No scan-policy object exists. Nearest: IRM <code>exception_policy</code>, RBVM routing rules.</td><td><b>New object needed</b> (policy and its steps).</td></tr>
+<tr><td>Regulatory citation</td><td><code>sec__framework</code>, <code>control_requirement</code>, <code>obligation</code> (<code>clause_reference</code>)</td><td>Docket packs cite a section; clause numbers must come from these records.</td></tr>
+<tr><td>Compliance result</td><td><code>sec__control</code>, <code>control_mapping</code> (<code>coverage_level</code>)</td><td>Docket's results are advisory readings, a separate list by design.</td></tr>
+</table></div>
+
+<h3>UI controls: what was reused, what is new</h3>
+<p><b>Reused from Henoyo's Visual Kit</b> (not yet in Core v3: branch <code>integ/visual-kit-review</code>, 473 commits ahead of <code>release/v3</code>, pinned at <code>c2a3ba4f</code>): record banner, status path, ring, severity-by-age heatmap, discovery trend, plus the shared frame (eyebrow, finding as title, help "i", source and as-of footer), the three colour schemes and the density tokens. About 30 kit elements are bundled; the console uses these now and can adopt the rest (evidence ledger, record timeline, deadline clock, stepper, risk ledger, exposure tree, blast radius) as features arrive.</p>
+<p><b>New, written in the kit's style</b> (extend <code>HenoyoElement</code>, read the same tokens, emit composed events) and ready to propose into Core: <code>docket-pipeline</code>, <code>docket-health-card</code>, <code>docket-continuum</code>, <code>docket-policy-matrix</code>.</p>
+<p><b>Local patches to the pinned kit</b> (listed in <code>app/kit/PIN.md</code>, to propose upstream): ring <code>finding</code> and <code>showPercent</code>; record banner per-row <code>word</code> (its danger level was hard-coded to read "Overdue").</p>
+<p>Searched for other unmerged UI: <code>feature/list-view-redesign</code>, <code>dashboard-chart-redesign</code>, <code>lookup-field-redesign</code>, <code>layout-builder</code>, <code>ui-enhancements</code>, <code>reports-ui</code> and <code>setup-six-tabs</code> are already contained in <code>release/v3</code>, so there was nothing extra to reuse. <code>feat/ui-fixes</code> (a light/dark theme) is one commit ahead; not used, because the Henoyo app is fixed-light. <code>henoyo-design-worktrees</code> holds only <code>agy-design-review</code> at main.</p>
+
+<h2>What two reviews changed</h2>
+<p>The mockup was reviewed by Claude Opus (looking at the screenshots) and by Grok (reading the source). Both agreed on most points, and Grok found real contradictions. Applied:</p>
+<ul>
+<li><b>One definition of "required scanner".</b> The policy said 4, the health card 3 of 4, and the pipeline 5 of 6. Now the policy lists the whole 9-step sequence, 5 steps are Required, and all three agree (4 of 5 ran).</li>
+<li><b>The policy no longer contradicts itself on what blocks.</b> It had "a critical CVE blocks" on one row and "only proof blocks" on another. Now: <i>blocks</i> a reproduced exploit, a secret or other deterministic rule, a triage verdict of confirmed; <i>flags</i> a required scanner that did not run; <i>advises</i> compliance. A CVE goes to triage.</li>
+<li><b>Removed "Who found it"</b> (findings by tool), which counted scanner candidates beside proven exploits. Replaced with "Required scanners, this week".</li>
+<li><b>The compliance reader is optional.</b> Compliance never gates.</li>
+<li><b>Status lamps no longer disagree with the table</b>, and the compliance lamp is dashed and advisory, never a fault light.</li>
+<li><b>Worded trend</b> ("Worse than last scan") beside each sparkline; candidate counts never use the red range; "Triage uncertain" and "Unknown" used consistently.</li>
+<li><b>Every table sorts</b>, as Henoyo requires; the 26 process controls open from their tile; the exploit step cites the RBI VAPT control rather than an unrelated SEBI one; and "Also reproduced" is no longer red, so it does not read as a second failure.</li>
+<li>A "consequence" column on the policy matrix, so a stale cell explains the banner.</li>
+</ul>
+
+<h2>What is real, and what is not</h2>
+<p><b>Real:</b> new <code>engine/docket/portfolio/</code> (health levels, analytes, pipeline lanes, policy and coverage), five new endpoints, stage timings now recorded in <code>report.json</code>, citation parts on compliance controls, a deterministic demo seeder (<code>python -m docket.demo.console</code>), the React views, the kit bundle, vendored fonts (no outbound request at render), and <code>tests/test_portfolio.py</code> (it asserts, among other things, that no response contains the word "compliant" or a percent or score key). <code>make test-fast</code> passes.</p>
+<p><b>Sample:</b> all the data in the demo. The 12 applications, scans, findings, proofs and control results are generated and labelled sample.</p>
+<h3>What is not done</h3>
+<ul>
+<li><b>It is not inside Henoyo Core yet.</b> It is a standalone console in Henoyo's design language with Henoyo's components. Becoming a Core pack (objects and layout components) is the next step, and depends on the Visual Kit reaching v3.</li>
+<li><b>The API Security engine is modelled, not wired.</b> Docket does not run it, so a policy that requires it shows "Not run" for every real application until it reports a stage. The built-in default policy requires Trivy and Semgrep only.</li>
+<li><b>Stage timings exist only for scans run after this change.</b> Older reports show "No timing recorded" rather than a bar.</li>
+<li><b>No clause numbers.</b> The RBI and SEBI packs cite sections, not numbered clauses, and I did not invent any. The data model accepts <code>clause</code> and <code>obligation_ref</code>; someone with the circulars has to fill them in, ideally once, in Henoyo's obligation records.</li>
+<li><b>Read-only application list.</b> Applications come from <code>docket_portfolio.json</code>; Edit and Add are not wired. The masthead search is decorative.</li>
+<li><b>Not exercised by me in a browser:</b> drawers, sorting, filter tiles, pack tabs, upload and delete. The agents that built them tested them lightly. I checked every route by screenshot against real data.</li>
+<li><code>make check</code> reports three <code>app.backend.*</code> modules failing here because <code>fastapi</code> (an optional extra) is not installed; that is unrelated to this change. The other 97 pass.</li>
+</ul>
+
+<h2>Decisions for you</h2>
+<ol>
+<li><b>Standalone or Core pack?</b> Keep this console as the Docket front end until the Visual Kit is in v3, or start the Core pack now on the kit branch?</li>
+<li><b>Where does policy live?</b> A new Henoyo object (the spine has none), or a JSON file Docket owns?</li>
+<li><b>Who owns clause mapping?</b> The citations are honest but section-level. The spine's obligation records are the right home for clause numbers.</li>
+<li><b>Wire the API Security engine into a Docket run</b> so the Henoyo-native lane is real rather than modelled?</li>
+<li><b>Upstream the four Docket elements and the kit patches</b> into Core's Visual Kit?</li>
+</ol>
+
+<h2>Run it</h2>
+<pre><code>make demo-console          # builds the kit and the console, seeds ./.docket-demo, serves http://127.0.0.1:8765
+make console-kit           # only after editing app/kit
+make test-fast             # includes tests/test_portfolio.py
+open docs/ui/mockup/index.html   # the approved mockup</code></pre>
+. Fixed light theme (the Henoyo app has no dark variant).
+Diagram classes for inline SVG: .box (paper card), .brand (verdant), .warn (amber), .stop (red), .info (paper well).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code Security: Docket inside Henoyo</title>
+<link rel="stylesheet" href="../../app/frontend/public/assets/fonts.css">
+<style>
+:root{
+ --canvas:#F8F6F1;--surface:#FFFEFB;--surface-2:#F0EDE5;--surface-3:#E3DFD4;--hairline:#E3DFD4;--hairline-2:#C9C4B5;
+ --ink:#1A1F1C;--ink-700:#3F463F;--text-2:#5A625B;--text-3:#878F85;--link:#2B4A35;
+ --v50:#E9EFEB;--v100:#D2DFD6;--v200:#A8BFAF;--v500:#4F7760;--v600:#3B6047;--v700:#2B4A35;--bright:#4FA776;--glow:#6BC78F;
+ --crit:#B5341F;--crit-soft:#FEF2F2;--high:#D97A1A;--high-soft:#FFFBEB;--med:#C9A227;--med-soft:#FEFCE8;
+ --shell:#1A1F1C;--shell-fg:#F8F6F1;--shell-muted:#C9C4B5;
+ --h2:0 2px 6px rgba(26,31,28,.05);--h3:0 8px 24px rgba(26,31,28,.10);--card:10px}
+*{box-sizing:border-box}
+body{margin:0;background:var(--canvas);color:var(--ink);font:14.5px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+h1,h2,h3,h4{font-family:"Source Serif 4",Georgia,serif;font-weight:500;letter-spacing:-.01em;color:var(--ink)}
+h1{font-size:1.75rem;margin:0 0 4px}h2{font-size:1.25rem;margin:36px 0 10px}h3{font-size:1.02rem;margin:0 0 4px}
+p{margin:0 0 10px}a{color:var(--link)}
+.shell{background:var(--shell);color:var(--shell-fg);padding:10px 16px}
+.shell .in{max-width:1080px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.mark{font-family:"Source Serif 4",Georgia,serif;font-size:1.15rem;font-weight:500;letter-spacing:-.01em}
+.mark i{font-style:normal;color:var(--glow)}
+.shell .ctx{color:var(--shell-muted);font-size:13px}
+main{max-width:1080px;margin:0 auto;padding:24px 16px 64px}
+.sub{color:var(--text-2)}
+.card{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--card);box-shadow:var(--h2);padding:14px 18px;margin:12px 0}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(270px,1fr))}.grid .card{margin:0}
+.callout{border:1px solid var(--high);background:var(--high-soft);border-radius:var(--card);padding:10px 14px;margin:16px 0}
+.callout.ok{border-color:var(--v500);background:var(--v50)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}th,td{border:1px solid var(--hairline);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--surface-2);font-weight:600}.scroll{overflow-x:auto}
+code{font:12.5px "JetBrains Mono",SFMono-Regular,Menlo,monospace;background:var(--surface-2);padding:1px 5px;border-radius:4px}
+.tag{display:inline-block;font-size:12px;border-radius:99px;padding:1px 9px;border:1px solid var(--v200);background:var(--v50);color:var(--v700)}
+ul{margin:4px 0 10px;padding-left:20px}li{margin:3px 0}
+svg{width:100%;height:auto;display:block}
+svg text{fill:var(--ink);font:12.5px Inter,sans-serif}svg .t{font-weight:600;font-size:13.5px}svg .m{fill:var(--text-2);font-size:12px}
+svg .box{fill:var(--surface);stroke:var(--hairline-2);stroke-width:1.4}
+svg .brand{fill:var(--v50);stroke:var(--v500)}svg .warn{fill:var(--high-soft);stroke:var(--high)}
+svg .stop{fill:var(--crit-soft);stroke:var(--crit)}svg .info{fill:var(--surface-2);stroke:var(--hairline-2)}
+svg .arr{stroke:var(--v600);stroke-width:1.8;fill:none;marker-end:url(#h)}
+
+figure{margin:14px 0 20px}figure img{width:100%;height:auto;display:block;border:1px solid var(--hairline);border-radius:var(--card);box-shadow:var(--h2)}
+figcaption{font-size:12.5px;color:var(--text-2);margin-top:6px}
+.two{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}.two figure{margin:6px 0}
+.q{border-left:3px solid var(--v200);padding:2px 0 2px 12px;color:var(--ink-700);margin:10px 0}
+h2{border-top:1px solid var(--hairline);padding-top:22px}h2:first-of-type{border-top:0;padding-top:0}
+td small{color:var(--text-3)}
+.ok{color:var(--v700);font-weight:600}.no{color:var(--crit);font-weight:600}
+</style>
+</head>
+<body>
+<div class="shell"><div class="in"><span class="mark">henoyo<i>.</i></span><span class="ctx">Design note · Docket UI review and proposal</span></div></div>
+<main>
+<h1>Code Security: Docket inside Henoyo</h1>
+<p class="sub">A review of the Docket console, and one integrated Henoyo experience to replace it. Built overnight, 19 October 2026.</p>
+
+<div class="callout ok"><b>Look at it.</b> Console on sample data: <code>make demo-console</code>, then <code>http://127.0.0.1:8765</code> (it was left running). The approved HTML mockup is <code>docs/ui/mockup/index.html</code>. Everything is on branch <code>feat/henoyo-console</code>. Every number you will see is <b>sample data</b>, labelled as such on every screen.</div>
+
+<h2>The short version</h2>
+<p>Docket becomes a Henoyo application called <b>Code Security</b>: the Henoyo shell, Henoyo's tokens and type, and Henoyo's own Visual Kit components, so it can sit beside IRM and RBVM without looking like a separate product. A security lead opens it and the first screen says, in one sentence, <i>"2 of 12 applications need action today. 4 more need a look this week, 1 has never been scanned, and 5 are clear."</i> Each application then has a health report, a scan pipeline drawn as a Gantt chart, and a policy that says what must run.</p>
+<figure><img src="img/live-home.png" alt="Home screen of the Code Security console"><figcaption>Home, rendered by the real console from the seeded run directories (not the mockup).</figcaption></figure>
+
+<h2>What you asked for, and where it landed</h2>
+<div class="scroll"><table>
+<tr><th>Your note</th><th>What was built</th></tr>
+<tr><td>1. Missing process visualization</td><td><b>Scan pipeline Gantt</b> (<code>docket-pipeline</code>): one lane per scanner or agent, bar from start to end, grouped "before the agents" and "Docket agents", exploit specialists nested under the swarm. On every application and scan page. A portfolio-wide <b>scan continuum</b> on Home shows every scan of every application on one time axis, with the gaps where the cadence was broken.</td></tr>
+<tr><td>2. Multiple scans; missing Henoyo ones; no indicator of whose they are</td><td>Every lane and every policy step carries a chip: <span class="tag">Henoyo</span> (verdant) or the tool's name (grey: Trivy, Semgrep, Nuclei). The Henoyo API Security engine is a lane and a policy step; it shows "Not run" when the policy requires it and it did not run. Home has a "Required scanners, this week" card that answers the same question for the whole portfolio.</td></tr>
+<tr><td>3. Repo health card, validated issues, timeline</td><td><b>Health report</b> (<code>docket-health-card</code>), three registers: a caution plate that answers "needs attention?" in a word, status lamps, and a lab-report table with each measure against its reference range, a flag in words, an 8-scan sparkline and "worse/better than last scan". Issues carry a Proof column: reproduced, deterministic, candidate, not reachable.</td></tr>
+<tr><td>4. Needs a code security policy: number of scanners, sequence, regulatory and security requirements</td><td><b>Policy page</b>: the full sequence that runs (9 steps), each Required or Optional, each with the security rule and/or regulation behind it, its cadence and what happens if it fails; regulatory and security requirement cards; a "what the policy does about it" list (blocks / flags / advises); and <b>Policy against reality</b>, a matrix of applications by required scanner with the consequence of each row.</td></tr>
+<tr><td>5. Add regulatory citation to the compliance baseline</td><td>Every control shows its citation as authority, instrument and section, a "Clause: not mapped" marker unless the pack supplies a clause, a source link, and a link to the Henoyo obligation it should resolve to. See "What is not done" for why clause numbers are not filled in.</td></tr>
+<tr><td>"Where does it sit in the Gantt scheme? Do I need to worry?"</td><td>The application page has a lifecycle path (Onboarded, Scanned, Exploit open, Fix in review, Fix merged, Re-verified), the pipeline of its latest scan, its place on the continuum, and the caution plate: <i>Act today / Watch / Clear / Unknown</i>.</td></tr>
+</table></div>
+
+<h2>Review of today's Docket console</h2>
+<div class="two">
+<figure><img src="img/current-overview.png" alt="Existing console overview"><figcaption>Existing Overview.</figcaption></figure>
+<figure><img src="img/current-scan.png" alt="Existing console scan view"><figcaption>Existing Scan view: a radar and an agent list.</figcaption></figure>
+</div>
+<p><b>Keep.</b> The honesty is good and is carried over untouched: the headline is the <i>reachable</i> count, not scanner volume; findings are judged by reading source; compliance says "not answerable from code" instead of guessing; the PR watcher, autofix and the repository connection all work and are still there (under Pull requests and Connections).</p>
+<p><b>What does not work for a busy security professional:</b></p>
+<ol>
+<li><b>It stands alone.</b> Its own "docket." rail, tokens hand-copied from a BRAND.md, no app switcher, search or tabs. It cannot sit next to IRM or RBVM.</li>
+<li><b>It is organised around repositories, not applications under a policy.</b> There are no tiers, owners or cadence, so it cannot answer "is anything overdue?" or "has this application been checked by everything it should be?".</li>
+<li><b>The process is a radar of stage states.</b> No order, no duration, no sense of who built each tool. Underneath, <code>report.json</code> recorded only the state of each stage, never when it ran; that is fixed.</li>
+<li><b>No Henoyo-versus-third-party distinction</b>, and Henoyo's own API Security engine is invisible.</li>
+<li><b>No policy.</b> Scanners are chosen per scan in a form; nothing states what is required, in what order, or why.</li>
+<li><b>Compliance opens on an empty state</b> until a pack is chosen, and a citation is a single string.</li>
+<li><b>Hygiene.</b> It fetched Google Fonts and GitHub avatars at render time (against Docket's own no-incidental-outbound-calls rule), and no table sorts (a Henoyo rule).</li>
+</ol>
+<figure><img src="img/current-compliance.png" alt="Existing compliance view"><figcaption>Existing Compliance: an empty state until a pack is run; the control library and policy upload sit below (both kept).</figcaption></figure>
+
+<h2>The proposal</h2>
+<h3>Four principles</h3>
+<ul>
+<li><b>One application, one record.</b> The page is a Henoyo record page: banner, status path, kit components, related lists.</li>
+<li><b>Proof first.</b> A reproduced exploit is a different kind of thing from a scanner hit and is drawn differently everywhere. Candidates are never counted as findings.</li>
+<li><b>Show the process, and whose it is.</b> Order, duration, origin, and what the policy required.</li>
+<li><b>The policy is the yardstick.</b> One definition of "required scanner" drives the pipeline caption, the health measure, the matrix and the coverage of each scan.</li>
+</ul>
+<h3>Tabs</h3>
+<div class="scroll"><table>
+<tr><th>Tab</th><th>Question it answers</th></tr>
+<tr><td>Home</td><td>Who needs me today, and is anything overdue?</td></tr>
+<tr><td>Applications</td><td>Every application, worst first. Open one for its health report and pipeline.</td></tr>
+<tr><td>Scans</td><td>What ran, when, with what coverage and result.</td></tr>
+<tr><td>Pull requests</td><td>The PR gate and watcher (existing, restyled).</td></tr>
+<tr><td>Findings</td><td>Proven exploitable, reachable but unproven, secrets, everything open. Click a row for the proof.</td></tr>
+<tr><td>Compliance</td><td>What the code says about each written requirement, with its citation. No score, ever.</td></tr>
+<tr><td>Policy</td><td>What must run, in what order, and why. Policy against reality.</td></tr>
+<tr><td>Connections</td><td>Repositories and integrations (existing, restyled).</td></tr>
+</table></div>
+
+<h3>The application page</h3>
+<figure><img src="img/live-application.png" alt="Application page"><figcaption>Card Payments API: banner, lifecycle path, health report, pipeline, findings, history. The record page pattern Henoyo already uses.</figcaption></figure>
+<ul>
+<li><b>Health report</b> borrows from places that solved "tell me fast": the avionics caution plate (one word, one sentence, the reasons), a strip of status lamps, and the lab report (value, reference range, flag in words, trend). Colour never carries meaning alone.</li>
+<li><b>Pipeline</b> is the Gantt. Verdant bars are Henoyo-built, grey bars are third-party tools, a dashed amber bar is a required scanner that did not run, in the slot it should have filled. Click a bar for the stage.</li>
+</ul>
+<div class="two">
+<figure><img src="img/live-scan.png" alt="Scan run page"><figcaption>A scan: cost, tokens, commit, the full pipeline, its findings.</figcaption></figure>
+<figure><img src="img/live-unscanned.png" alt="Unscanned application"><figcaption>An application never scanned: honest empty states, no lab table of "No data".</figcaption></figure>
+</div>
+<h3>Policy and compliance</h3>
+<figure><img src="img/live-policy.png" alt="Policy page"><figcaption>Policy: the sequence that runs, requirements, what blocks, and policy against reality.</figcaption></figure>
+<figure><img src="img/live-compliance.png" alt="Compliance baseline"><figcaption>Compliance baseline for Card Payments API. Counts are filters; the 26 process controls open and read "not answerable from code".</figcaption></figure>
+
+<h2>How it fits Henoyo</h2>
+<div class="scroll"><table>
+<tr><th>Code Security</th><th>Henoyo (security spine, <code>sec__</code>)</th><th>Gap</th></tr>
+<tr><td>Application</td><td><code>sec__application</code> (<code>repository_url</code>, <code>production_url</code>, <code>criticality</code>)</td><td>No separate Repository object; the repo is a text field.</td></tr>
+<tr><td>Finding</td><td><code>sec__finding</code> with <code>assessment_type</code> pentest / api_dynamic / code_review / software_composition / secret_scan</td><td>None.</td></tr>
+<tr><td>Proof (request, response)</td><td><code>sec__evidence</code> (content hash, captured_at)</td><td>The spine has no per-finding proof field; "proven vs unproven" needs a relation to evidence.</td></tr>
+<tr><td>A scan run</td><td><code>sec__assessment</code> (kind, cadence, regulator_mandated)</td><td>None.</td></tr>
+<tr><td>Policy</td><td>No scan-policy object exists. Nearest: IRM <code>exception_policy</code>, RBVM routing rules.</td><td><b>New object needed</b> (policy and its steps).</td></tr>
+<tr><td>Regulatory citation</td><td><code>sec__framework</code>, <code>control_requirement</code>, <code>obligation</code> (<code>clause_reference</code>)</td><td>Docket packs cite a section; clause numbers must come from these records.</td></tr>
+<tr><td>Compliance result</td><td><code>sec__control</code>, <code>control_mapping</code> (<code>coverage_level</code>)</td><td>Docket's results are advisory readings, a separate list by design.</td></tr>
+</table></div>
+
+<h3>UI controls: what was reused, what is new</h3>
+<p><b>Reused from Henoyo's Visual Kit</b> (not yet in Core v3: branch <code>integ/visual-kit-review</code>, 473 commits ahead of <code>release/v3</code>, pinned at <code>c2a3ba4f</code>): record banner, status path, ring, severity-by-age heatmap, discovery trend, plus the shared frame (eyebrow, finding as title, help "i", source and as-of footer), the three colour schemes and the density tokens. About 30 kit elements are bundled; the console uses these now and can adopt the rest (evidence ledger, record timeline, deadline clock, stepper, risk ledger, exposure tree, blast radius) as features arrive.</p>
+<p><b>New, written in the kit's style</b> (extend <code>HenoyoElement</code>, read the same tokens, emit composed events) and ready to propose into Core: <code>docket-pipeline</code>, <code>docket-health-card</code>, <code>docket-continuum</code>, <code>docket-policy-matrix</code>.</p>
+<p><b>Local patches to the pinned kit</b> (listed in <code>app/kit/PIN.md</code>, to propose upstream): ring <code>finding</code> and <code>showPercent</code>; record banner per-row <code>word</code> (its danger level was hard-coded to read "Overdue").</p>
+<p>Searched for other unmerged UI: <code>feature/list-view-redesign</code>, <code>dashboard-chart-redesign</code>, <code>lookup-field-redesign</code>, <code>layout-builder</code>, <code>ui-enhancements</code>, <code>reports-ui</code> and <code>setup-six-tabs</code> are already contained in <code>release/v3</code>, so there was nothing extra to reuse. <code>feat/ui-fixes</code> (a light/dark theme) is one commit ahead; not used, because the Henoyo app is fixed-light. <code>henoyo-design-worktrees</code> holds only <code>agy-design-review</code> at main.</p>
+
+<h2>What two reviews changed</h2>
+<p>The mockup was reviewed by Claude Opus (looking at the screenshots) and by Grok (reading the source). Both agreed on most points, and Grok found real contradictions. Applied:</p>
+<ul>
+<li><b>One definition of "required scanner".</b> The policy said 4, the health card 3 of 4, and the pipeline 5 of 6. Now the policy lists the whole 9-step sequence, 5 steps are Required, and all three agree (4 of 5 ran).</li>
+<li><b>The policy no longer contradicts itself on what blocks.</b> It had "a critical CVE blocks" on one row and "only proof blocks" on another. Now: <i>blocks</i> a reproduced exploit, a secret or other deterministic rule, a triage verdict of confirmed; <i>flags</i> a required scanner that did not run; <i>advises</i> compliance. A CVE goes to triage.</li>
+<li><b>Removed "Who found it"</b> (findings by tool), which counted scanner candidates beside proven exploits. Replaced with "Required scanners, this week".</li>
+<li><b>The compliance reader is optional.</b> Compliance never gates.</li>
+<li><b>Status lamps no longer disagree with the table</b>, and the compliance lamp is dashed and advisory, never a fault light.</li>
+<li><b>Worded trend</b> ("Worse than last scan") beside each sparkline; candidate counts never use the red range; "Triage uncertain" and "Unknown" used consistently.</li>
+<li><b>Every table sorts</b>, as Henoyo requires; the 26 process controls open from their tile; the exploit step cites the RBI VAPT control rather than an unrelated SEBI one; and "Also reproduced" is no longer red, so it does not read as a second failure.</li>
+<li>A "consequence" column on the policy matrix, so a stale cell explains the banner.</li>
+</ul>
+
+<h2>What is real, and what is not</h2>
+<p><b>Real:</b> new <code>engine/docket/portfolio/</code> (health levels, analytes, pipeline lanes, policy and coverage), five new endpoints, stage timings now recorded in <code>report.json</code>, citation parts on compliance controls, a deterministic demo seeder (<code>python -m docket.demo.console</code>), the React views, the kit bundle, vendored fonts (no outbound request at render), and <code>tests/test_portfolio.py</code> (it asserts, among other things, that no response contains the word "compliant" or a percent or score key). <code>make test-fast</code> passes.</p>
+<p><b>Sample:</b> all the data in the demo. The 12 applications, scans, findings, proofs and control results are generated and labelled sample.</p>
+<h3>What is not done</h3>
+<ul>
+<li><b>It is not inside Henoyo Core yet.</b> It is a standalone console in Henoyo's design language with Henoyo's components. Becoming a Core pack (objects and layout components) is the next step, and depends on the Visual Kit reaching v3.</li>
+<li><b>The API Security engine is modelled, not wired.</b> Docket does not run it, so a policy that requires it shows "Not run" for every real application until it reports a stage. The built-in default policy requires Trivy and Semgrep only.</li>
+<li><b>Stage timings exist only for scans run after this change.</b> Older reports show "No timing recorded" rather than a bar.</li>
+<li><b>No clause numbers.</b> The RBI and SEBI packs cite sections, not numbered clauses, and I did not invent any. The data model accepts <code>clause</code> and <code>obligation_ref</code>; someone with the circulars has to fill them in, ideally once, in Henoyo's obligation records.</li>
+<li><b>Read-only application list.</b> Applications come from <code>docket_portfolio.json</code>; Edit and Add are not wired. The masthead search is decorative.</li>
+<li><b>Not exercised by me in a browser:</b> drawers, sorting, filter tiles, pack tabs, upload and delete. The agents that built them tested them lightly. I checked every route by screenshot against real data.</li>
+<li><code>make check</code> reports three <code>app.backend.*</code> modules failing here because <code>fastapi</code> (an optional extra) is not installed; that is unrelated to this change. The other 97 pass.</li>
+</ul>
+
+<h2>Decisions for you</h2>
+<ol>
+<li><b>Standalone or Core pack?</b> Keep this console as the Docket front end until the Visual Kit is in v3, or start the Core pack now on the kit branch?</li>
+<li><b>Where does policy live?</b> A new Henoyo object (the spine has none), or a JSON file Docket owns?</li>
+<li><b>Who owns clause mapping?</b> The citations are honest but section-level. The spine's obligation records are the right home for clause numbers.</li>
+<li><b>Wire the API Security engine into a Docket run</b> so the Henoyo-native lane is real rather than modelled?</li>
+<li><b>Upstream the four Docket elements and the kit patches</b> into Core's Visual Kit?</li>
+</ol>
+
+<h2>Run it</h2>
+<pre><code>make demo-console          # builds the kit and the console, seeds ./.docket-demo, serves http://127.0.0.1:8765
+make console-kit           # only after editing app/kit
+make test-fast             # includes tests/test_portfolio.py
+open docs/ui/mockup/index.html   # the approved mockup</code></pre>
+
+</main>
+</body>
+</html>

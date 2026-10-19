@@ -114,7 +114,7 @@ export class DocketPolicyMatrix extends HenoyoElement {
             }</div></td>`;
           })
           .join('');
-        const c = r.consequence;
+        const c = r.consequence && r.consequence.text !== '' ? r.consequence : null;
         const conseq = c
           ? `<td class="cq"><span class="eff ${c.effect}">${c.effect === 'blocks' ? 'Blocks' : c.effect === 'flags' ? 'Flags' : 'Advises'}</span> ${esc(c.text)}</td>`
           : `<td class="cq muted">None</td>`;

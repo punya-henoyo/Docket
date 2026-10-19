@@ -1,0 +1,14 @@
+/* Application record and scan run: only what hx.css does not already cover. */
+.hx-btn:disabled{opacity:.5;cursor:not-allowed}
+.hx-btn:disabled:hover{background:rgb(var(--h-surface))}
+.hx-rh .hx-meta .hx-dot{color:rgb(var(--h-text-3))}
+.hx-lv tbody tr.hx-static{cursor:default}
+.hx-lv tbody tr.hx-static:hover{background:none}
+.hx-lv td a{color:rgb(var(--h-text-link));font-weight:600}
+.hx-lv .hx-num{white-space:nowrap}
+.hx-notfound{max-width:560px;margin:48px auto}
+.hx-notfound p{color:rgb(var(--h-text-2))}
+.hx-lv td.hx-scanid{overflow-wrap:anywhere;min-width:110px}
+a.hx-btn{text-decoration:none;color:inherit}
+a.hx-btn.hx-primary{color:rgb(var(--h-brand-fg))}
+.hx-scroll{overflow-x:auto}
